@@ -33,7 +33,13 @@ interface AppState {
   sendToTelegram: (creativeId: string) => Promise<void>;
 }
 
-const WEBHOOK_BASE = 'https://your-n8n-server.com/webhook';
+const WEBHOOK_BASE = import.meta.env.PUBLIC_WEBHOOK_BASE_URL;
+const WEBHOOK_ENDPOINTS = {
+  angles: import.meta.env.PUBLIC_WEBHOOK_ENDPOINT_ANGLES,
+  concept: import.meta.env.PUBLIC_WEBHOOK_ENDPOINT_CONCEPT,
+  creative: import.meta.env.PUBLIC_WEBHOOK_ENDPOINT_CREATIVE,
+  telegram: import.meta.env.PUBLIC_WEBHOOK_ENDPOINT_TELEGRAM,
+};
 
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'US', buyer: '' },
@@ -49,7 +55,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   generateAngles: async () => {
     set({ isLoadingAngles: true });
     try {
-      const { data } = await axios.post(`${WEBHOOK_BASE}/step1`, get().formData);
+      const { data } = await axios.post(`${WEBHOOK_BASE}/${WEBHOOK_ENDPOINTS.angles}`, get().formData);
       const anglesWithIds = data.map((item: any) => ({ ...item, id: crypto.randomUUID() }));
       set({ angles: anglesWithIds, concepts: [], creatives: [], isLoadingAngles: false });
     } catch (e) {
@@ -61,7 +67,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoadingConcepts: true });
     const angle = get().angles.find(a => a.id === angleId);
     try {
-      const { data } = await axios.post(`${WEBHOOK_BASE}/step2`, { formData: get().formData, angle });
+      const { data } = await axios.post(`${WEBHOOK_BASE}/${WEBHOOK_ENDPOINTS.concept}`, { formData: get().formData, angle });
       const newConcept = { ...data, id: crypto.randomUUID() };
       set((state) => ({ concepts: [...state.concepts, newConcept], isLoadingConcepts: false }));
     } catch (e) {
@@ -73,7 +79,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoadingCreatives: true });
     const concept = get().concepts.find(c => c.id === conceptId);
     try {
-      const { data } = await axios.post(`${WEBHOOK_BASE}/step3`, { concept });
+      const { data } = await axios.post(`${WEBHOOK_BASE}/${WEBHOOK_ENDPOINTS.creative}`, { concept });
       const newCreative = { ...data, id: crypto.randomUUID() };
       set((state) => ({ creatives: [...state.creatives, newCreative], isLoadingCreatives: false }));
     } catch (e) {
@@ -84,7 +90,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sendToTelegram: async (creativeId) => {
     const creative = get().creatives.find(c => c.id === creativeId);
     try {
-      await axios.post(`${WEBHOOK_BASE}/step4-telegram`, { creative });
+      await axios.post(`${WEBHOOK_BASE}/${WEBHOOK_ENDPOINTS.telegram}`, { creative });
       alert('Отправлено в Telegram!');
     } catch (e) {
       console.error('Ошибка отправки', e);
