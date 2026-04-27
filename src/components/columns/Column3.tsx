@@ -5,10 +5,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 
 export const Column3 = () => {
-  const { concepts, updateConcept, generateCreative, isLoadingCreatives } = useAppStore();
+  const { concepts, updateConcept, generateCreative, isLoadingCreatives, isLoadingConcepts } = useAppStore();
 
   if (concepts.length === 0) {
-    return <div className="text-gray-400 italic">Waiting for concepts...</div>;
+    return (
+      <div className="text-gray-400 italic">
+        {isLoadingConcepts ? 'Generating concept...' : 'Waiting for concepts...'}
+      </div>
+    );
   }
 
   return (
@@ -65,7 +69,7 @@ export const Column3 = () => {
             className="w-full bg-blue-600 hover:bg-blue-700 text-white mt-2"
             disabled={isLoadingCreatives}
           >
-            {isLoadingCreatives ? "Generating Images..." : "Generate Final Creative"}
+            {isLoadingCreatives ? "Generating Images..." : "Generate Creative"}
           </Button>
         </Card>
       ))}

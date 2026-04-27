@@ -5,7 +5,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 
 export const Column2 = () => {
-  const { angles, updateAngle, generateConcept, generateAngles, isLoadingAngles } = useAppStore();
+  const { angles, updateAngle, generateConcept, generateAngles, isLoadingAngles, isLoadingConcepts } = useAppStore();
 
   if (angles.length === 0) return <div className="text-gray-400 italic">Generate angles first...</div>;
 
@@ -29,7 +29,13 @@ export const Column2 = () => {
             <label className="text-[10px] font-bold uppercase text-gray-400">Why it works</label>
             <p className="text-sm whitespace-pre-wrap">{angle.whyWorks}</p>
           </div>
-          <Button onClick={() => generateConcept(angle.id)} className="w-full">Select & Next</Button>
+          <Button
+            onClick={() => generateConcept(angle.id)}
+            disabled={isLoadingConcepts}
+            className="w-full"
+          >
+            {isLoadingConcepts ? 'Generating...' : 'Select & Next'}
+          </Button>
         </Card>
       ))}
     </div>

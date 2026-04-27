@@ -56,6 +56,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoadingAngles: true });
     try {
       const { data } = await axios.post(WEBHOOKS.angles, get().formData);
+      console.log('[generateAngles] raw response:', data);
       const outer = Array.isArray(data) ? data[0] : data;
       const agent1Output: string = outer?.agent1_output ?? '';
       let anglesPayload: any = outer?.angles;
@@ -85,8 +86,26 @@ export const useAppStore = create<AppState>((set, get) => ({
         angle,
         agent1_output: get().agent1Output,
       });
-      const newConcept = { ...data, id: crypto.randomUUID() };
-      set((state) => ({ concepts: [...state.concepts, newConcept], isLoadingConcepts: false }));
+      let payload: any = data;
+      if (Array.isArray(payload)) payload = payload[0];
+      if (payload && typeof payload === 'object' && typeof payload.text === 'string') {
+        payload = payload.text;
+      }
+      while (typeof payload === 'string') payload = JSON.parse(payload);
+      console.log('[generateConcept] raw response:', data);
+      const items: any[] = Array.isArray(payload)
+        ? payload
+        : payload?.creatives ?? payload?.concepts ?? [payload];
+      console.log('[generateConcept] parsed items:', items);
+      const newConcepts = items.map((item: any) => ({
+        id: crypto.randomUUID(),
+        hook: item.banner_hook ?? item.hook ?? '',
+        accent: item.banner_accent ?? item.accent ?? '',
+        cta: item.banner_cta ?? item.cta ?? '',
+        metaTitle: item.meta_ad_title ?? item.metaTitle ?? item.meta_title ?? '',
+        metaCopy: item.meta_ad_copy ?? item.metaCopy ?? item.meta_copy ?? '',
+      }));
+      set((state) => ({ concepts: [...state.concepts, ...newConcepts], isLoadingConcepts: false }));
     } catch (e) {
       console.error(e); set({ isLoadingConcepts: false });
     }
