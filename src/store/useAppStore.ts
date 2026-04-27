@@ -17,6 +17,7 @@ interface Creative { id: string; metaTitle: string; metaCopy: string; images: st
 interface AppState {
   formData: FormData;
   angles: Angle[];
+  agent1Output: string;
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -42,7 +43,7 @@ const WEBHOOKS = {
 
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'US', buyer: '' },
-  angles: [], concepts: [], creatives: [],
+  angles: [], agent1Output: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
 
   updateFormData: (field, value) => set((state) => ({ formData: { ...state.formData, [field]: value } })),
@@ -55,15 +56,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoadingAngles: true });
     try {
       const { data } = await axios.post(WEBHOOKS.angles, get().formData);
-      let payload: any = data;
-      if (Array.isArray(payload)) payload = payload[0];
-      if (payload && typeof payload === 'object' && typeof payload.text === 'string') {
-        payload = payload.text;
-      }
-      while (typeof payload === 'string') payload = JSON.parse(payload);
-      const anglesArray = payload?.angles ?? payload?.output?.angles;
+      const outer = Array.isArray(data) ? data[0] : data;
+      const agent1Output: string = outer?.agent1_output ?? '';
+      let anglesPayload: any = outer?.angles;
+      while (typeof anglesPayload === 'string') anglesPayload = JSON.parse(anglesPayload);
+      const anglesArray = Array.isArray(anglesPayload) ? anglesPayload : anglesPayload?.angles;
       if (!Array.isArray(anglesArray)) {
-        console.error('[generateAngles] unexpected payload shape:', payload);
+        console.error('[generateAngles] unexpected payload shape:', outer);
         throw new Error('Webhook response missing angles[]');
       }
       const anglesWithIds = anglesArray.map((item: any) => ({
@@ -71,7 +70,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         direction: item.direction,
         whyWorks: item.why_works,
       }));
-      set({ angles: anglesWithIds, concepts: [], creatives: [], isLoadingAngles: false });
+      set({ angles: anglesWithIds, agent1Output, concepts: [], creatives: [], isLoadingAngles: false });
     } catch (e) {
       console.error(e); set({ isLoadingAngles: false });
     }
@@ -81,7 +80,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoadingConcepts: true });
     const angle = get().angles.find(a => a.id === angleId);
     try {
-      const { data } = await axios.post(WEBHOOKS.concept, { formData: get().formData, angle });
+      const { data } = await axios.post(WEBHOOKS.concept, {
+        formData: get().formData,
+        angle,
+        agent1_output: get().agent1Output,
+      });
       const newConcept = { ...data, id: crypto.randomUUID() };
       set((state) => ({ concepts: [...state.concepts, newConcept], isLoadingConcepts: false }));
     } catch (e) {

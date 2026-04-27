@@ -40,9 +40,18 @@ export const Column1 = () => {
     }
   };
 
+  const fillTestData = () => {
+    handleChange('articleUrl', import.meta.env.PUBLIC_TEST_ARTICLE_URL);
+    handleChange('keyword1', import.meta.env.PUBLIC_TEST_KEYWORD1);
+    handleChange('buyer', import.meta.env.PUBLIC_TEST_BUYER);
+  };
+
   return (
     <div className="flex flex-col gap-4">
-      <h2 className="font-bold text-xl mb-2">1. Input Data</h2>
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="font-bold text-xl">1. Input Data</h2>
+        <Button variant="ghost" size="sm" onClick={fillTestData}>Test data</Button>
+      </div>
       
       <div className="space-y-3">
         {/* Article URL (Required) */}
