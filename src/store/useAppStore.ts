@@ -55,7 +55,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoadingAngles: true });
     try {
       const { data } = await axios.post(WEBHOOKS.angles, get().formData);
-      const anglesWithIds = data.map((item: any) => ({ ...item, id: crypto.randomUUID() }));
+      let payload: any = data;
+      if (Array.isArray(payload)) payload = payload[0];
+      if (payload && typeof payload === 'object' && typeof payload.text === 'string') {
+        payload = payload.text;
+      }
+      while (typeof payload === 'string') payload = JSON.parse(payload);
+      const anglesArray = payload?.angles ?? payload?.output?.angles;
+      if (!Array.isArray(anglesArray)) {
+        console.error('[generateAngles] unexpected payload shape:', payload);
+        throw new Error('Webhook response missing angles[]');
+      }
+      const anglesWithIds = anglesArray.map((item: any) => ({
+        id: crypto.randomUUID(),
+        direction: item.direction,
+        whyWorks: item.why_works,
+      }));
       set({ angles: anglesWithIds, concepts: [], creatives: [], isLoadingAngles: false });
     } catch (e) {
       console.error(e); set({ isLoadingAngles: false });

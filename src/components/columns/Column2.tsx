@@ -27,11 +27,7 @@ export const Column2 = () => {
           </div>
           <div>
             <label className="text-[10px] font-bold uppercase text-gray-400">Why it works</label>
-            <Textarea 
-              value={angle.whyWorks} 
-              onChange={(e) => updateAngle(angle.id, 'whyWorks', e.target.value)} 
-              className="bg-white text-sm"
-            />
+            <p className="text-sm whitespace-pre-wrap">{angle.whyWorks}</p>
           </div>
           <Button onClick={() => generateConcept(angle.id)} className="w-full">Select & Next</Button>
         </Card>
