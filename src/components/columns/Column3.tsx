@@ -69,7 +69,7 @@ export const Column3 = () => {
             className="w-full bg-blue-600 hover:bg-blue-700 text-white mt-2"
             disabled={isLoadingCreatives}
           >
-            {isLoadingCreatives ? "Generating Images..." : "Generate Creative"}
+            {isLoadingCreatives ? "Generating Images..." : "Generate Creative Batch"}
           </Button>
         </Card>
       ))}
