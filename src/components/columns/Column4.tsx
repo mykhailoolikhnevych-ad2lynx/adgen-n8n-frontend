@@ -1,30 +1,37 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useAppStore } from '@/store/useAppStore';
+import type { Creative } from '@/store/useAppStore';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+
+type LightboxState = { creative: Creative; index: number } | null;
 
 export const Column4 = () => {
   const { creatives, deleteCreative, sendToTelegram } = useAppStore();
 
-  const [lightboxImages, setLightboxImages] = useState<string[] | null>(null);
-  const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [lightbox, setLightbox] = useState<LightboxState>(null);
 
-  const closeLightbox = useCallback(() => setLightboxImages(null), []);
+  const closeLightbox = useCallback(() => setLightbox(null), []);
   const showPrev = useCallback(() => {
-    setLightboxIndex((i) => {
-      if (!lightboxImages) return 0;
-      return (i - 1 + lightboxImages.length) % lightboxImages.length;
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.creative.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index - 1 + len) % len };
     });
-  }, [lightboxImages]);
+  }, []);
   const showNext = useCallback(() => {
-    setLightboxIndex((i) => {
-      if (!lightboxImages) return 0;
-      return (i + 1) % lightboxImages.length;
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.creative.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index + 1) % len };
     });
-  }, [lightboxImages]);
+  }, []);
 
   useEffect(() => {
-    if (!lightboxImages) return;
+    if (!lightbox) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeLightbox();
       else if (e.key === 'ArrowLeft') showPrev();
@@ -32,23 +39,30 @@ export const Column4 = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [lightboxImages, closeLightbox, showPrev, showNext]);
+  }, [lightbox, closeLightbox, showPrev, showNext]);
 
-  const openLightbox = (images: string[], index: number) => {
-    setLightboxImages(images);
-    setLightboxIndex(index);
+  const openLightbox = (creative: Creative, index: number) => {
+    setLightbox({ creative, index });
   };
 
-  if (creatives.length === 0) {
-    return <div className="text-gray-400 italic">Waiting for final creatives...</div>;
-  }
+  const currentImage = lightbox ? lightbox.creative.images[lightbox.index] : null;
 
   return (
     <div className="flex flex-col gap-4">
       <h2 className="font-bold text-xl mb-2">4. Creatives batches</h2>
 
+      {creatives.length === 0 && (
+        <div className="text-gray-400 italic">Waiting for final creatives...</div>
+      )}
+
       {creatives.map((creative, index) => (
-        <Card key={creative.id} className="p-4 space-y-4 bg-white shadow-md border-green-200 border-2">
+        <Card
+          key={creative.id}
+          aria-busy={creative.isSending || undefined}
+          className={`p-4 space-y-4 bg-white shadow-md border-green-200 border-2 transition-opacity ${
+            creative.isSending ? 'pointer-events-none opacity-60' : ''
+          }`}
+        >
           <div className="flex justify-between items-center">
             <h3 className="font-bold text-sm text-green-700">Creatives batch {index + 1}</h3>
             <Button variant="destructive" size="sm" onClick={() => deleteCreative(creative.id)}>
@@ -68,38 +82,73 @@ export const Column4 = () => {
               {creative.metaCopy}
             </p>
           </div>
+          <div>
+            <label className="text-[10px] font-bold uppercase text-gray-400">CTA</label>
+            <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
+              {creative.cta}
+            </p>
+          </div>
 
-          {creative.images && creative.images.length > 0 && (
-            <div>
-              <label className="text-[10px] font-bold uppercase text-gray-400 mb-2 block">Generated Images</label>
-              <div className="grid grid-cols-3 gap-2">
-                {creative.images.map((imgUrl, i) => (
-                  <button
-                    type="button"
-                    key={i}
-                    onClick={() => openLightbox(creative.images, i)}
-                    className="aspect-square bg-slate-100 rounded-md overflow-hidden border cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-green-500"
-                    aria-label={`Open image ${i + 1}`}
-                  >
-                    <img src={imgUrl} alt={`Creative ${i + 1}`} className="w-full h-full object-cover" />
-                  </button>
-                ))}
-              </div>
+          <div>
+            <label className="text-[10px] font-bold uppercase text-gray-400 mb-2 block">
+              Generated Images
+              {creative.isLoading && <span className="ml-2 text-gray-500 normal-case font-normal">— generating...</span>}
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {creative.isLoading && creative.images.length === 0 && (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={`skeleton-${i}`} className="aspect-square rounded-md" />
+                ))
+              )}
+              {creative.images.map((img, i) => (
+                <button
+                  type="button"
+                  key={i}
+                  onClick={() => openLightbox(creative, i)}
+                  className="relative aspect-square bg-slate-100 rounded-md overflow-hidden border cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-green-500"
+                  aria-label={`Open image ${img.style || i + 1}`}
+                >
+                  <img src={img.url} alt={`Creative ${img.style || i + 1}`} className="w-full h-full object-cover" />
+                  {img.style && (
+                    <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+                      {img.style}
+                    </span>
+                  )}
+                </button>
+              ))}
             </div>
-          )}
+          </div>
 
-          <Button
-            onClick={() => sendToTelegram(creative.id)}
-            className="w-full bg-green-600 hover:bg-green-700 text-white"
-          >
-            Send to Telegram
-          </Button>
+          {(() => {
+            let label = 'Send to Telegram';
+            let bg = 'bg-green-600 hover:bg-green-700';
+            let disabled = false;
+            if (creative.isLoading) {
+              label = 'Generating images...';
+              disabled = true;
+            } else if (creative.isSending) {
+              label = 'Sending...';
+              disabled = true;
+            } else if (creative.isSent) {
+              label = 'Sent to Telegram';
+              bg = 'bg-slate-500 hover:bg-slate-600';
+            }
+            return (
+              <Button
+                onClick={() => sendToTelegram(creative.id)}
+                disabled={disabled}
+                className={`w-full text-white ${bg}`}
+              >
+                {label}
+              </Button>
+            );
+          })()}
         </Card>
       ))}
 
-      {lightboxImages && (
+      {lightbox && currentImage && (
         <div
-          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center"
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
           onClick={closeLightbox}
         >
           <button
@@ -111,7 +160,7 @@ export const Column4 = () => {
             ×
           </button>
 
-          {lightboxImages.length > 1 && (
+          {lightbox.creative.images.length > 1 && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); showPrev(); }}
@@ -122,14 +171,36 @@ export const Column4 = () => {
             </button>
           )}
 
-          <img
-            src={lightboxImages[lightboxIndex]}
-            alt={`Image ${lightboxIndex + 1}`}
-            className="max-w-[92vw] max-h-[92vh] object-contain"
+          <div
+            className="flex flex-col items-center max-w-[92vw] max-h-[92vh]"
             onClick={(e) => e.stopPropagation()}
-          />
+          >
+            <img
+              src={currentImage.url}
+              alt={`Image ${currentImage.style || lightbox.index + 1}`}
+              className="max-w-full max-h-[68vh] object-contain rounded-md"
+            />
+            <div className="mt-4 bg-black/70 text-white px-5 py-4 rounded-md text-sm w-full max-w-2xl space-y-3 leading-relaxed">
+              <div>
+                <span className="font-bold">STYLE:</span>{' '}
+                <span className="text-gray-200">{currentImage.style || '—'}</span>
+              </div>
+              <div>
+                <span className="font-bold">Meta Ad Title:</span>{' '}
+                <span className="text-gray-200">{lightbox.creative.metaTitle}</span>
+              </div>
+              <div>
+                <span className="font-bold">Meta Ad Copy:</span>{' '}
+                <span className="text-gray-200 whitespace-pre-wrap">{lightbox.creative.metaCopy}</span>
+              </div>
+              <div>
+                <span className="font-bold">CTA:</span>{' '}
+                <span className="text-gray-200">{lightbox.creative.cta}</span>
+              </div>
+            </div>
+          </div>
 
-          {lightboxImages.length > 1 && (
+          {lightbox.creative.images.length > 1 && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); showNext(); }}
@@ -140,9 +211,9 @@ export const Column4 = () => {
             </button>
           )}
 
-          {lightboxImages.length > 1 && (
+          {lightbox.creative.images.length > 1 && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full">
-              {lightboxIndex + 1} / {lightboxImages.length}
+              {lightbox.index + 1} / {lightbox.creative.images.length}
             </div>
           )}
         </div>

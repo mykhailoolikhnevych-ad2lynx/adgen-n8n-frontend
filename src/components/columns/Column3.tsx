@@ -5,20 +5,26 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 
 export const Column3 = () => {
-  const { concepts, updateConcept, generateCreative, isLoadingCreatives, isLoadingConcepts } = useAppStore();
+  const { concepts, updateConcept, generateCreative, isLoadingCreatives, isLoadingConcepts, clearConcepts } = useAppStore();
 
   if (concepts.length === 0) {
     return (
-      <div className="text-gray-400 italic">
-        {isLoadingConcepts ? 'Generating concept...' : 'Waiting for concepts...'}
+      <div className="flex flex-col gap-4">
+        <h2 className="font-bold text-xl mb-2">3. Concepts</h2>
+        <div className="text-gray-400 italic">
+          {isLoadingConcepts ? 'Generating concept...' : 'Waiting for concepts...'}
+        </div>
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-4">
-      <h2 className="font-bold text-xl mb-2">3. Concepts</h2>
-      
+      <div className="flex justify-between items-center mb-2">
+        <h2 className="font-bold text-xl">3. Concepts</h2>
+        <Button variant="ghost" size="sm" onClick={clearConcepts}>Clear</Button>
+      </div>
+
       {concepts.map((concept, index) => (
         <Card key={concept.id} className="p-4 space-y-3 bg-slate-50 shadow-sm border-blue-100">
           <h3 className="font-semibold text-sm text-blue-800">Concept {index + 1}</h3>

@@ -7,14 +7,19 @@ import { Card } from '@/components/ui/card';
 export const Column2 = () => {
   const { angles, updateAngle, generateConcept, generateAngles, isLoadingAngles, isLoadingConcepts } = useAppStore();
 
-  if (angles.length === 0) return <div className="text-gray-400 italic">Generate angles first...</div>;
-
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center mb-2">
         <h2 className="font-bold text-xl">2. Angles</h2>
-        <Button variant="ghost" size="sm" onClick={generateAngles} disabled={isLoadingAngles}>Regenerate</Button>
+        {angles.length > 0 && (
+          <Button variant="ghost" size="sm" onClick={generateAngles} disabled={isLoadingAngles}>Regenerate</Button>
+        )}
       </div>
+      {angles.length === 0 && (
+        <div className="text-gray-400 italic">
+          {isLoadingAngles ? 'Generating angles...' : 'Generate angles first...'}
+        </div>
+      )}
       {angles.map((angle) => (
         <Card key={angle.id} className="p-4 space-y-3 bg-slate-50">
           <div>

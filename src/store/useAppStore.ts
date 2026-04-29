@@ -12,7 +12,19 @@ interface FormData {
 
 interface Angle { id: string; direction: string; whyWorks: string; raw?: any; }
 interface Concept { id: string; hook: string; accent: string; cta: string; metaTitle: string; metaCopy: string; sourceAngle?: Angle; raw?: any; }
-interface Creative { id: string; metaTitle: string; metaCopy: string; images: string[]; }
+export interface ImageVariant { url: string; style: string; }
+export interface Creative {
+  id: string;
+  metaTitle: string;
+  metaCopy: string;
+  cta: string;
+  images: ImageVariant[];
+  isLoading?: boolean;
+  isSending?: boolean;
+  isSent?: boolean;
+  chosenAngle?: any;
+  chosenCreative?: any;
+}
 
 interface ErrorBanner { message: string; count: number; }
 
@@ -32,6 +44,7 @@ interface AppState {
   updateConcept: (id: string, field: keyof Concept, value: string) => void;
   updateCreative: (id: string, field: keyof Creative, value: string) => void;
   deleteCreative: (id: string) => void;
+  clearConcepts: () => void;
   generateAngles: () => Promise<void>;
   generateConcept: (angleId: string) => Promise<void>;
   generateCreative: (conceptId: string) => Promise<void>;
@@ -68,6 +81,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateConcept: (id, field, value) => set((state) => ({ concepts: state.concepts.map(c => c.id === id ? { ...c, [field]: value } : c) })),
   updateCreative: (id, field, value) => set((state) => ({ creatives: state.creatives.map(c => c.id === id ? { ...c, [field]: value } : c) })),
   deleteCreative: (id) => set((state) => ({ creatives: state.creatives.filter(c => c.id !== id) })),
+  clearConcepts: () => set({ concepts: [] }),
 
   generateAngles: async () => {
     set({ isLoadingAngles: true });
@@ -136,9 +150,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateCreative: async (conceptId) => {
-    set({ isLoadingCreatives: true });
     const concept = get().concepts.find(c => c.id === conceptId);
-    if (!concept) { set({ isLoadingCreatives: false }); return; }
+    if (!concept) return;
+
     const chosen_angle = concept.sourceAngle
       ? {
           ...(concept.sourceAngle.raw ?? {}),
@@ -154,6 +168,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       meta_ad_title: concept.metaTitle,
       meta_ad_copy: concept.metaCopy,
     };
+
+    const creativeId = crypto.randomUUID();
+    const placeholder: Creative = {
+      id: creativeId,
+      metaTitle: concept.metaTitle,
+      metaCopy: concept.metaCopy,
+      cta: concept.cta,
+      images: [],
+      isLoading: true,
+      chosenAngle: chosen_angle,
+      chosenCreative: chosen_creative,
+    };
+    set((state) => ({
+      creatives: [...state.creatives, placeholder],
+      isLoadingCreatives: true,
+    }));
+
     const payload = {
       agent1_output: get().agent1Output,
       chosen_angle,
@@ -169,36 +200,81 @@ export const useAppStore = create<AppState>((set, get) => ({
         parsed = parsed.text;
       }
       while (typeof parsed === 'string') parsed = JSON.parse(parsed);
-      let images: string[] = [];
+      let images: ImageVariant[] = [];
       if (Array.isArray(parsed?.images)) {
-        images = parsed.images.filter((s: any) => typeof s === 'string');
+        images = parsed.images
+          .filter((s: any) => typeof s === 'string')
+          .map((url: string, i: number) => ({ url, style: String.fromCharCode(65 + i) }));
       } else if (parsed && typeof parsed === 'object') {
         images = Object.entries(parsed)
           .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
-          .map(([, v]) => v as string);
+          .map(([k, v]) => {
+            const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
+            const suffix = (match?.[1] ?? '').toLowerCase();
+            const styleKey = suffix ? `style_${suffix}` : 'style';
+            const styleFromResponse = (parsed as any)[styleKey];
+            const style = typeof styleFromResponse === 'string' && styleFromResponse.trim()
+              ? styleFromResponse.trim()
+              : suffix.toUpperCase();
+            return { url: v as string, style };
+          });
         if (images.length === 0 && typeof parsed.image_url === 'string') {
-          images = [parsed.image_url];
+          const fallbackStyle = typeof (parsed as any).style === 'string' ? (parsed as any).style : '';
+          images = [{ url: parsed.image_url, style: fallbackStyle }];
         }
       }
-      const newCreative = {
-        id: crypto.randomUUID(),
-        metaTitle: parsed?.meta_ad_title ?? parsed?.metaTitle ?? concept.metaTitle,
-        metaCopy: parsed?.meta_ad_copy ?? parsed?.metaCopy ?? concept.metaCopy,
-        images,
-      };
-      set((state) => ({ creatives: [...state.creatives, newCreative], isLoadingCreatives: false }));
+      set((state) => ({
+        creatives: state.creatives.map(c => c.id === creativeId
+          ? {
+              ...c,
+              metaTitle: parsed?.meta_ad_title ?? parsed?.metaTitle ?? c.metaTitle,
+              metaCopy: parsed?.meta_ad_copy ?? parsed?.metaCopy ?? c.metaCopy,
+              images,
+              isLoading: false,
+            }
+          : c),
+        isLoadingCreatives: false,
+      }));
     } catch (e) {
-      console.error(e); set({ isLoadingCreatives: false });
+      console.error(e);
+      set((state) => ({
+        creatives: state.creatives.filter(c => c.id !== creativeId),
+        isLoadingCreatives: false,
+      }));
     }
   },
 
   sendToTelegram: async (creativeId) => {
     const creative = get().creatives.find(c => c.id === creativeId);
+    if (!creative) return;
+
+    set((state) => ({
+      creatives: state.creatives.map(c => c.id === creativeId
+        ? { ...c, isSending: true, isSent: false }
+        : c),
+    }));
+
+    const { chosenAngle, chosenCreative, isLoading: _isLoading, isSending: _isSending, isSent: _isSent, ...creativeForPayload } = creative;
+    const payload = {
+      creative: creativeForPayload,
+      chosen_angle: chosenAngle ?? null,
+      chosen_creative: chosenCreative ?? null,
+    };
+    console.log('[sendToTelegram] request payload:', payload);
     try {
-      await axios.post(WEBHOOKS.telegram, { creative });
-      alert('Отправлено в Telegram!');
+      await axios.post(WEBHOOKS.telegram, payload);
+      set((state) => ({
+        creatives: state.creatives.map(c => c.id === creativeId
+          ? { ...c, isSending: false, isSent: true }
+          : c),
+      }));
     } catch (e) {
       console.error('Ошибка отправки', e);
+      set((state) => ({
+        creatives: state.creatives.map(c => c.id === creativeId
+          ? { ...c, isSending: false, isSent: false }
+          : c),
+      }));
     }
   }
 }));
