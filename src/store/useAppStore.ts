@@ -10,8 +10,31 @@ interface FormData {
   buyer: string;
 }
 
-interface Angle { id: string; direction: string; whyWorks: string; raw?: any; }
-interface Concept { id: string; hook: string; accent: string; cta: string; metaTitle: string; metaCopy: string; sourceAngle?: Angle; raw?: any; }
+interface Angle {
+  id: string;
+  direction: string;
+  whyWorks: string;
+  hookSeed: string;
+  code: string;
+  trigger: string;
+  awarenessLevel: string;
+  emotionalAnchor: string;
+  raw?: any;
+}
+interface Concept {
+  id: string;
+  hook: string;
+  accent: string;
+  cta: string;
+  metaTitle: string;
+  metaCopy: string;
+  formula: string;
+  formulaName: string;
+  aspectTested: string;
+  aspectCategory: string;
+  sourceAngle?: Angle;
+  raw?: any;
+}
 export interface ImageVariant { url: string; style: string; }
 export interface Creative {
   id: string;
@@ -27,6 +50,7 @@ export interface Creative {
 }
 
 interface ErrorBanner { message: string; count: number; }
+interface NoticeBanner { message: string; }
 
 interface AppState {
   formData: FormData;
@@ -39,6 +63,7 @@ interface AppState {
   isLoadingConcepts: boolean;
   isLoadingCreatives: boolean;
   errorBanner: ErrorBanner | null;
+  noticeBanner: NoticeBanner | null;
   updateFormData: (field: keyof FormData, value: string) => void;
   updateAngle: (id: string, field: keyof Angle, value: string) => void;
   updateConcept: (id: string, field: keyof Concept, value: string) => void;
@@ -51,7 +76,25 @@ interface AppState {
   sendToTelegram: (creativeId: string) => Promise<void>;
   showError: (message: string) => void;
   dismissError: () => void;
+  showWarning: (message: string) => void;
+  dismissNotice: () => void;
 }
+
+let _noticeTimer: ReturnType<typeof setTimeout> | null = null;
+
+const isRetryableError = (e: any): boolean => {
+  if (e?.response?.status === 504) return true;
+  if (e instanceof SyntaxError) return true;
+  if (e instanceof Error && /missing|invalid|parse|unexpected/i.test(e.message)) return true;
+  return false;
+};
+
+const humanizeError = (e: any): string => {
+  if (e?.response?.status === 504) return '504 Gateway Timeout';
+  if (e instanceof SyntaxError) return 'Invalid JSON in response';
+  if (e instanceof Error) return e.message;
+  return String(e);
+};
 
 const WEBHOOKS = {
   angles: import.meta.env.PUBLIC_WEBHOOK_ANGLES_URL,
@@ -65,6 +108,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   angles: [], agent1Output: '', operatorNote: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   errorBanner: null,
+  noticeBanner: null,
 
   showError: (message) => set((state) => {
     const trimmed = (message ?? '').toString().slice(0, 500);
@@ -76,6 +120,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   dismissError: () => set({ errorBanner: null }),
 
+  showWarning: (message) => {
+    const trimmed = (message ?? '').toString().slice(0, 500);
+    if (!trimmed) return;
+    if (_noticeTimer) clearTimeout(_noticeTimer);
+    set({ noticeBanner: { message: trimmed } });
+    _noticeTimer = setTimeout(() => {
+      set({ noticeBanner: null });
+      _noticeTimer = null;
+    }, 5000);
+  },
+  dismissNotice: () => {
+    if (_noticeTimer) { clearTimeout(_noticeTimer); _noticeTimer = null; }
+    set({ noticeBanner: null });
+  },
+
   updateFormData: (field, value) => set((state) => ({ formData: { ...state.formData, [field]: value } })),
   updateAngle: (id, field, value) => set((state) => ({ angles: state.angles.map(a => a.id === id ? { ...a, [field]: value } : a) })),
   updateConcept: (id, field, value) => set((state) => ({ concepts: state.concepts.map(c => c.id === id ? { ...c, [field]: value } : c) })),
@@ -85,27 +144,43 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   generateAngles: async () => {
     set({ isLoadingAngles: true });
-    try {
-      const { data } = await axios.post(WEBHOOKS.angles, get().formData);
-      const outer = Array.isArray(data) ? data[0] : data;
-      const agent1Output: string = outer?.agent1_output ?? '';
-      let anglesPayload: any = outer?.angles;
-      while (typeof anglesPayload === 'string') anglesPayload = JSON.parse(anglesPayload);
-      const anglesArray = Array.isArray(anglesPayload) ? anglesPayload : anglesPayload?.angles;
-      const operatorNote: string = (anglesPayload && !Array.isArray(anglesPayload) ? anglesPayload.operator_note : null) ?? '';
-      if (!Array.isArray(anglesArray)) {
-        console.error('[generateAngles] unexpected payload shape:', outer);
-        throw new Error('Webhook response missing angles[]');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await axios.post(WEBHOOKS.angles, get().formData);
+        console.log('[generateAngles] raw response:', data);
+        const outer = Array.isArray(data) ? data[0] : data;
+        const agent1Output: string = outer?.agent1_output ?? '';
+        let anglesPayload: any = outer?.angles;
+        while (typeof anglesPayload === 'string') anglesPayload = JSON.parse(anglesPayload);
+        const anglesArray = Array.isArray(anglesPayload) ? anglesPayload : anglesPayload?.angles;
+        const operatorNote: string = (anglesPayload && !Array.isArray(anglesPayload) ? anglesPayload.operator_note : null) ?? '';
+        console.log('[generateAngles] parsed:', { angles: anglesArray, agent1_output: agent1Output, operator_note: operatorNote });
+        if (!Array.isArray(anglesArray)) {
+          console.error('[generateAngles] unexpected payload shape:', outer);
+          throw new Error('Webhook response missing angles[]');
+        }
+        const anglesWithIds: Angle[] = anglesArray.map((item: any) => ({
+          id: crypto.randomUUID(),
+          direction: item.direction ?? '',
+          whyWorks: item.why_works ?? '',
+          hookSeed: item.hook_seed ?? '',
+          code: item.code ?? '',
+          trigger: item.trigger ?? '',
+          awarenessLevel: item.awareness_level ?? '',
+          emotionalAnchor: item.emotional_anchor ?? '',
+          raw: item,
+        }));
+        set({ angles: anglesWithIds, agent1Output, operatorNote, concepts: [], creatives: [], isLoadingAngles: false });
+        return;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        set({ isLoadingAngles: false });
+        return;
       }
-      const anglesWithIds: Angle[] = anglesArray.map((item: any) => ({
-        id: crypto.randomUUID(),
-        direction: item.direction,
-        whyWorks: item.why_works,
-        raw: item,
-      }));
-      set({ angles: anglesWithIds, agent1Output, operatorNote, concepts: [], creatives: [], isLoadingAngles: false });
-    } catch (e) {
-      console.error(e); set({ isLoadingAngles: false });
     }
   },
 
@@ -116,36 +191,57 @@ export const useAppStore = create<AppState>((set, get) => ({
       ...(angle.raw ?? {}),
       direction: angle.direction,
       why_works: angle.whyWorks,
+      hook_seed: angle.hookSeed,
     } : null;
-    try {
-      const { data } = await axios.post(WEBHOOKS.concept, {
-        formData: get().formData,
-        angle: angleForWebhook,
-        agent1_output: get().agent1Output,
-        operator_note: get().operatorNote,
-      });
-      let payload: any = data;
-      if (Array.isArray(payload)) payload = payload[0];
-      if (payload && typeof payload === 'object' && typeof payload.text === 'string') {
-        payload = payload.text;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await axios.post(WEBHOOKS.concept, {
+          formData: get().formData,
+          angle: angleForWebhook,
+          agent1_output: get().agent1Output,
+          operator_note: get().operatorNote,
+        });
+        console.log('[generateConcept] raw response:', data);
+        let payload: any = data;
+        if (Array.isArray(payload)) payload = payload[0];
+        if (payload && typeof payload === 'object' && typeof payload.text === 'string') {
+          payload = payload.text;
+        }
+        while (typeof payload === 'string') payload = JSON.parse(payload);
+        const items: any[] = Array.isArray(payload)
+          ? payload
+          : payload?.creatives ?? payload?.concepts ?? [payload];
+        console.log('[generateConcept] parsed items:', items);
+        const newConcepts: Concept[] = items.map((item: any) => {
+          const formulaRaw: string = (item.formula ?? '').toString().trim();
+          const [formulaCode, ...rest] = formulaRaw.split(/\s+/);
+          const formulaNameFromSplit = rest.join(' ').trim();
+          return {
+            id: crypto.randomUUID(),
+            hook: item.banner_hook ?? item.hook ?? '',
+            accent: item.banner_accent ?? item.accent ?? '',
+            cta: item.banner_cta ?? item.cta ?? '',
+            metaTitle: item.meta_ad_title ?? item.metaTitle ?? item.meta_title ?? '',
+            metaCopy: item.meta_ad_copy ?? item.metaCopy ?? item.meta_copy ?? '',
+            formula: formulaCode || formulaRaw,
+            formulaName: item.formula_name ?? formulaNameFromSplit ?? '',
+            aspectTested: item.aspect_tested ?? '',
+            aspectCategory: item.aspect_category ?? '',
+            sourceAngle: angle,
+            raw: item,
+          };
+        });
+        set((state) => ({ concepts: [...state.concepts, ...newConcepts], isLoadingConcepts: false }));
+        return;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        set({ isLoadingConcepts: false });
+        return;
       }
-      while (typeof payload === 'string') payload = JSON.parse(payload);
-      const items: any[] = Array.isArray(payload)
-        ? payload
-        : payload?.creatives ?? payload?.concepts ?? [payload];
-      const newConcepts: Concept[] = items.map((item: any) => ({
-        id: crypto.randomUUID(),
-        hook: item.banner_hook ?? item.hook ?? '',
-        accent: item.banner_accent ?? item.accent ?? '',
-        cta: item.banner_cta ?? item.cta ?? '',
-        metaTitle: item.meta_ad_title ?? item.metaTitle ?? item.meta_title ?? '',
-        metaCopy: item.meta_ad_copy ?? item.metaCopy ?? item.meta_copy ?? '',
-        sourceAngle: angle,
-        raw: item,
-      }));
-      set((state) => ({ concepts: [...state.concepts, ...newConcepts], isLoadingConcepts: false }));
-    } catch (e) {
-      console.error(e); set({ isLoadingConcepts: false });
     }
   },
 
@@ -158,6 +254,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...(concept.sourceAngle.raw ?? {}),
           direction: concept.sourceAngle.direction,
           why_works: concept.sourceAngle.whyWorks,
+          hook_seed: concept.sourceAngle.hookSeed,
         }
       : null;
     const chosen_creative = {
@@ -191,56 +288,65 @@ export const useAppStore = create<AppState>((set, get) => ({
       chosen_creative,
     };
     console.log('[generateCreative] request payload:', payload);
-    try {
-      const { data } = await axios.post(WEBHOOKS.creative, payload);
-      console.log('[generateCreative] raw response:', data);
-      let parsed: any = data;
-      if (Array.isArray(parsed)) parsed = parsed[0];
-      if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
-        parsed = parsed.text;
-      }
-      while (typeof parsed === 'string') parsed = JSON.parse(parsed);
-      let images: ImageVariant[] = [];
-      if (Array.isArray(parsed?.images)) {
-        images = parsed.images
-          .filter((s: any) => typeof s === 'string')
-          .map((url: string, i: number) => ({ url, style: String.fromCharCode(65 + i) }));
-      } else if (parsed && typeof parsed === 'object') {
-        images = Object.entries(parsed)
-          .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
-          .map(([k, v]) => {
-            const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
-            const suffix = (match?.[1] ?? '').toLowerCase();
-            const styleKey = suffix ? `style_${suffix}` : 'style';
-            const styleFromResponse = (parsed as any)[styleKey];
-            const style = typeof styleFromResponse === 'string' && styleFromResponse.trim()
-              ? styleFromResponse.trim()
-              : suffix.toUpperCase();
-            return { url: v as string, style };
-          });
-        if (images.length === 0 && typeof parsed.image_url === 'string') {
-          const fallbackStyle = typeof (parsed as any).style === 'string' ? (parsed as any).style : '';
-          images = [{ url: parsed.image_url, style: fallbackStyle }];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { data } = await axios.post(WEBHOOKS.creative, payload);
+        console.log('[generateCreative] raw response:', data);
+        let parsed: any = data;
+        if (Array.isArray(parsed)) parsed = parsed[0];
+        if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
+          parsed = parsed.text;
         }
+        while (typeof parsed === 'string') parsed = JSON.parse(parsed);
+        let images: ImageVariant[] = [];
+        if (Array.isArray(parsed?.images)) {
+          images = parsed.images
+            .filter((s: any) => typeof s === 'string')
+            .map((url: string, i: number) => ({ url, style: String.fromCharCode(65 + i) }));
+        } else if (parsed && typeof parsed === 'object') {
+          images = Object.entries(parsed)
+            .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
+            .map(([k, v]) => {
+              const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
+              const suffix = (match?.[1] ?? '').toLowerCase();
+              const styleKey = suffix ? `style_${suffix}` : 'style';
+              const styleFromResponse = (parsed as any)[styleKey];
+              const style = typeof styleFromResponse === 'string' && styleFromResponse.trim()
+                ? styleFromResponse.trim()
+                : suffix.toUpperCase();
+              return { url: v as string, style };
+            });
+          if (images.length === 0 && typeof parsed.image_url === 'string') {
+            const fallbackStyle = typeof (parsed as any).style === 'string' ? (parsed as any).style : '';
+            images = [{ url: parsed.image_url, style: fallbackStyle }];
+          }
+        }
+        console.log('[generateCreative] parsed images:', images);
+        set((state) => ({
+          creatives: state.creatives.map(c => c.id === creativeId
+            ? {
+                ...c,
+                metaTitle: parsed?.meta_ad_title ?? parsed?.metaTitle ?? c.metaTitle,
+                metaCopy: parsed?.meta_ad_copy ?? parsed?.metaCopy ?? c.metaCopy,
+                images,
+                isLoading: false,
+              }
+            : c),
+          isLoadingCreatives: false,
+        }));
+        return;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        set((state) => ({
+          creatives: state.creatives.filter(c => c.id !== creativeId),
+          isLoadingCreatives: false,
+        }));
+        return;
       }
-      set((state) => ({
-        creatives: state.creatives.map(c => c.id === creativeId
-          ? {
-              ...c,
-              metaTitle: parsed?.meta_ad_title ?? parsed?.metaTitle ?? c.metaTitle,
-              metaCopy: parsed?.meta_ad_copy ?? parsed?.metaCopy ?? c.metaCopy,
-              images,
-              isLoading: false,
-            }
-          : c),
-        isLoadingCreatives: false,
-      }));
-    } catch (e) {
-      console.error(e);
-      set((state) => ({
-        creatives: state.creatives.filter(c => c.id !== creativeId),
-        isLoadingCreatives: false,
-      }));
     }
   },
 
@@ -262,7 +368,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     console.log('[sendToTelegram] request payload:', payload);
     try {
-      await axios.post(WEBHOOKS.telegram, payload);
+      const { data } = await axios.post(WEBHOOKS.telegram, payload);
+      console.log('[sendToTelegram] raw response:', data);
       set((state) => ({
         creatives: state.creatives.map(c => c.id === creativeId
           ? { ...c, isSending: false, isSent: true }

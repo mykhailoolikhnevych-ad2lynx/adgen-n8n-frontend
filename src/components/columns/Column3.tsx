@@ -27,8 +27,19 @@ export const Column3 = () => {
 
       {concepts.map((concept, index) => (
         <Card key={concept.id} className="p-4 space-y-3 bg-slate-50 shadow-sm border-blue-100">
-          <h3 className="font-semibold text-sm text-blue-800">Concept {index + 1}</h3>
-          
+          <div className="text-sm font-semibold text-blue-800">
+            Creative {index + 1}
+            {concept.formula && <span> — {concept.formula}</span>}
+            {concept.formulaName && <span> — {concept.formulaName}</span>}
+          </div>
+
+          {concept.aspectCategory && (
+            <div className="text-xs">
+              <span className="font-bold uppercase text-gray-400">Category:</span>{' '}
+              <span className="text-slate-700">{concept.aspectCategory}</span>
+            </div>
+          )}
+
           <div>
             <label className="text-[10px] font-bold uppercase text-gray-400">Hook</label>
             <Textarea 

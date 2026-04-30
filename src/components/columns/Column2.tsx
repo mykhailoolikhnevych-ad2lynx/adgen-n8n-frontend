@@ -20,20 +20,54 @@ export const Column2 = () => {
           {isLoadingAngles ? 'Generating angles...' : 'Generate angles first...'}
         </div>
       )}
-      {angles.map((angle) => (
+      {angles.map((angle, index) => (
         <Card key={angle.id} className="p-4 space-y-3 bg-slate-50">
+          <div className="text-sm font-semibold text-slate-700">
+            Angle {index + 1}
+            {(angle.code || angle.trigger) && (
+              <span className="text-slate-600 font-normal">
+                {' — '}
+                {angle.code && <span className="font-semibold">[{angle.code}]</span>}
+                {angle.code && angle.trigger && ' '}
+                {angle.trigger}
+              </span>
+            )}
+          </div>
+
           <div>
             <label className="text-[10px] font-bold uppercase text-gray-400">Direction</label>
-            <Textarea 
-              value={angle.direction} 
-              onChange={(e) => updateAngle(angle.id, 'direction', e.target.value)} 
+            <Textarea
+              value={angle.direction}
+              onChange={(e) => updateAngle(angle.id, 'direction', e.target.value)}
               className="bg-white text-sm"
             />
           </div>
+
           <div>
-            <label className="text-[10px] font-bold uppercase text-gray-400">Why it works</label>
-            <p className="text-sm whitespace-pre-wrap">{angle.whyWorks}</p>
+            <label className="text-[10px] font-bold uppercase text-gray-400">Hook Seed</label>
+            <Textarea
+              value={angle.hookSeed}
+              onChange={(e) => updateAngle(angle.id, 'hookSeed', e.target.value)}
+              className="bg-white text-sm"
+            />
           </div>
+
+          <div className="text-xs space-y-1">
+            <div>
+              <span className="font-bold uppercase text-gray-400">Awareness:</span>{' '}
+              <span className="text-slate-700">{angle.awarenessLevel || '—'}</span>
+            </div>
+            <div>
+              <span className="font-bold uppercase text-gray-400">Emotion:</span>{' '}
+              <span className="text-slate-700">{angle.emotionalAnchor || '—'}</span>
+            </div>
+          </div>
+
+          <div className="text-sm">
+            <span className="text-[10px] font-bold uppercase text-gray-400">Why it works:</span>{' '}
+            <span className="whitespace-pre-wrap text-slate-700">{angle.whyWorks}</span>
+          </div>
+
           <Button
             onClick={() => generateConcept(angle.id)}
             disabled={isLoadingConcepts}
