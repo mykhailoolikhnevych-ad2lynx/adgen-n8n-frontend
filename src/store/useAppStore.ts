@@ -103,6 +103,11 @@ const WEBHOOKS = {
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
 };
 
+const N8N_EXECUTIONS_URL = import.meta.env.PUBLIC_N8N_EXECUTIONS_URL;
+const N8N_EXECUTIONS_API_KEY = import.meta.env.PUBLIC_N8N_EXECUTIONS_API;
+const POLL_INTERVAL_MS = 5000;
+const POLL_MAX_ATTEMPTS = 60; // 5 minutes
+
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'US', buyer: '' },
   angles: [], agent1Output: '', operatorNote: '', concepts: [], creatives: [],
@@ -147,14 +152,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { data } = await axios.post(WEBHOOKS.angles, get().formData);
-        console.log('[generateAngles] raw response:', data);
         const outer = Array.isArray(data) ? data[0] : data;
         const agent1Output: string = outer?.agent1_output ?? '';
         let anglesPayload: any = outer?.angles;
         while (typeof anglesPayload === 'string') anglesPayload = JSON.parse(anglesPayload);
         const anglesArray = Array.isArray(anglesPayload) ? anglesPayload : anglesPayload?.angles;
         const operatorNote: string = (anglesPayload && !Array.isArray(anglesPayload) ? anglesPayload.operator_note : null) ?? '';
-        console.log('[generateAngles] parsed:', { angles: anglesArray, agent1_output: agent1Output, operator_note: operatorNote });
         if (!Array.isArray(anglesArray)) {
           console.error('[generateAngles] unexpected payload shape:', outer);
           throw new Error('Webhook response missing angles[]');
@@ -201,7 +204,6 @@ export const useAppStore = create<AppState>((set, get) => ({
           agent1_output: get().agent1Output,
           operator_note: get().operatorNote,
         });
-        console.log('[generateConcept] raw response:', data);
         let payload: any = data;
         if (Array.isArray(payload)) payload = payload[0];
         if (payload && typeof payload === 'object' && typeof payload.text === 'string') {
@@ -211,7 +213,6 @@ export const useAppStore = create<AppState>((set, get) => ({
         const items: any[] = Array.isArray(payload)
           ? payload
           : payload?.creatives ?? payload?.concepts ?? [payload];
-        console.log('[generateConcept] parsed items:', items);
         const newConcepts: Concept[] = items.map((item: any) => {
           const formulaRaw: string = (item.formula ?? '').toString().trim();
           const [formulaCode, ...rest] = formulaRaw.split(/\s+/);
@@ -287,67 +288,129 @@ export const useAppStore = create<AppState>((set, get) => ({
       chosen_angle,
       chosen_creative,
     };
-    console.log('[generateCreative] request payload:', payload);
+
+    const cleanupOnFailure = () => {
+      set((state) => ({
+        creatives: state.creatives.filter(c => c.id !== creativeId),
+        isLoadingCreatives: false,
+      }));
+    };
+
+    // Step 1: kick off the job and get the execution id
+    let jobId: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { data } = await axios.post(WEBHOOKS.creative, payload);
-        console.log('[generateCreative] raw response:', data);
-        let parsed: any = data;
-        if (Array.isArray(parsed)) parsed = parsed[0];
-        if (parsed && typeof parsed === 'object' && typeof parsed.text === 'string') {
-          parsed = parsed.text;
-        }
-        while (typeof parsed === 'string') parsed = JSON.parse(parsed);
-        let images: ImageVariant[] = [];
-        if (Array.isArray(parsed?.images)) {
-          images = parsed.images
-            .filter((s: any) => typeof s === 'string')
-            .map((url: string, i: number) => ({ url, style: String.fromCharCode(65 + i) }));
-        } else if (parsed && typeof parsed === 'object') {
-          images = Object.entries(parsed)
-            .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
-            .map(([k, v]) => {
-              const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
-              const suffix = (match?.[1] ?? '').toLowerCase();
-              const styleKey = suffix ? `style_${suffix}` : 'style';
-              const styleFromResponse = (parsed as any)[styleKey];
-              const style = typeof styleFromResponse === 'string' && styleFromResponse.trim()
-                ? styleFromResponse.trim()
-                : suffix.toUpperCase();
-              return { url: v as string, style };
-            });
-          if (images.length === 0 && typeof parsed.image_url === 'string') {
-            const fallbackStyle = typeof (parsed as any).style === 'string' ? (parsed as any).style : '';
-            images = [{ url: parsed.image_url, style: fallbackStyle }];
-          }
-        }
-        console.log('[generateCreative] parsed images:', images);
-        set((state) => ({
-          creatives: state.creatives.map(c => c.id === creativeId
-            ? {
-                ...c,
-                metaTitle: parsed?.meta_ad_title ?? parsed?.metaTitle ?? c.metaTitle,
-                metaCopy: parsed?.meta_ad_copy ?? parsed?.metaCopy ?? c.metaCopy,
-                images,
-                isLoading: false,
-              }
-            : c),
-          isLoadingCreatives: false,
-        }));
-        return;
+        const startPayload = Array.isArray(data) ? data[0] : data;
+        jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
+        if (!jobId) throw new Error('Webhook did not return a job_id');
+        break;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
           get().showWarning(`${humanizeError(e)}. Retrying...`);
           continue;
         }
         console.error(e);
-        set((state) => ({
-          creatives: state.creatives.filter(c => c.id !== creativeId),
-          isLoadingCreatives: false,
-        }));
+        cleanupOnFailure();
         return;
       }
     }
+    if (!jobId) { cleanupOnFailure(); return; }
+
+    // Step 2: poll the executions API until the job finishes
+    const apiHeaders = { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY };
+    const metaUrl = `${N8N_EXECUTIONS_URL}/${jobId}`;
+    const fullUrl = `${N8N_EXECUTIONS_URL}/${jobId}?includeData=true`;
+
+    for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+      // Stop polling if the user deleted this creative card.
+      if (!get().creatives.some(c => c.id === creativeId)) return;
+      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+      let meta: any;
+      try {
+        const res = await axios.get(metaUrl, { headers: apiHeaders });
+        meta = res.data;
+      } catch (e) {
+        // transient poll failure — log but keep polling, the next tick may succeed
+        console.warn('[generateCreative] poll error (will keep polling):', e);
+        continue;
+      }
+
+      if (!meta?.finished) continue;
+
+      // Finished — fetch the full execution data once
+      let full: any;
+      try {
+        const res = await axios.get(fullUrl, { headers: apiHeaders });
+        full = res.data;
+      } catch (e) {
+        console.error(e);
+        cleanupOnFailure();
+        return;
+      }
+
+      if (full?.status !== 'success') {
+        console.error('[generateCreative] execution failed with status:', full?.status);
+        get().showError(`Creative generation failed: ${full?.status ?? 'unknown error'}`);
+        cleanupOnFailure();
+        return;
+      }
+
+      const lastNode = full?.data?.resultData?.lastNodeExecuted;
+      const result = full?.data?.resultData?.runData?.[lastNode]?.[0]?.data?.main?.[0]?.[0]?.json;
+      if (!result) {
+        console.error('[generateCreative] no result data in execution:', full);
+        get().showError('Creative generation finished but returned no result');
+        cleanupOnFailure();
+        return;
+      }
+      // Extract images + styles (same shape we had before)
+      let images: ImageVariant[] = [];
+      if (Array.isArray(result.images)) {
+        images = result.images
+          .filter((s: any) => typeof s === 'string')
+          .map((url: string, i: number) => ({ url, style: String.fromCharCode(65 + i) }));
+      } else {
+        images = Object.entries(result)
+          .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
+          .map(([k, v]) => {
+            const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
+            const suffix = (match?.[1] ?? '').toLowerCase();
+            const styleKey = suffix ? `style_${suffix}` : 'style';
+            const styleFromResponse = result[styleKey];
+            const style = typeof styleFromResponse === 'string' && styleFromResponse.trim()
+              ? styleFromResponse.trim()
+              : suffix.toUpperCase();
+            return { url: v as string, style };
+          });
+        if (images.length === 0 && typeof result.image_url === 'string') {
+          const fallbackStyle = typeof result.style === 'string' ? result.style : '';
+          images = [{ url: result.image_url, style: fallbackStyle }];
+        }
+      }
+      // Final check: creative still in state (user might have deleted while we were fetching)
+      if (!get().creatives.some(c => c.id === creativeId)) return;
+
+      set((state) => ({
+        creatives: state.creatives.map(c => c.id === creativeId
+          ? {
+              ...c,
+              metaTitle: result.meta_ad_title ?? result.metaTitle ?? c.metaTitle,
+              metaCopy: result.meta_ad_copy ?? result.metaCopy ?? c.metaCopy,
+              images,
+              isLoading: false,
+            }
+          : c),
+        isLoadingCreatives: false,
+      }));
+      return;
+    }
+
+    // Polling exhausted without success
+    console.error('[generateCreative] polling timed out after', POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000, 'seconds');
+    get().showError(`Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`);
+    cleanupOnFailure();
   },
 
   sendToTelegram: async (creativeId) => {
@@ -366,10 +429,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       chosen_angle: chosenAngle ?? null,
       chosen_creative: chosenCreative ?? null,
     };
-    console.log('[sendToTelegram] request payload:', payload);
     try {
-      const { data } = await axios.post(WEBHOOKS.telegram, payload);
-      console.log('[sendToTelegram] raw response:', data);
+      await axios.post(WEBHOOKS.telegram, payload);
       set((state) => ({
         creatives: state.creatives.map(c => c.id === creativeId
           ? { ...c, isSending: false, isSent: true }
