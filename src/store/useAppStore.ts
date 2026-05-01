@@ -32,6 +32,10 @@ interface Concept {
   formulaName: string;
   aspectTested: string;
   aspectCategory: string;
+  compliant: boolean;
+  complianceType: string;
+  complianceDescription: string;
+  policyReference: string;
   sourceAngle?: Angle;
   raw?: any;
 }
@@ -57,6 +61,7 @@ interface AppState {
   angles: Angle[];
   agent1Output: string;
   operatorNote: string;
+  article: string;
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -110,7 +115,7 @@ const POLL_MAX_ATTEMPTS = 60; // 5 minutes
 
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'US', buyer: '' },
-  angles: [], agent1Output: '', operatorNote: '', concepts: [], creatives: [],
+  angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   errorBanner: null,
   noticeBanner: null,
@@ -151,9 +156,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ isLoadingAngles: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const { data } = await axios.post(WEBHOOKS.angles, get().formData);
+        const formData = get().formData;
+        console.log('[generateAngles] request payload:', formData);
+        const { data } = await axios.post(WEBHOOKS.angles, formData);
+        console.log('[generateAngles] raw response:', data);
         const outer = Array.isArray(data) ? data[0] : data;
         const agent1Output: string = outer?.agent1_output ?? '';
+        const article: string = outer?.article ?? '';
         let anglesPayload: any = outer?.angles;
         while (typeof anglesPayload === 'string') anglesPayload = JSON.parse(anglesPayload);
         const anglesArray = Array.isArray(anglesPayload) ? anglesPayload : anglesPayload?.angles;
@@ -173,7 +182,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           emotionalAnchor: item.emotional_anchor ?? '',
           raw: item,
         }));
-        set({ angles: anglesWithIds, agent1Output, operatorNote, concepts: [], creatives: [], isLoadingAngles: false });
+        set({ angles: anglesWithIds, agent1Output, operatorNote, article, concepts: [], creatives: [], isLoadingAngles: false });
         return;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -198,12 +207,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     } : null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const { data } = await axios.post(WEBHOOKS.concept, {
+        const conceptPayload = {
           formData: get().formData,
           angle: angleForWebhook,
           agent1_output: get().agent1Output,
           operator_note: get().operatorNote,
-        });
+          article: get().article,
+        };
+        console.log('[generateConcept] request payload:', conceptPayload);
+        const { data } = await axios.post(WEBHOOKS.concept, conceptPayload);
+        console.log('[generateConcept] raw response:', data);
         let payload: any = data;
         if (Array.isArray(payload)) payload = payload[0];
         if (payload && typeof payload === 'object' && typeof payload.text === 'string') {
@@ -228,6 +241,10 @@ export const useAppStore = create<AppState>((set, get) => ({
             formulaName: item.formula_name ?? formulaNameFromSplit ?? '',
             aspectTested: item.aspect_tested ?? '',
             aspectCategory: item.aspect_category ?? '',
+            compliant: item.compliant === true,
+            complianceType: typeof item.type === 'string' ? item.type : '',
+            complianceDescription: typeof item.description === 'string' ? item.description : '',
+            policyReference: typeof item.policy_reference === 'string' ? item.policy_reference : '',
             sourceAngle: angle,
             raw: item,
           };
@@ -285,6 +302,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const payload = {
       agent1_output: get().agent1Output,
+      article: get().article,
       chosen_angle,
       chosen_creative,
     };

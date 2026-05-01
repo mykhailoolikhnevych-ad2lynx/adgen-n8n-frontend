@@ -74,14 +74,43 @@ export const Column3 = () => {
           </div>
           <div>
             <label className="text-[10px] font-bold uppercase text-gray-400">Meta Copy</label>
-            <Textarea 
-              value={concept.metaCopy} 
-              onChange={(e) => updateConcept(concept.id, 'metaCopy', e.target.value)} 
-              className="bg-white text-sm" 
+            <Textarea
+              value={concept.metaCopy}
+              onChange={(e) => updateConcept(concept.id, 'metaCopy', e.target.value)}
+              className="bg-white text-sm"
             />
           </div>
 
-          <Button 
+          <div className="space-y-2 pt-2 border-t border-slate-200">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-[10px] font-bold uppercase text-gray-400">Compliance check:</span>
+              <span
+                className={`inline-block w-3 h-3 rounded-full ${concept.compliant ? 'bg-green-500' : 'bg-yellow-500'}`}
+                title={concept.compliant ? 'Compliant' : 'Not compliant'}
+                aria-label={concept.compliant ? 'Compliant' : 'Not compliant'}
+              />
+            </div>
+            {concept.complianceType && (
+              <div className="text-sm">
+                <span className="text-[10px] font-bold uppercase text-gray-400">Type:</span>{' '}
+                <span className="text-slate-700 whitespace-pre-wrap">{concept.complianceType}</span>
+              </div>
+            )}
+            {concept.complianceDescription && (
+              <div className="text-sm">
+                <span className="text-[10px] font-bold uppercase text-gray-400">Description:</span>{' '}
+                <span className="text-slate-700 whitespace-pre-wrap">{concept.complianceDescription}</span>
+              </div>
+            )}
+            {concept.policyReference && (
+              <div className="text-sm">
+                <span className="text-[10px] font-bold uppercase text-gray-400">Policy Reference:</span>{' '}
+                <span className="text-slate-700 whitespace-pre-wrap">{concept.policyReference}</span>
+              </div>
+            )}
+          </div>
+
+          <Button
             onClick={() => generateCreative(concept.id)} 
             className="w-full bg-blue-600 hover:bg-blue-700 text-white mt-2"
             disabled={isLoadingCreatives}
