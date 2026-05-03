@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import type { Creative } from '@/store/useAppStore';
 import { Button } from '@/components/ui/button';
@@ -45,6 +45,16 @@ export const Column4 = () => {
     setLightbox({ creative, index });
   };
 
+  // Smoothly scroll Column 4 to the bottom whenever a new creative is added.
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const prevCreativesCount = useRef(creatives.length);
+  useEffect(() => {
+    if (creatives.length > prevCreativesCount.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+    prevCreativesCount.current = creatives.length;
+  }, [creatives.length]);
+
   const currentImage = lightbox ? lightbox.creative.images[lightbox.index] : null;
 
   return (
@@ -72,21 +82,42 @@ export const Column4 = () => {
 
           <div>
             <label className="text-[10px] font-bold uppercase text-gray-400">Meta Ad Title</label>
-            <p className="text-sm font-semibold whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
-              {creative.metaTitle}
-            </p>
+            {creative.isLoading ? (
+              <div className="bg-slate-50 rounded-md px-3 py-2 border">
+                <Skeleton className="h-4 w-3/4 rounded" />
+              </div>
+            ) : (
+              <p className="text-sm font-semibold whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
+                {creative.metaTitle}
+              </p>
+            )}
           </div>
           <div>
             <label className="text-[10px] font-bold uppercase text-gray-400">Meta Ad Copy</label>
-            <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border min-h-[100px]">
-              {creative.metaCopy}
-            </p>
+            {creative.isLoading ? (
+              <div className="bg-slate-50 rounded-md px-3 py-2 border min-h-[100px] space-y-2">
+                <Skeleton className="h-3 w-full rounded" />
+                <Skeleton className="h-3 w-11/12 rounded" />
+                <Skeleton className="h-3 w-4/5 rounded" />
+                <Skeleton className="h-3 w-2/3 rounded" />
+              </div>
+            ) : (
+              <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border min-h-[100px]">
+                {creative.metaCopy}
+              </p>
+            )}
           </div>
           <div>
             <label className="text-[10px] font-bold uppercase text-gray-400">CTA</label>
-            <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
-              {creative.cta}
-            </p>
+            {creative.isLoading ? (
+              <div className="bg-slate-50 rounded-md px-3 py-2 border">
+                <Skeleton className="h-4 w-1/3 rounded" />
+              </div>
+            ) : (
+              <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
+                {creative.cta}
+              </p>
+            )}
           </div>
 
           <div>
@@ -146,6 +177,8 @@ export const Column4 = () => {
         </Card>
       ))}
 
+      <div ref={bottomRef} aria-hidden="true" />
+
       {lightbox && currentImage && (
         <div
           className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
@@ -187,15 +220,15 @@ export const Column4 = () => {
               </div>
               <div>
                 <span className="font-bold">Meta Ad Title:</span>{' '}
-                <span className="text-gray-200">{lightbox.creative.metaTitle}</span>
+                <span className="text-gray-200">{currentImage.metaTitle || lightbox.creative.metaTitle}</span>
               </div>
               <div>
                 <span className="font-bold">Meta Ad Copy:</span>{' '}
-                <span className="text-gray-200 whitespace-pre-wrap">{lightbox.creative.metaCopy}</span>
+                <span className="text-gray-200 whitespace-pre-wrap">{currentImage.metaCopy || lightbox.creative.metaCopy}</span>
               </div>
               <div>
                 <span className="font-bold">CTA:</span>{' '}
-                <span className="text-gray-200">{lightbox.creative.cta}</span>
+                <span className="text-gray-200">{currentImage.cta || lightbox.creative.cta}</span>
               </div>
             </div>
           </div>

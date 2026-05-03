@@ -39,7 +39,13 @@ interface Concept {
   sourceAngle?: Angle;
   raw?: any;
 }
-export interface ImageVariant { url: string; style: string; }
+export interface ImageVariant {
+  url: string;
+  style: string;
+  metaTitle: string;
+  metaCopy: string;
+  cta: string;
+}
 export interface Creative {
   id: string;
   metaTitle: string;
@@ -62,6 +68,8 @@ interface AppState {
   agent1Output: string;
   operatorNote: string;
   article: string;
+  imageGenerationModel: string;
+  adLanguage: string;
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -83,6 +91,8 @@ interface AppState {
   dismissError: () => void;
   showWarning: (message: string) => void;
   dismissNotice: () => void;
+  setImageGenerationModel: (value: string) => void;
+  setAdLanguage: (value: string) => void;
 }
 
 let _noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -117,6 +127,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'US', buyer: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
+  imageGenerationModel: 'google/gemini-3.1-flash-image-preview',
+  adLanguage: 'English',
+  setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
+  setAdLanguage: (value) => set({ adLanguage: value }),
   errorBanner: null,
   noticeBanner: null,
 
@@ -305,6 +319,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       article: get().article,
       chosen_angle,
       chosen_creative,
+      image_generation_model: get().imageGenerationModel,
+      ad_language: get().adLanguage,
     };
 
     const cleanupOnFailure = () => {
@@ -383,30 +399,56 @@ export const useAppStore = create<AppState>((set, get) => ({
         cleanupOnFailure();
         return;
       }
-      // Extract images + styles (same shape we had before)
+      // Extract images + per-variant texts (style, meta_title, meta_copy, banner_cta)
+      const fallbackConcept = get().concepts.find(c => c.id === conceptId);
+      const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
+
       let images: ImageVariant[] = [];
       if (Array.isArray(result.images)) {
         images = result.images
           .filter((s: any) => typeof s === 'string')
-          .map((url: string, i: number) => ({ url, style: String.fromCharCode(65 + i) }));
+          .map((url: string, i: number) => ({
+            url,
+            style: String.fromCharCode(65 + i),
+            metaTitle: '',
+            metaCopy: '',
+            cta: '',
+          }));
       } else {
         images = Object.entries(result)
           .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
           .map(([k, v]) => {
             const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
             const suffix = (match?.[1] ?? '').toLowerCase();
-            const styleKey = suffix ? `style_${suffix}` : 'style';
-            const styleFromResponse = result[styleKey];
-            const style = typeof styleFromResponse === 'string' && styleFromResponse.trim()
-              ? styleFromResponse.trim()
-              : suffix.toUpperCase();
-            return { url: v as string, style };
+
+            const styleFromResponse = readString(suffix ? `style_${suffix}` : 'style');
+            const style = styleFromResponse.trim() || suffix.toUpperCase();
+
+            const metaTitle = readString(suffix ? `meta_title_${suffix}` : 'meta_title')
+              || readString('meta_ad_title');
+            const metaCopy = readString(suffix ? `meta_copy_${suffix}` : 'meta_copy')
+              || readString('meta_ad_copy');
+            const cta = readString(suffix ? `banner_cta_${suffix}` : 'banner_cta');
+
+            return { url: v as string, style, metaTitle, metaCopy, cta };
           });
         if (images.length === 0 && typeof result.image_url === 'string') {
-          const fallbackStyle = typeof result.style === 'string' ? result.style : '';
-          images = [{ url: result.image_url, style: fallbackStyle }];
+          images = [{
+            url: result.image_url,
+            style: readString('style'),
+            metaTitle: readString('meta_title') || readString('meta_ad_title'),
+            metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
+            cta: readString('banner_cta'),
+          }];
         }
       }
+
+      // Card-level fields take values from the first variant; if it has none, fall back to the concept.
+      const firstVariant = images[0];
+      const cardMetaTitle = firstVariant?.metaTitle || readString('meta_ad_title') || fallbackConcept?.metaTitle || '';
+      const cardMetaCopy = firstVariant?.metaCopy || readString('meta_ad_copy') || fallbackConcept?.metaCopy || '';
+      const cardCta = firstVariant?.cta || fallbackConcept?.cta || '';
+
       // Final check: creative still in state (user might have deleted while we were fetching)
       if (!get().creatives.some(c => c.id === creativeId)) return;
 
@@ -414,10 +456,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         creatives: state.creatives.map(c => c.id === creativeId
           ? {
               ...c,
-              metaTitle: result.meta_ad_title ?? result.metaTitle ?? c.metaTitle,
-              metaCopy: result.meta_ad_copy ?? result.metaCopy ?? c.metaCopy,
+              metaTitle: cardMetaTitle,
+              metaCopy: cardMetaCopy,
+              cta: cardCta,
               images,
               isLoading: false,
+              // Refresh the snapshot that goes to send_to_tg: keep banner_hook/banner_accent
+              // and other concept-side fields, but overwrite meta_ad_title / meta_ad_copy /
+              // banner_cta with the actual webhook output (which may be translated to ad_language).
+              chosenCreative: {
+                ...(c.chosenCreative ?? {}),
+                meta_ad_title: cardMetaTitle,
+                meta_ad_copy: cardMetaCopy,
+                banner_cta: cardCta,
+              },
             }
           : c),
         isLoadingCreatives: false,
