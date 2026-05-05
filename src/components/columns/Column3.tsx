@@ -11,6 +11,8 @@ const IMAGE_MODELS: { label: string; value: string }[] = [
   { label: 'Seedream 4.5', value: 'bytedance-seed/seedream-4.5' },
 ];
 
+const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
+
 const AD_LANGUAGES: string[] = [
   'English',
   'Arabic',
@@ -43,8 +45,10 @@ export const Column3 = () => {
     clearConcepts,
     imageGenerationModel,
     adLanguage,
+    aspectRatio,
     setImageGenerationModel,
     setAdLanguage,
+    setAspectRatio,
   } = useAppStore();
 
   const settingsBlock = (
@@ -59,6 +63,18 @@ export const Column3 = () => {
         >
           {IMAGE_MODELS.map((m) => (
             <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Aspect ratio</label>
+        <select
+          value={aspectRatio}
+          onChange={(e) => setAspectRatio(e.target.value)}
+          className="w-full text-sm border rounded-md px-2 py-1 bg-white"
+        >
+          {ASPECT_RATIOS.map((r) => (
+            <option key={r} value={r}>{r}</option>
           ))}
         </select>
       </div>

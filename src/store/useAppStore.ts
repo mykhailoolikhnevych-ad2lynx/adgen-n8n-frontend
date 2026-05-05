@@ -70,6 +70,7 @@ interface AppState {
   article: string;
   imageGenerationModel: string;
   adLanguage: string;
+  aspectRatio: string;
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -93,6 +94,7 @@ interface AppState {
   dismissNotice: () => void;
   setImageGenerationModel: (value: string) => void;
   setAdLanguage: (value: string) => void;
+  setAspectRatio: (value: string) => void;
 }
 
 let _noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -129,8 +131,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   imageGenerationModel: 'google/gemini-3.1-flash-image-preview',
   adLanguage: 'English',
+  aspectRatio: '1:1',
   setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
   setAdLanguage: (value) => set({ adLanguage: value }),
+  setAspectRatio: (value) => set({ aspectRatio: value }),
   errorBanner: null,
   noticeBanner: null,
 
@@ -321,6 +325,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       chosen_creative,
       image_generation_model: get().imageGenerationModel,
       ad_language: get().adLanguage,
+      aspect_ratio: get().aspectRatio,
     };
 
     const cleanupOnFailure = () => {
