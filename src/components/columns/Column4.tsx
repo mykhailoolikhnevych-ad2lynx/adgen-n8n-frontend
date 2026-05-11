@@ -198,6 +198,14 @@ export const Column4 = () => {
           </div>
 
           <div className="space-y-2">
+            <Button
+              onClick={() => downloadCreativeBatch(creative, index)}
+              disabled={creative.isLoading || creative.images.length === 0}
+              className="w-full bg-black hover:bg-gray-800 text-white"
+            >
+              Download
+            </Button>
+
             {(() => {
               let label = 'Send to Telegram';
               let bg = 'bg-[#0088cc] hover:bg-[#0077b3]';
@@ -222,14 +230,6 @@ export const Column4 = () => {
                 </Button>
               );
             })()}
-
-            <Button
-              onClick={() => downloadCreativeBatch(creative, index)}
-              disabled={creative.isLoading || creative.images.length === 0}
-              className="w-full bg-black hover:bg-gray-800 text-white"
-            >
-              Download
-            </Button>
           </div>
         </Card>
       ))}
