@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
+import JSZip from 'jszip';
 import { useAppStore } from '@/store/useAppStore';
 import type { Creative } from '@/store/useAppStore';
 import { Button } from '@/components/ui/button';
@@ -6,6 +7,52 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 
 type LightboxState = { creative: Creative; index: number } | null;
+
+const sanitizeForFilename = (s: string): string =>
+  s.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+
+const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => {
+  const zip = new JSZip();
+
+  creative.images.forEach((img, i) => {
+    const variantLetter = String.fromCharCode(65 + i); // A, B, C, D
+    if (!img.url.startsWith('data:')) return;
+    const commaIdx = img.url.indexOf(',');
+    if (commaIdx === -1) return;
+    const header = img.url.slice(0, commaIdx);
+    const base64 = img.url.slice(commaIdx + 1);
+    const mimeMatch = header.match(/data:([^;]+)/);
+    const mime = mimeMatch?.[1] ?? 'image/jpeg';
+    const ext = mime.split('/')[1] || 'jpg';
+    const styleSafe = sanitizeForFilename(img.style || variantLetter);
+    zip.file(`${variantLetter}_${styleSafe}.${ext}`, base64, { base64: true });
+  });
+
+  const lines: string[] = [];
+  lines.push(`Creatives batch ${batchIndex + 1}`);
+  lines.push('='.repeat(40));
+  lines.push('');
+  creative.images.forEach((img, i) => {
+    const variantLetter = String.fromCharCode(65 + i);
+    lines.push(`--- Variant ${variantLetter} ---`);
+    if (img.style) lines.push(`Style: ${img.style}`);
+    if (img.metaTitle) lines.push(`Meta Ad Title: ${img.metaTitle}`);
+    if (img.metaCopy) lines.push(`Meta Ad Copy: ${img.metaCopy}`);
+    if (img.cta) lines.push(`CTA: ${img.cta}`);
+    lines.push('');
+  });
+  zip.file('info.txt', lines.join('\n'));
+
+  const blob = await zip.generateAsync({ type: 'blob' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `creatives_batch_${batchIndex + 1}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
 
 export const Column4 = () => {
   const { creatives, deleteCreative, sendToTelegram } = useAppStore();
@@ -150,30 +197,40 @@ export const Column4 = () => {
             </div>
           </div>
 
-          {(() => {
-            let label = 'Send to Telegram';
-            let bg = 'bg-green-600 hover:bg-green-700';
-            let disabled = false;
-            if (creative.isLoading) {
-              label = 'Generating images...';
-              disabled = true;
-            } else if (creative.isSending) {
-              label = 'Sending...';
-              disabled = true;
-            } else if (creative.isSent) {
-              label = 'Sent to Telegram';
-              bg = 'bg-slate-500 hover:bg-slate-600';
-            }
-            return (
-              <Button
-                onClick={() => sendToTelegram(creative.id)}
-                disabled={disabled}
-                className={`w-full text-white ${bg}`}
-              >
-                {label}
-              </Button>
-            );
-          })()}
+          <div className="space-y-2">
+            {(() => {
+              let label = 'Send to Telegram';
+              let bg = 'bg-[#0088cc] hover:bg-[#0077b3]';
+              let disabled = false;
+              if (creative.isLoading) {
+                label = 'Generating images...';
+                disabled = true;
+              } else if (creative.isSending) {
+                label = 'Sending...';
+                disabled = true;
+              } else if (creative.isSent) {
+                label = 'Sent to Telegram';
+                bg = 'bg-slate-500 hover:bg-slate-600';
+              }
+              return (
+                <Button
+                  onClick={() => sendToTelegram(creative.id)}
+                  disabled={disabled}
+                  className={`w-full text-white ${bg}`}
+                >
+                  {label}
+                </Button>
+              );
+            })()}
+
+            <Button
+              onClick={() => downloadCreativeBatch(creative, index)}
+              disabled={creative.isLoading || creative.images.length === 0}
+              className="w-full bg-black hover:bg-gray-800 text-white"
+            >
+              Download
+            </Button>
+          </div>
         </Card>
       ))}
 
