@@ -13,6 +13,7 @@ interface InfoTooltipProps {
   className?: string;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
+  iconSize?: number;
 }
 
 export const InfoTooltip: React.FC<InfoTooltipProps> = ({
@@ -20,19 +21,20 @@ export const InfoTooltip: React.FC<InfoTooltipProps> = ({
   className,
   side = "top",
   align = "start",
+  iconSize = 14,
 }) => {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <button
           type="button"
-          aria-label="More information"
+          aria-label="Детальніше"
           className={cn(
             "inline-flex shrink-0 align-middle text-slate-400 transition-colors hover:text-slate-700",
             className,
           )}
         >
-          <Info size={14} weight="regular" />
+          <Info size={iconSize} weight="regular" />
         </button>
       </TooltipTrigger>
       <TooltipContent side={side} align={align}>

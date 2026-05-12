@@ -6,13 +6,19 @@ import { Card } from '@/components/ui/card';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 
 const ANGLES_HELP =
-  "Три стратегічні підходи, які ШІ згенерував із твого вводу. Кожен — це окрема психологічна «причина зупинити скрол», побудована на іншому когнітивному тригері (Curiosity Gap, Self-Reference, Loss Aversion, Pattern Interrupt або Belief Shift). Це НЕ три варіанти заголовка — це три різні стратегії. Обери ту, що найкраще пасує твоїй аудиторії та інтуїції, і натисни «Select & Next», щоб згенерувати варіанти хуків.";
+  "Три стратегічні підходи, які ШІ згенерував. Кожен — це окрема психологічна «причина зупинити скрол», побудована на іншому когнітивному тригері (Curiosity Gap, Self-Reference, Loss Aversion, Pattern Interrupt або Belief Shift). Це НЕ три варіанти заголовка — це три різні стратегії. Обери ту, що найкраще пасує аудиторії, і натисни «Select & Next», щоб згенерувати варіанти хуків.";
 
 const DIRECTION_HELP =
-  "Опис у 15–25 слів стратегічного підходу цього кута — ПРЕМІСА, яку стверджує банер, але ще не сам заголовок. Приклад: «Зайти через підхід „мало хто знає\" і спертися на маловідому житлову програму з самої статті». Можеш редагувати, якщо хочеш скоригувати кут перед генерацією хуків — агент-копірайтер читає саме цей текст, щоб вирішити, як звучатиме банер.";
+  "Опис у 15–25 слів стратегічного підходу цього кута, яку стверджує банер, але ще не сам заголовок. Приклад: «Зайти через підхід „мало хто знає\" і спертися на маловідому житлову програму з самої статті». Можеш редагувати, якщо хочеш скоригувати кут перед генерацією хуків — агент-копірайтер читає саме цей текст, щоб вирішити, як звучатиме банер.";
 
 const HOOK_SEED_HELP =
   "Чорнова ідея заголовка банера на 8–12 слів. Вона навмисно неповна — це сирий концепт без структури формули. Приклад: «вигода, про яку більшість пенсіонерів у цій ситуації ніколи не чує». Наступний агент (Копірайтер) перетворить це на готовий хук за однією з формул (F2/F3/F4/F6). Поміняй, якщо хочеш інший стартовий концепт, або залиш як є, щоб ШІ зробив це сам.";
+
+const AWARENESS_HELP =
+  "Рівень обізнаності холодної аудиторії з темою. L1 — Unaware (взагалі не шукають цю тему, не знають про неї). L2 — Problem-Aware (знають про проблему, але не про конкретне рішення). RSOC-трафік на Meta зазвичай L1–L2 — це впливає на те, наскільки прямою чи натяковою має бути подача.";
+
+const EMOTION_HELP =
+  "Емоційний якір, на якому будується цей кут — одна емоція зі списку (Discovery, Hope, Relief, Concern, Pride, Indignation, Confidence, Curiosity). Визначає тон хука і настрій візуалу. Один кут = одна емоція, без міксів.";
 
 export const Column2 = () => {
   const { angles, updateAngle, generateConcept, generateAngles, isLoadingAngles, isLoadingConcepts } = useAppStore();
@@ -72,12 +78,14 @@ export const Column2 = () => {
           </div>
 
           <div className="text-xs space-y-1">
-            <div>
-              <span className="font-bold uppercase text-gray-400">Awareness:</span>{' '}
+            <div className="flex items-center gap-1">
+              <span className="font-bold uppercase text-gray-400">Awareness:</span>
+              <InfoTooltip text={AWARENESS_HELP} iconSize={12} />
               <span className="text-slate-700">{angle.awarenessLevel || '—'}</span>
             </div>
-            <div>
-              <span className="font-bold uppercase text-gray-400">Emotion:</span>{' '}
+            <div className="flex items-center gap-1">
+              <span className="font-bold uppercase text-gray-400">Emotion:</span>
+              <InfoTooltip text={EMOTION_HELP} iconSize={12} />
               <span className="text-slate-700">{angle.emotionalAnchor || '—'}</span>
             </div>
           </div>
