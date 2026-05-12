@@ -2,6 +2,10 @@ import React, { useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { InfoTooltip } from '@/components/ui/InfoTooltip';
+
+const INPUT_DATA_HELP =
+  "Стартова точка всього пайплайну. Тут ти вводиш URL статті лендингу, 1–3 ключі, на які користувачі мають натиснути, цільове GEO та своє ім'я байєра. ШІ використовує статтю й ключові слова, щоб зрозуміти, хто твоя аудиторія; усе далі — кути, хуки, банери — будується на тому, що ти ввів тут. Слабка стаття або неправильні ключі зіпсують кожен наступний крок.";
 
 export const Column1 = () => {
   const { formData, updateFormData, generateAngles, isLoadingAngles } = useAppStore();
@@ -49,7 +53,10 @@ export const Column1 = () => {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex justify-between items-center mb-2">
-        <h2 className="font-bold text-xl">1. Input Data</h2>
+        <h2 className="flex items-center gap-1.5 font-bold text-xl">
+          1. Input Data
+          <InfoTooltip text={INPUT_DATA_HELP} />
+        </h2>
         <Button variant="ghost" size="sm" onClick={fillTestData}>Test data</Button>
       </div>
       

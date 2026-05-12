@@ -4,6 +4,7 @@ import { Column1 } from './columns/Column1';
 import { Column2 } from './columns/Column2';
 import { Column3 } from './columns/Column3';
 import { Column4 } from './columns/Column4';
+import { TooltipProvider } from './ui/tooltip';
 
 const formatErrorArg = (a: unknown): string => {
   if (a instanceof Error) return a.message;
@@ -46,7 +47,7 @@ export default function MainApp() {
   }, []);
 
   return (
-    <>
+    <TooltipProvider>
       <div className="fixed top-0 inset-x-0 z-50 flex flex-col">
         {errorBanner && (
           <div
@@ -94,6 +95,6 @@ export default function MainApp() {
           <Column4 />
         </div>
       </div>
-    </>
+    </TooltipProvider>
   );
 }
