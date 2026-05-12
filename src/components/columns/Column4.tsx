@@ -5,6 +5,10 @@ import type { Creative } from '@/store/useAppStore';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import { InfoTooltip } from '@/components/ui/InfoTooltip';
+
+const CREATIVES_BATCHES_HELP =
+  "Готові пакети креативів — кожен містить 4 варіанти банера (A / B / C / D) в різних візуальних стилях: YouTube-thumbnail, organic-social, highlight-block та illustrated. Усі 4 використовують той самий хук, акцент і CTA — тестуємо, як саме візуальний стиль впливає на CTR. Можна завантажити пакет ZIP-ом або одразу надіслати в Telegram-канал команди.";
 
 type LightboxState = { creative: Creative; index: number } | null;
 
@@ -106,7 +110,10 @@ export const Column4 = () => {
 
   return (
     <div className="flex flex-col gap-4">
-      <h2 className="font-bold text-xl mb-2">4. Creatives batches</h2>
+      <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2">
+        4. Creatives batches
+        <InfoTooltip text={CREATIVES_BATCHES_HELP} />
+      </h2>
 
       {creatives.length === 0 && (
         <div className="text-gray-400 italic">Waiting for final creatives...</div>
