@@ -129,7 +129,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'US', buyer: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
-  imageGenerationModel: 'google/gemini-3.1-flash-image-preview',
+  imageGenerationModel: 'google/gemini-3-pro-image-preview',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
   setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
