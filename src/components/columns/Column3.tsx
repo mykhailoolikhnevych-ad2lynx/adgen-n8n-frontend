@@ -190,9 +190,9 @@ export const Column3 = () => {
         const ctaVal = isUk ? (concept.translation?.cta ?? '') : concept.cta;
         const metaTitleVal = isUk ? (concept.translation?.metaTitle ?? '') : concept.metaTitle;
         const metaCopyVal = isUk ? (concept.translation?.metaCopy ?? '') : concept.metaCopy;
-        let translateLabel = '🇺🇦 Перекласти';
-        if (concept.isTranslating) translateLabel = 'Перекладаю…';
-        else if (isUk) translateLabel = '🇺🇸 Оригінал';
+        let translateLabel = '🇺🇦 Translate';
+        if (concept.isTranslating) translateLabel = 'Translating…';
+        else if (isUk) translateLabel = '🇺🇸 Original';
         return (
         <Card key={concept.id} className="p-4 space-y-3 bg-slate-50 shadow-sm border-blue-100">
           <div className="flex items-center justify-between gap-2">

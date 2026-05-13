@@ -124,9 +124,9 @@ export const Column4 = () => {
         const metaTitleVal = isUk ? (creative.translation?.metaTitle ?? '') : creative.metaTitle;
         const metaCopyVal = isUk ? (creative.translation?.metaCopy ?? '') : creative.metaCopy;
         const ctaVal = isUk ? (creative.translation?.cta ?? '') : creative.cta;
-        let translateLabel = '🇺🇦 Перекласти';
-        if (creative.isTranslating) translateLabel = 'Перекладаю…';
-        else if (isUk) translateLabel = '🇺🇸 Оригінал';
+        let translateLabel = '🇺🇦 Translate';
+        if (creative.isTranslating) translateLabel = 'Translating…';
+        else if (isUk) translateLabel = '🇺🇸 Original';
         return (
         <Card
           key={creative.id}

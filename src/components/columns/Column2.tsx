@@ -59,9 +59,9 @@ export const Column2 = () => {
         const directionValue = isUk ? (angle.translation?.direction ?? '') : angle.direction;
         const hookSeedValue = isUk ? (angle.translation?.hookSeed ?? '') : angle.hookSeed;
         const whyWorksValue = isUk ? (angle.translation?.whyWorks ?? '') : angle.whyWorks;
-        let translateLabel = '🇺🇦 Перекласти';
-        if (angle.isTranslating) translateLabel = 'Перекладаю…';
-        else if (isUk) translateLabel = '🇺🇸 Оригінал';
+        let translateLabel = '🇺🇦 Translate';
+        if (angle.isTranslating) translateLabel = 'Translating…';
+        else if (isUk) translateLabel = '🇺🇸 Original';
         return (
         <Card key={angle.id} className="p-4 space-y-3 bg-slate-50">
           <div className="flex items-center justify-between gap-2">
