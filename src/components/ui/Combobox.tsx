@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { CaretDown } from "@phosphor-icons/react";
 
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -77,7 +78,14 @@ export const Combobox: React.FC<ComboboxProps> = ({
         className={cn(
           error && "border-red-500 focus-visible:ring-red-500",
           inputClassName,
+          "pr-7", // keep right padding for chevron — must come after inputClassName so it wins
         )}
+      />
+      <CaretDown
+        size={14}
+        weight="bold"
+        aria-hidden="true"
+        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-500"
       />
       {open && filtered.length > 0 && (
         <ul
