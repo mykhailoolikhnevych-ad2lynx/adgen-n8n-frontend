@@ -53,6 +53,10 @@ export const Combobox: React.FC<ComboboxProps> = ({
     onChange(option);
     setOpen(false);
     setQuery("");
+    // Blur the input so a subsequent click triggers a fresh onFocus → dropdown reopens.
+    // Without this, the input retains focus (mouseDown preventDefault below) and onFocus never re-fires.
+    const input = containerRef.current?.querySelector<HTMLInputElement>("input");
+    input?.blur();
   };
 
   return (
@@ -64,7 +68,17 @@ export const Combobox: React.FC<ComboboxProps> = ({
           setOpen(true);
           setQuery("");
         }}
+        onClick={() => {
+          // If the input is already focused but the dropdown was closed (e.g. user picked
+          // an option and clicked the field again), force re-open with a clean query.
+          if (!open) {
+            setOpen(true);
+            setQuery("");
+          }
+        }}
         onChange={(e) => {
+          // Typing should always reveal the dropdown with the typed query as the filter.
+          if (!open) setOpen(true);
           setQuery(e.target.value);
           onChange(e.target.value);
         }}
@@ -85,7 +99,7 @@ export const Combobox: React.FC<ComboboxProps> = ({
         size={14}
         weight="bold"
         aria-hidden="true"
-        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-500"
+        className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-900"
       />
       {open && filtered.length > 0 && (
         <ul
