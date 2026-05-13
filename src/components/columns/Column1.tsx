@@ -7,6 +7,90 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip';
 const INPUT_DATA_HELP =
   "Стартова точка всього пайплайну. Вводимо URL статті лендингу, 1–3 ключі, цільове GEO та ім'я байєра. ШІ використовує статтю й ключові слова, щоб зрозуміти, хто аудиторія; усе далі — кути, хуки, банери — будується на тому, що ввели тут.";
 
+const COUNTRIES: string[] = [
+  'United States (US)',
+  'United Kingdom (UK)',
+  'Canada (CA)',
+  'Australia (AU)',
+  'New Zealand (NZ)',
+  'Ireland (IE)',
+  'Germany (DE)',
+  'Austria (AT)',
+  'Switzerland (CH)',
+  'France (FR)',
+  'Belgium (BE)',
+  'Netherlands (NL)',
+  'Luxembourg (LU)',
+  'Spain (ES)',
+  'Portugal (PT)',
+  'Italy (IT)',
+  'Greece (GR)',
+  'Cyprus (CY)',
+  'Malta (MT)',
+  'Poland (PL)',
+  'Czech Republic (CZ)',
+  'Slovakia (SK)',
+  'Hungary (HU)',
+  'Romania (RO)',
+  'Bulgaria (BG)',
+  'Slovenia (SI)',
+  'Croatia (HR)',
+  'Serbia (RS)',
+  'Bosnia and Herzegovina (BA)',
+  'North Macedonia (MK)',
+  'Albania (AL)',
+  'Kosovo (XK)',
+  'Montenegro (ME)',
+  'Estonia (EE)',
+  'Latvia (LV)',
+  'Lithuania (LT)',
+  'Sweden (SE)',
+  'Denmark (DK)',
+  'Norway (NO)',
+  'Finland (FI)',
+  'Iceland (IS)',
+  'Ukraine (UA)',
+  'Belarus (BY)',
+  'Russia (RU)',
+  'Moldova (MD)',
+  'Georgia (GE)',
+  'Turkey (TR)',
+  'Israel (IL)',
+  'United Arab Emirates (AE)',
+  'Saudi Arabia (SA)',
+  'Qatar (QA)',
+  'Kuwait (KW)',
+  'Egypt (EG)',
+  'Morocco (MA)',
+  'South Africa (ZA)',
+  'Nigeria (NG)',
+  'Kenya (KE)',
+  'India (IN)',
+  'Pakistan (PK)',
+  'Bangladesh (BD)',
+  'Sri Lanka (LK)',
+  'Indonesia (ID)',
+  'Malaysia (MY)',
+  'Singapore (SG)',
+  'Thailand (TH)',
+  'Vietnam (VN)',
+  'Philippines (PH)',
+  'Japan (JP)',
+  'South Korea (KR)',
+  'Taiwan (TW)',
+  'Hong Kong (HK)',
+  'China (CN)',
+  'Mexico (MX)',
+  'Brazil (BR)',
+  'Argentina (AR)',
+  'Chile (CL)',
+  'Colombia (CO)',
+  'Peru (PE)',
+  'Uruguay (UY)',
+  'Costa Rica (CR)',
+  'Panama (PA)',
+];
+
 export const Column1 = () => {
   const { formData, updateFormData, generateAngles, isLoadingAngles } = useAppStore();
   
@@ -14,6 +98,7 @@ export const Column1 = () => {
   const [errors, setErrors] = useState({
     articleUrl: false,
     keyword1: false,
+    geo: false,
     buyer: false,
   });
 
@@ -22,13 +107,14 @@ export const Column1 = () => {
     const newErrors = {
       articleUrl: !formData.articleUrl.trim(),
       keyword1: !formData.keyword1.trim(),
+      geo: !formData.geo.trim(),
       buyer: !formData.buyer.trim(),
     };
-    
+
     setErrors(newErrors);
 
     // Если есть хотя бы одна ошибка - останавливаем отправку
-    if (newErrors.articleUrl || newErrors.keyword1 || newErrors.buyer) {
+    if (newErrors.articleUrl || newErrors.keyword1 || newErrors.geo || newErrors.buyer) {
       return;
     }
 
@@ -47,6 +133,7 @@ export const Column1 = () => {
   const fillTestData = () => {
     handleChange('articleUrl', import.meta.env.PUBLIC_TEST_ARTICLE_URL);
     handleChange('keyword1', import.meta.env.PUBLIC_TEST_KEYWORD1);
+    handleChange('geo', import.meta.env.PUBLIC_TEST_GEO || 'United States (US)');
     handleChange('buyer', import.meta.env.PUBLIC_TEST_BUYER);
   };
 
@@ -104,11 +191,20 @@ export const Column1 = () => {
 
         {/* GEO */}
         <div>
-          <label className="text-xs font-medium uppercase text-slate-500">GEO</label>
-          <Input 
-            value={formData.geo} 
-            onChange={(e) => handleChange('geo', e.target.value)} 
+          <label className="text-xs font-medium uppercase text-slate-500">GEO *</label>
+          <Input
+            list="geo-list"
+            value={formData.geo}
+            onChange={(e) => handleChange('geo', e.target.value)}
+            placeholder="Type to search… e.g. United States, Ukraine, DE"
+            className={errors.geo ? "border-red-500 focus-visible:ring-red-500" : ""}
           />
+          <datalist id="geo-list">
+            {COUNTRIES.map((c) => (
+              <option key={c} value={c} />
+            ))}
+          </datalist>
+          {errors.geo && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
         </div>
 
         {/* Buyer (Required) */}
