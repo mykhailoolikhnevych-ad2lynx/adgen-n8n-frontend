@@ -8,7 +8,8 @@ interface ComboboxProps {
   onChange: (v: string) => void;
   options: string[];
   placeholder?: string;
-  className?: string;
+  className?: string;       // wrapper div
+  inputClassName?: string;  // input element — passed through to Input
   error?: boolean;
 }
 
@@ -18,6 +19,7 @@ export const Combobox: React.FC<ComboboxProps> = ({
   options,
   placeholder,
   className,
+  inputClassName,
   error,
 }) => {
   const [open, setOpen] = useState(false);
@@ -74,6 +76,7 @@ export const Combobox: React.FC<ComboboxProps> = ({
         }}
         className={cn(
           error && "border-red-500 focus-visible:ring-red-500",
+          inputClassName,
         )}
       />
       {open && filtered.length > 0 && (

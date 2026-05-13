@@ -155,7 +155,8 @@ export const Column3 = () => {
           value={adLanguage}
           onChange={setAdLanguage}
           options={AD_LANGUAGES}
-          placeholder="Click to choose or type… e.g. English (US), Ukrainian, DE"
+          placeholder="Click to choose or type… e.g. English (US), Ukrainian"
+          inputClassName="text-sm rounded-md bg-white px-2"
         />
       </div>
     </div>
