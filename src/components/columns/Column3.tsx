@@ -118,6 +118,7 @@ export const Column3 = () => {
     setImageGenerationModel,
     setAdLanguage,
     setAspectRatio,
+    toggleConceptTranslation,
   } = useAppStore();
 
   const settingsBlock = (
@@ -182,12 +183,32 @@ export const Column3 = () => {
 
       {settingsBlock}
 
-      {concepts.map((concept, index) => (
+      {concepts.map((concept, index) => {
+        const isUk = !!concept.showTranslation && !!concept.translation;
+        const hookVal = isUk ? (concept.translation?.hook ?? '') : concept.hook;
+        const accentVal = isUk ? (concept.translation?.accent ?? '') : concept.accent;
+        const ctaVal = isUk ? (concept.translation?.cta ?? '') : concept.cta;
+        const metaTitleVal = isUk ? (concept.translation?.metaTitle ?? '') : concept.metaTitle;
+        const metaCopyVal = isUk ? (concept.translation?.metaCopy ?? '') : concept.metaCopy;
+        let translateLabel = '🇺🇦 Перекласти';
+        if (concept.isTranslating) translateLabel = 'Перекладаю…';
+        else if (isUk) translateLabel = '🇺🇸 Оригінал';
+        return (
         <Card key={concept.id} className="p-4 space-y-3 bg-slate-50 shadow-sm border-blue-100">
-          <div className="text-sm font-semibold text-blue-800">
-            Creative {index + 1}
-            {concept.formula && <span> — {concept.formula}</span>}
-            {concept.formulaName && <span> — {concept.formulaName}</span>}
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-blue-800">
+              Creative {index + 1}
+              {concept.formula && <span> — {concept.formula}</span>}
+              {concept.formulaName && <span> — {concept.formulaName}</span>}
+            </div>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => toggleConceptTranslation(concept.id)}
+              disabled={concept.isTranslating}
+            >
+              {translateLabel}
+            </Button>
           </div>
 
           {concept.aspectCategory && (
@@ -204,9 +225,10 @@ export const Column3 = () => {
               <InfoTooltip text={HOOK_HELP} iconSize={11} />
             </label>
             <Textarea
-              value={concept.hook}
+              value={hookVal}
               onChange={(e) => updateConcept(concept.id, 'hook', e.target.value)}
-              className="bg-white text-sm resize-none"
+              readOnly={isUk}
+              className={`bg-white text-sm resize-none ${isUk ? 'cursor-default opacity-95' : ''}`}
             />
           </div>
           <div>
@@ -215,9 +237,10 @@ export const Column3 = () => {
               <InfoTooltip text={ACCENT_HELP} iconSize={11} />
             </label>
             <Textarea
-              value={concept.accent}
+              value={accentVal}
               onChange={(e) => updateConcept(concept.id, 'accent', e.target.value)}
-              className="bg-white text-sm resize-none"
+              readOnly={isUk}
+              className={`bg-white text-sm resize-none ${isUk ? 'cursor-default opacity-95' : ''}`}
             />
           </div>
           <div>
@@ -226,9 +249,10 @@ export const Column3 = () => {
               <InfoTooltip text={CTA_HELP} iconSize={11} />
             </label>
             <Textarea
-              value={concept.cta}
+              value={ctaVal}
               onChange={(e) => updateConcept(concept.id, 'cta', e.target.value)}
-              className="bg-white text-sm resize-none"
+              readOnly={isUk}
+              className={`bg-white text-sm resize-none ${isUk ? 'cursor-default opacity-95' : ''}`}
             />
           </div>
           <div>
@@ -237,9 +261,10 @@ export const Column3 = () => {
               <InfoTooltip text={META_TITLE_HELP} iconSize={11} />
             </label>
             <Textarea
-              value={concept.metaTitle}
+              value={metaTitleVal}
               onChange={(e) => updateConcept(concept.id, 'metaTitle', e.target.value)}
-              className="bg-white text-sm resize-none"
+              readOnly={isUk}
+              className={`bg-white text-sm resize-none ${isUk ? 'cursor-default opacity-95' : ''}`}
             />
           </div>
           <div>
@@ -248,9 +273,10 @@ export const Column3 = () => {
               <InfoTooltip text={META_COPY_HELP} iconSize={11} />
             </label>
             <Textarea
-              value={concept.metaCopy}
+              value={metaCopyVal}
               onChange={(e) => updateConcept(concept.id, 'metaCopy', e.target.value)}
-              className="bg-white text-sm"
+              readOnly={isUk}
+              className={`bg-white text-sm ${isUk ? 'cursor-default opacity-95' : ''}`}
             />
           </div>
 
@@ -301,7 +327,8 @@ export const Column3 = () => {
             {isLoadingCreatives ? 'Generating Images...' : 'Generate Creative Batch'}
           </Button>
         </Card>
-      ))}
+        );
+      })}
     </div>
   );
 };

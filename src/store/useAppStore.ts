@@ -10,6 +10,11 @@ interface FormData {
   buyer: string;
 }
 
+interface AngleTranslation {
+  direction: string;
+  hookSeed: string;
+  whyWorks: string;
+}
 interface Angle {
   id: string;
   direction: string;
@@ -20,6 +25,16 @@ interface Angle {
   awarenessLevel: string;
   emotionalAnchor: string;
   raw?: any;
+  translation?: AngleTranslation;
+  isTranslating?: boolean;
+  showTranslation?: boolean;
+}
+interface ConceptTranslation {
+  hook: string;
+  accent: string;
+  cta: string;
+  metaTitle: string;
+  metaCopy: string;
 }
 interface Concept {
   id: string;
@@ -38,10 +53,18 @@ interface Concept {
   policyReference: string;
   sourceAngle?: Angle;
   raw?: any;
+  translation?: ConceptTranslation;
+  isTranslating?: boolean;
+  showTranslation?: boolean;
 }
 export interface ImageVariant {
   url: string;
   style: string;
+  metaTitle: string;
+  metaCopy: string;
+  cta: string;
+}
+interface CreativeTranslation {
   metaTitle: string;
   metaCopy: string;
   cta: string;
@@ -57,6 +80,9 @@ export interface Creative {
   isSent?: boolean;
   chosenAngle?: any;
   chosenCreative?: any;
+  translation?: CreativeTranslation;
+  isTranslating?: boolean;
+  showTranslation?: boolean;
 }
 
 interface ErrorBanner { message: string; count: number; }
@@ -88,6 +114,9 @@ interface AppState {
   generateConcept: (angleId: string) => Promise<void>;
   generateCreative: (conceptId: string) => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
+  toggleAngleTranslation: (angleId: string) => Promise<void>;
+  toggleConceptTranslation: (conceptId: string) => Promise<void>;
+  toggleCreativeTranslation: (creativeId: string) => Promise<void>;
   showError: (message: string) => void;
   dismissError: () => void;
   showWarning: (message: string) => void;
@@ -118,6 +147,19 @@ const WEBHOOKS = {
   concept: import.meta.env.PUBLIC_WEBHOOK_CONCEPT_URL,
   creative: import.meta.env.PUBLIC_WEBHOOK_CREATIVE_URL,
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
+  translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
+};
+
+// Shared helper — POSTs an object of strings to /translate_uk, returns translated object.
+const postTranslateUk = async <T extends Record<string, string>>(payload: T): Promise<T> => {
+  if (!WEBHOOKS.translate) {
+    throw new Error('PUBLIC_WEBHOOK_TRANSLATE_URL is not set in .env');
+  }
+  const { data } = await axios.post(WEBHOOKS.translate, payload);
+  const outer = Array.isArray(data) ? data[0] : data;
+  // n8n may wrap as { json: {...} } when responseMode=lastNode passes through structured output
+  const result = (outer && typeof outer === 'object' && 'json' in outer && outer.json) ? outer.json : outer;
+  return result as T;
 };
 
 const N8N_EXECUTIONS_URL = import.meta.env.PUBLIC_N8N_EXECUTIONS_URL;
@@ -519,5 +561,128 @@ export const useAppStore = create<AppState>((set, get) => ({
           : c),
       }));
     }
-  }
+  },
+
+  toggleAngleTranslation: async (angleId) => {
+    const angle = get().angles.find(a => a.id === angleId);
+    if (!angle) return;
+    // Cache hit — just flip the visibility flag, no network call.
+    if (angle.translation) {
+      set((state) => ({
+        angles: state.angles.map(a => a.id === angleId ? { ...a, showTranslation: !a.showTranslation } : a),
+      }));
+      return;
+    }
+    // First request — translate and store.
+    set((state) => ({
+      angles: state.angles.map(a => a.id === angleId ? { ...a, isTranslating: true } : a),
+    }));
+    try {
+      const translation = await postTranslateUk({
+        direction: angle.direction ?? '',
+        hookSeed: angle.hookSeed ?? '',
+        whyWorks: angle.whyWorks ?? '',
+      });
+      set((state) => ({
+        angles: state.angles.map(a => a.id === angleId ? {
+          ...a,
+          translation: {
+            direction: translation.direction ?? '',
+            hookSeed: translation.hookSeed ?? '',
+            whyWorks: translation.whyWorks ?? '',
+          },
+          isTranslating: false,
+          showTranslation: true,
+        } : a),
+      }));
+    } catch (e) {
+      console.error('[toggleAngleTranslation]', e);
+      set((state) => ({
+        angles: state.angles.map(a => a.id === angleId ? { ...a, isTranslating: false } : a),
+      }));
+      get().showError(`Translation failed: ${humanizeError(e)}`);
+    }
+  },
+
+  toggleConceptTranslation: async (conceptId) => {
+    const concept = get().concepts.find(c => c.id === conceptId);
+    if (!concept) return;
+    if (concept.translation) {
+      set((state) => ({
+        concepts: state.concepts.map(c => c.id === conceptId ? { ...c, showTranslation: !c.showTranslation } : c),
+      }));
+      return;
+    }
+    set((state) => ({
+      concepts: state.concepts.map(c => c.id === conceptId ? { ...c, isTranslating: true } : c),
+    }));
+    try {
+      const translation = await postTranslateUk({
+        hook: concept.hook ?? '',
+        accent: concept.accent ?? '',
+        cta: concept.cta ?? '',
+        metaTitle: concept.metaTitle ?? '',
+        metaCopy: concept.metaCopy ?? '',
+      });
+      set((state) => ({
+        concepts: state.concepts.map(c => c.id === conceptId ? {
+          ...c,
+          translation: {
+            hook: translation.hook ?? '',
+            accent: translation.accent ?? '',
+            cta: translation.cta ?? '',
+            metaTitle: translation.metaTitle ?? '',
+            metaCopy: translation.metaCopy ?? '',
+          },
+          isTranslating: false,
+          showTranslation: true,
+        } : c),
+      }));
+    } catch (e) {
+      console.error('[toggleConceptTranslation]', e);
+      set((state) => ({
+        concepts: state.concepts.map(c => c.id === conceptId ? { ...c, isTranslating: false } : c),
+      }));
+      get().showError(`Translation failed: ${humanizeError(e)}`);
+    }
+  },
+
+  toggleCreativeTranslation: async (creativeId) => {
+    const creative = get().creatives.find(c => c.id === creativeId);
+    if (!creative) return;
+    if (creative.translation) {
+      set((state) => ({
+        creatives: state.creatives.map(c => c.id === creativeId ? { ...c, showTranslation: !c.showTranslation } : c),
+      }));
+      return;
+    }
+    set((state) => ({
+      creatives: state.creatives.map(c => c.id === creativeId ? { ...c, isTranslating: true } : c),
+    }));
+    try {
+      const translation = await postTranslateUk({
+        metaTitle: creative.metaTitle ?? '',
+        metaCopy: creative.metaCopy ?? '',
+        cta: creative.cta ?? '',
+      });
+      set((state) => ({
+        creatives: state.creatives.map(c => c.id === creativeId ? {
+          ...c,
+          translation: {
+            metaTitle: translation.metaTitle ?? '',
+            metaCopy: translation.metaCopy ?? '',
+            cta: translation.cta ?? '',
+          },
+          isTranslating: false,
+          showTranslation: true,
+        } : c),
+      }));
+    } catch (e) {
+      console.error('[toggleCreativeTranslation]', e);
+      set((state) => ({
+        creatives: state.creatives.map(c => c.id === creativeId ? { ...c, isTranslating: false } : c),
+      }));
+      get().showError(`Translation failed: ${humanizeError(e)}`);
+    }
+  },
 }));

@@ -36,7 +36,7 @@ const EMOTION_HELP =
   "Визначає тон хука і настрій візуалу. Один кут = одна емоція, без міксів.";
 
 export const Column2 = () => {
-  const { angles, updateAngle, generateConcept, generateAngles, isLoadingAngles, isLoadingConcepts } = useAppStore();
+  const { angles, updateAngle, generateConcept, generateAngles, isLoadingAngles, isLoadingConcepts, toggleAngleTranslation } = useAppStore();
 
   return (
     <div className="flex flex-col gap-4">
@@ -54,18 +54,36 @@ export const Column2 = () => {
           {isLoadingAngles ? 'Generating angles...' : 'Generate angles first...'}
         </div>
       )}
-      {angles.map((angle, index) => (
+      {angles.map((angle, index) => {
+        const isUk = !!angle.showTranslation && !!angle.translation;
+        const directionValue = isUk ? (angle.translation?.direction ?? '') : angle.direction;
+        const hookSeedValue = isUk ? (angle.translation?.hookSeed ?? '') : angle.hookSeed;
+        const whyWorksValue = isUk ? (angle.translation?.whyWorks ?? '') : angle.whyWorks;
+        let translateLabel = '🇺🇦 Перекласти';
+        if (angle.isTranslating) translateLabel = 'Перекладаю…';
+        else if (isUk) translateLabel = '🇺🇸 Оригінал';
+        return (
         <Card key={angle.id} className="p-4 space-y-3 bg-slate-50">
-          <div className="text-sm font-semibold text-slate-700">
-            Angle {index + 1}
-            {(angle.code || angle.trigger) && (
-              <span className="text-slate-600 font-normal">
-                {' — '}
-                {angle.code && <span className="font-semibold">[{angle.code}]</span>}
-                {angle.code && angle.trigger && ' '}
-                {angle.trigger}
-              </span>
-            )}
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-sm font-semibold text-slate-700">
+              Angle {index + 1}
+              {(angle.code || angle.trigger) && (
+                <span className="text-slate-600 font-normal">
+                  {' — '}
+                  {angle.code && <span className="font-semibold">[{angle.code}]</span>}
+                  {angle.code && angle.trigger && ' '}
+                  {angle.trigger}
+                </span>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() => toggleAngleTranslation(angle.id)}
+              disabled={angle.isTranslating}
+            >
+              {translateLabel}
+            </Button>
           </div>
 
           <div>
@@ -74,9 +92,10 @@ export const Column2 = () => {
               <InfoTooltip text={DIRECTION_HELP} />
             </label>
             <Textarea
-              value={angle.direction}
+              value={directionValue}
               onChange={(e) => updateAngle(angle.id, 'direction', e.target.value)}
-              className="bg-white text-sm"
+              readOnly={isUk}
+              className={`bg-white text-sm ${isUk ? 'cursor-default opacity-95' : ''}`}
             />
           </div>
 
@@ -86,9 +105,10 @@ export const Column2 = () => {
               <InfoTooltip text={HOOK_SEED_HELP} />
             </label>
             <Textarea
-              value={angle.hookSeed}
+              value={hookSeedValue}
               onChange={(e) => updateAngle(angle.id, 'hookSeed', e.target.value)}
-              className="bg-white text-sm"
+              readOnly={isUk}
+              className={`bg-white text-sm ${isUk ? 'cursor-default opacity-95' : ''}`}
             />
           </div>
 
@@ -107,7 +127,7 @@ export const Column2 = () => {
 
           <div className="text-sm">
             <span className="text-[10px] font-bold uppercase text-gray-400">Why it works:</span>{' '}
-            <span className="whitespace-pre-wrap text-slate-700">{angle.whyWorks}</span>
+            <span className="whitespace-pre-wrap text-slate-700">{whyWorksValue}</span>
           </div>
 
           <Button
@@ -118,7 +138,8 @@ export const Column2 = () => {
             {isLoadingConcepts ? 'Generating...' : 'Select & Next'}
           </Button>
         </Card>
-      ))}
+        );
+      })}
     </div>
   );
 };

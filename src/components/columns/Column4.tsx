@@ -59,7 +59,7 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
 };
 
 export const Column4 = () => {
-  const { creatives, deleteCreative, sendToTelegram } = useAppStore();
+  const { creatives, deleteCreative, sendToTelegram, toggleCreativeTranslation } = useAppStore();
 
   const [lightbox, setLightbox] = useState<LightboxState>(null);
 
@@ -119,7 +119,15 @@ export const Column4 = () => {
         <div className="text-gray-400 italic">Waiting for final creatives...</div>
       )}
 
-      {creatives.map((creative, index) => (
+      {creatives.map((creative, index) => {
+        const isUk = !!creative.showTranslation && !!creative.translation;
+        const metaTitleVal = isUk ? (creative.translation?.metaTitle ?? '') : creative.metaTitle;
+        const metaCopyVal = isUk ? (creative.translation?.metaCopy ?? '') : creative.metaCopy;
+        const ctaVal = isUk ? (creative.translation?.cta ?? '') : creative.cta;
+        let translateLabel = '🇺🇦 Перекласти';
+        if (creative.isTranslating) translateLabel = 'Перекладаю…';
+        else if (isUk) translateLabel = '🇺🇸 Оригінал';
+        return (
         <Card
           key={creative.id}
           aria-busy={creative.isSending || undefined}
@@ -127,11 +135,21 @@ export const Column4 = () => {
             creative.isSending ? 'pointer-events-none opacity-60' : ''
           }`}
         >
-          <div className="flex justify-between items-center">
+          <div className="flex justify-between items-center gap-2">
             <h3 className="font-bold text-sm text-green-700">Creatives batch {index + 1}</h3>
-            <Button variant="destructive" size="sm" onClick={() => deleteCreative(creative.id)}>
-              Delete
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => toggleCreativeTranslation(creative.id)}
+                disabled={creative.isTranslating || creative.isLoading}
+              >
+                {translateLabel}
+              </Button>
+              <Button variant="destructive" size="sm" onClick={() => deleteCreative(creative.id)}>
+                Delete
+              </Button>
+            </div>
           </div>
 
           <div>
@@ -142,7 +160,7 @@ export const Column4 = () => {
               </div>
             ) : (
               <p className="text-sm font-semibold whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
-                {creative.metaTitle}
+                {metaTitleVal}
               </p>
             )}
           </div>
@@ -157,7 +175,7 @@ export const Column4 = () => {
               </div>
             ) : (
               <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border min-h-[100px]">
-                {creative.metaCopy}
+                {metaCopyVal}
               </p>
             )}
           </div>
@@ -169,7 +187,7 @@ export const Column4 = () => {
               </div>
             ) : (
               <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
-                {creative.cta}
+                {ctaVal}
               </p>
             )}
           </div>
@@ -239,7 +257,8 @@ export const Column4 = () => {
             })()}
           </div>
         </Card>
-      ))}
+        );
+      })}
 
       <div ref={bottomRef} aria-hidden="true" />
 
