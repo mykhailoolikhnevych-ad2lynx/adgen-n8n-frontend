@@ -3,6 +3,7 @@ import { useAppStore } from '@/store/useAppStore';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
+import { Combobox } from '@/components/ui/Combobox';
 
 const INPUT_DATA_HELP =
   "Стартова точка всього пайплайну. Вводимо URL статті лендингу, 1–3 ключі, цільове GEO та ім'я байєра. ШІ використовує статтю й ключові слова, щоб зрозуміти, хто аудиторія; усе далі — кути, хуки, банери — будується на тому, що ввели тут.";
@@ -192,18 +193,13 @@ export const Column1 = () => {
         {/* GEO */}
         <div>
           <label className="text-xs font-medium uppercase text-slate-500">GEO *</label>
-          <Input
-            list="geo-list"
+          <Combobox
             value={formData.geo}
-            onChange={(e) => handleChange('geo', e.target.value)}
-            placeholder="Type to search… e.g. United States, Ukraine, DE"
-            className={errors.geo ? "border-red-500 focus-visible:ring-red-500" : ""}
+            onChange={(v) => handleChange('geo', v)}
+            options={COUNTRIES}
+            placeholder="Click to choose or type… e.g. United States, Ukraine, DE"
+            error={errors.geo}
           />
-          <datalist id="geo-list">
-            {COUNTRIES.map((c) => (
-              <option key={c} value={c} />
-            ))}
-          </datalist>
           {errors.geo && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
         </div>
 

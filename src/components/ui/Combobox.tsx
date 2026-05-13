@@ -1,0 +1,106 @@
+import React, { useState, useRef, useEffect } from "react";
+
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+
+interface ComboboxProps {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  placeholder?: string;
+  className?: string;
+  error?: boolean;
+}
+
+export const Combobox: React.FC<ComboboxProps> = ({
+  value,
+  onChange,
+  options,
+  placeholder,
+  className,
+  error,
+}) => {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery("");
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  // Filter options: while open, by what the user typed (NOT by stored value).
+  // Empty query → full list. This is the whole point — clicking always shows everything.
+  const filtered = query
+    ? options.filter((o) => o.toLowerCase().includes(query.toLowerCase()))
+    : options;
+
+  // What the input renders: while open we mirror the user's query; while closed we show the stored value.
+  const displayValue = open ? query : value;
+
+  const pick = (option: string) => {
+    onChange(option);
+    setOpen(false);
+    setQuery("");
+  };
+
+  return (
+    <div ref={containerRef} className={cn("relative", className)}>
+      <Input
+        value={displayValue}
+        placeholder={placeholder}
+        onFocus={() => {
+          setOpen(true);
+          setQuery("");
+        }}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          onChange(e.target.value);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            setOpen(false);
+            setQuery("");
+            e.currentTarget.blur();
+          }
+        }}
+        className={cn(
+          error && "border-red-500 focus-visible:ring-red-500",
+        )}
+      />
+      {open && filtered.length > 0 && (
+        <ul
+          role="listbox"
+          className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg"
+        >
+          {filtered.map((option) => (
+            <li
+              key={option}
+              role="option"
+              aria-selected={option === value}
+              // onMouseDown fires BEFORE input blur, so the click actually picks the option
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(option);
+              }}
+              className={cn(
+                "cursor-pointer px-3 py-1.5 text-xs hover:bg-slate-100",
+                option === value && "bg-slate-50 font-semibold",
+              )}
+            >
+              {option}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
