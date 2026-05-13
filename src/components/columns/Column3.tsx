@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
+import { Combobox } from '@/components/ui/Combobox';
 
 const CONCEPTS_HELP =
   "Три тактичні варіанти креативу для обраного кута. Кожен — окремий хук + акцент + CTA + Meta-копія, побудовані за різними хук-формулами:\n" +
@@ -150,15 +151,12 @@ export const Column3 = () => {
       </div>
       <div>
         <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Ad language</label>
-        <select
+        <Combobox
           value={adLanguage}
-          onChange={(e) => setAdLanguage(e.target.value)}
-          className="w-full text-sm border rounded-md px-2 py-1 bg-white"
-        >
-          {AD_LANGUAGES.map((l) => (
-            <option key={l} value={l}>{l}</option>
-          ))}
-        </select>
+          onChange={setAdLanguage}
+          options={AD_LANGUAGES}
+          placeholder="Click to choose or type… e.g. English (US), Ukrainian, DE"
+        />
       </div>
     </div>
   );
