@@ -101,6 +101,7 @@ export const Column1 = () => {
     keyword1: false,
     geo: false,
     buyer: false,
+    campaignName: false,
   });
 
   // Функция валидации при нажатии
@@ -110,12 +111,13 @@ export const Column1 = () => {
       keyword1: !formData.keyword1.trim(),
       geo: !formData.geo.trim(),
       buyer: !formData.buyer.trim(),
+      campaignName: !formData.campaignName.trim(),
     };
 
     setErrors(newErrors);
 
     // Если есть хотя бы одна ошибка - останавливаем отправку
-    if (newErrors.articleUrl || newErrors.keyword1 || newErrors.geo || newErrors.buyer) {
+    if (newErrors.articleUrl || newErrors.keyword1 || newErrors.geo || newErrors.buyer || newErrors.campaignName) {
       return;
     }
 
@@ -136,6 +138,7 @@ export const Column1 = () => {
     handleChange('keyword1', import.meta.env.PUBLIC_TEST_KEYWORD1);
     handleChange('geo', import.meta.env.PUBLIC_TEST_GEO || 'United States (US)');
     handleChange('buyer', import.meta.env.PUBLIC_TEST_BUYER);
+    handleChange('campaignName', import.meta.env.PUBLIC_TEST_CAMPAIGN_NAME || 'CN_MVP_TEST');
   };
 
   return (
@@ -206,12 +209,23 @@ export const Column1 = () => {
         {/* Buyer (Required) */}
         <div>
           <label className="text-xs font-medium uppercase text-slate-500">Buyer *</label>
-          <Input 
-            value={formData.buyer} 
-            onChange={(e) => handleChange('buyer', e.target.value)} 
+          <Input
+            value={formData.buyer}
+            onChange={(e) => handleChange('buyer', e.target.value)}
             className={errors.buyer ? "border-red-500 focus-visible:ring-red-500" : ""}
           />
           {errors.buyer && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+        </div>
+
+        {/* Campaign Name (Required) */}
+        <div>
+          <label className="text-xs font-medium uppercase text-slate-500">Campaign Name *</label>
+          <Input
+            value={formData.campaignName}
+            onChange={(e) => handleChange('campaignName', e.target.value)}
+            className={errors.campaignName ? "border-red-500 focus-visible:ring-red-500" : ""}
+          />
+          {errors.campaignName && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
         </div>
       </div>
 

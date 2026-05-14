@@ -8,6 +8,7 @@ interface FormData {
   keyword3: string;
   geo: string;
   buyer: string;
+  campaignName: string;
 }
 
 interface AngleTranslation {
@@ -168,7 +169,7 @@ const POLL_INTERVAL_MS = 5000;
 const POLL_MAX_ATTEMPTS = 60; // 5 minutes
 
 export const useAppStore = create<AppState>((set, get) => ({
-  formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'United States (US)', buyer: '' },
+  formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'United States (US)', buyer: '', campaignName: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
