@@ -172,20 +172,6 @@ const N8N_EXECUTIONS_API_KEY = import.meta.env.PUBLIC_N8N_EXECUTIONS_API;
 const POLL_INTERVAL_MS = 5000;
 const POLL_MAX_ATTEMPTS = 60; // 5 minutes
 
-// Persistent, browser-local batch sequence counter for creative file names.
-// Increments once per creative batch generation. Survives reloads via localStorage.
-const BATCH_COUNTER_KEY = 'aiimg_batch_counter';
-const nextBatchNumber = (): number => {
-  try {
-    const current = parseInt(localStorage.getItem(BATCH_COUNTER_KEY) || '0', 10) || 0;
-    const next = current + 1;
-    localStorage.setItem(BATCH_COUNTER_KEY, String(next));
-    return next;
-  } catch {
-    return Date.now() % 10000; // fallback if localStorage is unavailable
-  }
-};
-
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'United States (US)', buyer: '', campaignName: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
@@ -365,12 +351,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     const creativeId = crypto.randomUUID();
-    // Snapshot everything the standardized file name needs — taken now, while all
-    // the inputs (campaign, geo, angle, formula, language, ratio, model) are known.
-    const fileMeta: CreativeFileMeta = {
+    // Snapshot everything the standardized file name needs. batchNumber stays 0 for now —
+    // it is set to the n8n execution id once the job is kicked off (see below), so the
+    // file name's batch number matches the "batch_<id>" shown in Telegram.
+    let fileMeta: CreativeFileMeta = {
       campaignName: get().formData.campaignName,
       geo: get().formData.geo,
-      batchNumber: nextBatchNumber(),
+      batchNumber: 0,
       angleSlot: concept.sourceAngle?.slot ?? 1,
       angleCode: concept.sourceAngle?.code ?? '',
       formula: concept.formula ?? '',
@@ -431,6 +418,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     }
     if (!jobId) { cleanupOnFailure(); return; }
+
+    // The n8n execution id IS the global batch number — it matches the "batch_<id>"
+    // label shown in Telegram and is shared across all users/browsers.
+    fileMeta = { ...fileMeta, batchNumber: Number(jobId) || 0 };
+    set((state) => ({
+      creatives: state.creatives.map(c => c.id === creativeId ? { ...c, fileMeta } : c),
+    }));
 
     // Step 2: poll the executions API until the job finishes
     const apiHeaders = { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY };

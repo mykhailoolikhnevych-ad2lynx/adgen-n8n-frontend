@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
-import { buildBatchFilename } from '@/lib/creativeFilename';
 
 const CREATIVES_BATCHES_HELP =
   "Готові пакети креативів — кожен містить 4 варіанти банера (A / B / C / D) в різних візуальних стилях: YouTube-thumbnail, organic-social, highlight-block та illustrated. Усі 4 використовують той самий хук, акцент і CTA — тестуємо, як саме візуальний стиль впливає на CTR. Можна завантажити пакет ZIP-ом або одразу надіслати в Telegram-канал команди.";
@@ -19,9 +18,10 @@ const sanitizeForFilename = (s: string): string =>
 const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => {
   const zip = new JSZip();
 
-  // Batch-level name (no variant suffix). Falls back gracefully if fileMeta is missing.
-  const batchName = creative.fileMeta
-    ? buildBatchFilename(creative.fileMeta)
+  // ZIP is named after the n8n execution id — same "batch_<id>" shown in Telegram.
+  const batchNumber = creative.fileMeta?.batchNumber;
+  const batchName = batchNumber
+    ? `batch_${batchNumber}`
     : `creatives_batch_${batchIndex + 1}`;
 
   creative.images.forEach((img, i) => {
