@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import axios from 'axios';
+import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFilename';
 
 interface FormData {
   articleUrl: string;
@@ -18,6 +19,7 @@ interface AngleTranslation {
 }
 interface Angle {
   id: string;
+  slot: number;
   direction: string;
   whyWorks: string;
   hookSeed: string;
@@ -64,6 +66,7 @@ export interface ImageVariant {
   metaTitle: string;
   metaCopy: string;
   cta: string;
+  fileName?: string;
 }
 interface CreativeTranslation {
   metaTitle: string;
@@ -84,6 +87,7 @@ export interface Creative {
   translation?: CreativeTranslation;
   isTranslating?: boolean;
   showTranslation?: boolean;
+  fileMeta?: CreativeFileMeta;
 }
 
 interface ErrorBanner { message: string; count: number; }
@@ -168,6 +172,20 @@ const N8N_EXECUTIONS_API_KEY = import.meta.env.PUBLIC_N8N_EXECUTIONS_API;
 const POLL_INTERVAL_MS = 5000;
 const POLL_MAX_ATTEMPTS = 60; // 5 minutes
 
+// Persistent, browser-local batch sequence counter for creative file names.
+// Increments once per creative batch generation. Survives reloads via localStorage.
+const BATCH_COUNTER_KEY = 'aiimg_batch_counter';
+const nextBatchNumber = (): number => {
+  try {
+    const current = parseInt(localStorage.getItem(BATCH_COUNTER_KEY) || '0', 10) || 0;
+    const next = current + 1;
+    localStorage.setItem(BATCH_COUNTER_KEY, String(next));
+    return next;
+  } catch {
+    return Date.now() % 10000; // fallback if localStorage is unavailable
+  }
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'United States (US)', buyer: '', campaignName: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
@@ -232,8 +250,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           console.error('[generateAngles] unexpected payload shape:', outer);
           throw new Error('Webhook response missing angles[]');
         }
-        const anglesWithIds: Angle[] = anglesArray.map((item: any) => ({
+        const anglesWithIds: Angle[] = anglesArray.map((item: any, index: number) => ({
           id: crypto.randomUUID(),
+          slot: Number(item.slot) || (index + 1),
           direction: item.direction ?? '',
           whyWorks: item.why_works ?? '',
           hookSeed: item.hook_seed ?? '',
@@ -346,6 +365,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
 
     const creativeId = crypto.randomUUID();
+    // Snapshot everything the standardized file name needs — taken now, while all
+    // the inputs (campaign, geo, angle, formula, language, ratio, model) are known.
+    const fileMeta: CreativeFileMeta = {
+      campaignName: get().formData.campaignName,
+      geo: get().formData.geo,
+      batchNumber: nextBatchNumber(),
+      angleSlot: concept.sourceAngle?.slot ?? 1,
+      angleCode: concept.sourceAngle?.code ?? '',
+      formula: concept.formula ?? '',
+      adLanguage: get().adLanguage,
+      aspectRatio: get().aspectRatio,
+      imageModel: get().imageGenerationModel,
+    };
     const placeholder: Creative = {
       id: creativeId,
       metaTitle: concept.metaTitle,
@@ -355,6 +387,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       isLoading: true,
       chosenAngle: chosen_angle,
       chosenCreative: chosen_creative,
+      fileMeta,
     };
     set((state) => ({
       creatives: [...state.creatives, placeholder],
@@ -490,6 +523,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           }];
         }
       }
+
+      // Stamp the standardized file name on every variant (A/B/C/D -> _1/_2/_3/_4).
+      images = images.map((img, i) => ({
+        ...img,
+        fileName: buildCreativeFilename(fileMeta, i),
+      }));
 
       // Card-level fields take values from the first variant; if it has none, fall back to the concept.
       const firstVariant = images[0];

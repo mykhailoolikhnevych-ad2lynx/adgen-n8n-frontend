@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
+import { buildBatchFilename } from '@/lib/creativeFilename';
 
 const CREATIVES_BATCHES_HELP =
   "Готові пакети креативів — кожен містить 4 варіанти банера (A / B / C / D) в різних візуальних стилях: YouTube-thumbnail, organic-social, highlight-block та illustrated. Усі 4 використовують той самий хук, акцент і CTA — тестуємо, як саме візуальний стиль впливає на CTR. Можна завантажити пакет ZIP-ом або одразу надіслати в Telegram-канал команди.";
@@ -13,10 +14,15 @@ const CREATIVES_BATCHES_HELP =
 type LightboxState = { creative: Creative; index: number } | null;
 
 const sanitizeForFilename = (s: string): string =>
-  s.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+  s.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120);
 
 const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => {
   const zip = new JSZip();
+
+  // Batch-level name (no variant suffix). Falls back gracefully if fileMeta is missing.
+  const batchName = creative.fileMeta
+    ? buildBatchFilename(creative.fileMeta)
+    : `creatives_batch_${batchIndex + 1}`;
 
   creative.images.forEach((img, i) => {
     const variantLetter = String.fromCharCode(65 + i); // A, B, C, D
@@ -28,17 +34,22 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
     const mimeMatch = header.match(/data:([^;]+)/);
     const mime = mimeMatch?.[1] ?? 'image/jpeg';
     const ext = mime.split('/')[1] || 'jpg';
-    const styleSafe = sanitizeForFilename(img.style || variantLetter);
-    zip.file(`${variantLetter}_${styleSafe}.${ext}`, base64, { base64: true });
+    // Standardized name, e.g. aiimg_housing_help_us_0025_a1cg_f2_en_11_nbp_1.jpg
+    const baseName = img.fileName
+      ? sanitizeForFilename(img.fileName)
+      : `${variantLetter}_${sanitizeForFilename(img.style || variantLetter)}`;
+    zip.file(`${baseName}.${ext}`, base64, { base64: true });
   });
 
   const lines: string[] = [];
   lines.push(`Creatives batch ${batchIndex + 1}`);
+  lines.push(batchName);
   lines.push('='.repeat(40));
   lines.push('');
   creative.images.forEach((img, i) => {
     const variantLetter = String.fromCharCode(65 + i);
     lines.push(`--- Variant ${variantLetter} ---`);
+    if (img.fileName) lines.push(`File: ${img.fileName}`);
     if (img.style) lines.push(`Style: ${img.style}`);
     if (img.metaTitle) lines.push(`Meta Ad Title: ${img.metaTitle}`);
     if (img.metaCopy) lines.push(`Meta Ad Copy: ${img.metaCopy}`);
@@ -51,7 +62,7 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `creatives_batch_${batchIndex + 1}.zip`;
+  a.download = `${batchName}.zip`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
