@@ -1,10 +1,22 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { User, BookOpen } from '@phosphor-icons/react';
 import { useAppStore } from '@/store/useAppStore';
 import { Column1 } from './columns/Column1';
 import { Column2 } from './columns/Column2';
 import { Column3 } from './columns/Column3';
 import { Column4 } from './columns/Column4';
+import { KeywordsPage } from './pages/KeywordsPage';
+import { ArticlePage } from './pages/ArticlePage';
 import { TooltipProvider } from './ui/tooltip';
+
+type Page = 'keywords' | 'angles' | 'article' | 'creatives';
+
+const NAV_ITEMS: { value: Page; label: string }[] = [
+  { value: 'keywords', label: 'Keywords' },
+  { value: 'angles', label: 'Angles' },
+  { value: 'article', label: 'Article' },
+  { value: 'creatives', label: 'Creatives' },
+];
 
 const formatErrorArg = (a: unknown): string => {
   if (a instanceof Error) return a.message;
@@ -15,10 +27,35 @@ const formatErrorArg = (a: unknown): string => {
   return String(a);
 };
 
+const EmptyPage = ({ label }: { label: string }) => (
+  <div className="flex h-full w-full items-center justify-center bg-slate-100 text-gray-400 italic">
+    {label} — coming soon
+  </div>
+);
+
+const CreativesPage = () => (
+  <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
+    <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+      <Column1 />
+    </div>
+    <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+      <Column2 />
+    </div>
+    <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+      <Column3 />
+    </div>
+    <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+      <Column4 />
+    </div>
+  </div>
+);
+
 export default function MainApp() {
   const errorBanner = useAppStore((s) => s.errorBanner);
   const dismissError = useAppStore((s) => s.dismissError);
   const noticeBanner = useAppStore((s) => s.noticeBanner);
+
+  const [page, setPage] = useState<Page>('keywords');
 
   useEffect(() => {
     const originalError = console.error;
@@ -81,19 +118,60 @@ export default function MainApp() {
           </div>
         )}
       </div>
-      <div className="flex h-screen w-full gap-4 p-4 bg-slate-100 overflow-hidden">
-        <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-          <Column1 />
-        </div>
-        <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-          <Column2 />
-        </div>
-        <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-          <Column3 />
-        </div>
-        <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-          <Column4 />
-        </div>
+
+      <div className="flex h-screen w-full flex-col bg-slate-100">
+        <header className="flex h-12 shrink-0 items-center justify-between bg-black px-4 text-white">
+          <div className="flex items-center gap-2">
+            <img src="/favicon.svg" alt="" className="h-7 w-7" aria-hidden="true" />
+            <span className="text-base font-bold tracking-wide">Project X - Make Advertising Great Again</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <nav className="flex items-center gap-1">
+              {NAV_ITEMS.map((item) => {
+                const isActive = page === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => setPage(item.value)}
+                    className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                      isActive
+                        ? 'bg-white text-black'
+                        : 'text-white/80 hover:bg-white/10 hover:text-white'
+                    }`}
+                    aria-current={isActive ? 'page' : undefined}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="mx-2 h-6 w-px bg-white/30" aria-hidden="true" />
+
+            <button
+              type="button"
+              aria-label="Profile"
+              className="rounded p-1.5 text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+            >
+              <User size={20} weight="regular" />
+            </button>
+            <button
+              type="button"
+              aria-label="Docs"
+              className="rounded p-1.5 text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+            >
+              <BookOpen size={20} weight="regular" />
+            </button>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-hidden">
+          {page === 'creatives' && <CreativesPage />}
+          {page === 'keywords' && <KeywordsPage />}
+          {page === 'angles' && <EmptyPage label="Angles" />}
+          {page === 'article' && <ArticlePage />}
+        </main>
       </div>
     </TooltipProvider>
   );
