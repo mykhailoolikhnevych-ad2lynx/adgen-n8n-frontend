@@ -93,6 +93,8 @@ export interface Creative {
 interface ErrorBanner { message: string; count: number; }
 interface NoticeBanner { message: string; }
 
+export type ArticleStatus = 'idle' | 'loading' | 'success' | 'error';
+
 interface AppState {
   formData: FormData;
   angles: Angle[];
@@ -107,6 +109,9 @@ interface AppState {
   isLoadingAngles: boolean;
   isLoadingConcepts: boolean;
   isLoadingCreatives: boolean;
+  articleHtml: string | null;
+  articleStatus: ArticleStatus;
+  articleError: string | null;
   errorBanner: ErrorBanner | null;
   noticeBanner: NoticeBanner | null;
   updateFormData: (field: keyof FormData, value: string) => void;
@@ -116,6 +121,7 @@ interface AppState {
   deleteCreative: (id: string) => void;
   clearConcepts: () => void;
   generateAngles: () => Promise<void>;
+  generateArticle: (input: { topic: string; geo: string }) => Promise<void>;
   generateConcept: (angleId: string) => Promise<void>;
   generateCreative: (conceptId: string) => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
@@ -153,6 +159,7 @@ const WEBHOOKS = {
   creative: import.meta.env.PUBLIC_WEBHOOK_CREATIVE_URL,
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
   translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
+  article: import.meta.env.PUBLIC_WEBHOOK_ARTICLE_URL,
 };
 
 // Shared helper — POSTs an object of strings to /translate_uk, returns translated object.
@@ -176,6 +183,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'United States (US)', buyer: '', campaignName: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
+  articleHtml: null, articleStatus: 'idle', articleError: null,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
@@ -257,6 +265,42 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         console.error(e);
         set({ isLoadingAngles: false });
+        return;
+      }
+    }
+  },
+
+  generateArticle: async ({ topic, geo }) => {
+    if (!WEBHOOKS.article) {
+      const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
+      set({ articleStatus: 'error', articleError: msg, articleHtml: null });
+      get().showError(msg);
+      return;
+    }
+    set({ articleStatus: 'loading', articleError: null, articleHtml: null });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const payload = { 'Article topic': topic, GEO: geo };
+        console.log('[generateArticle] request payload:', payload);
+        // The n8n workflow scrapes the SERP top-10 + LLM rewrite — can run ~60-120s.
+        const { data } = await axios.post(WEBHOOKS.article, payload, {
+          timeout: 300_000,
+          responseType: 'text',
+          transformResponse: (v) => v,
+        });
+        const html = typeof data === 'string' ? data : String(data ?? '');
+        if (!html.trim()) throw new Error('Webhook returned empty response');
+        set({ articleHtml: html, articleStatus: 'success', articleError: null });
+        return;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        const msg = humanizeError(e);
+        set({ articleStatus: 'error', articleError: msg, articleHtml: null });
+        get().showError(`Article generation failed: ${msg}`);
         return;
       }
     }
@@ -398,14 +442,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       }));
     };
 
-    // Step 1: kick off the job and get the execution id
+    // Step 1: kick off the job. n8n returns:
+    //   job_id        - the real n8n execution id, needed to poll the executions API
+    //   batch_number  - our own resettable workflow counter (1, 2, 3 …), used for file names
     let jobId: string | null = null;
+    let batchNumber = 0;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { data } = await axios.post(WEBHOOKS.creative, payload);
         const startPayload = Array.isArray(data) ? data[0] : data;
         jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
         if (!jobId) throw new Error('Webhook did not return a job_id');
+        batchNumber = Number(startPayload?.batch_number) || 0;
         break;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -419,9 +467,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     if (!jobId) { cleanupOnFailure(); return; }
 
-    // The n8n execution id IS the global batch number — it matches the "batch_<id>"
-    // label shown in Telegram and is shared across all users/browsers.
-    fileMeta = { ...fileMeta, batchNumber: Number(jobId) || 0 };
+    // batch_number drives the file names + the Telegram "batch_<n>" label.
+    // Fall back to the raw execution id only if n8n didn't return batch_number (legacy).
+    fileMeta = { ...fileMeta, batchNumber: batchNumber || Number(jobId) || 0 };
     set((state) => ({
       creatives: state.creatives.map(c => c.id === creativeId ? { ...c, fileMeta } : c),
     }));
