@@ -1,0 +1,57 @@
+export const GEOS: string[] = [
+  // Tier 1 — Anglosphere
+  'United States',
+  'United Kingdom',
+  'Canada',
+  'Australia',
+  'New Zealand',
+  'Ireland',
+  // Tier 2 — Western Europe
+  'Germany',
+  'France',
+  'Italy',
+  'Spain',
+  'Portugal',
+  'Netherlands',
+  'Belgium',
+  'Switzerland',
+  'Austria',
+  // Tier 3 — Nordics
+  'Sweden',
+  'Norway',
+  'Denmark',
+  'Finland',
+  'Iceland',
+  // Tier 4 — CEE / Balkans
+  'Poland',
+  'Czech Republic',
+  'Slovakia',
+  'Hungary',
+  'Romania',
+  'Bulgaria',
+  'Croatia',
+  'Serbia',
+  'Slovenia',
+  'Bosnia and Herzegovina',
+  'Albania',
+  // Tier 5 — Mediterranean + Turkey
+  'Greece',
+  'Turkey',
+  // Tier 6 — LATAM
+  'Mexico',
+  'Brazil',
+  'Argentina',
+  'Colombia',
+  'Chile',
+  'Peru',
+  // Tier 7 — APAC
+  'Japan',
+  'South Korea',
+  'Singapore',
+  'Hong Kong',
+  'Taiwan',
+  // Tier 8 — MENA
+  'United Arab Emirates',
+  'Israel',
+  'Saudi Arabia',
+];
