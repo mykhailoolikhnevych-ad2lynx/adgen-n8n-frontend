@@ -112,6 +112,9 @@ interface AppState {
   articleHtml: string | null;
   articleStatus: ArticleStatus;
   articleError: string | null;
+  keywordHtml: string | null;
+  keywordStatus: ArticleStatus;
+  keywordError: string | null;
   errorBanner: ErrorBanner | null;
   noticeBanner: NoticeBanner | null;
   updateFormData: (field: keyof FormData, value: string) => void;
@@ -122,6 +125,7 @@ interface AppState {
   clearConcepts: () => void;
   generateAngles: () => Promise<void>;
   generateArticle: (input: { topic: string; geo: string }) => Promise<void>;
+  generateKeywords: (input: KeywordStudioInput) => Promise<void>;
   generateConcept: (angleId: string) => Promise<void>;
   generateCreative: (conceptId: string) => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
@@ -160,7 +164,17 @@ const WEBHOOKS = {
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
   translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
   article: import.meta.env.PUBLIC_WEBHOOK_ARTICLE_URL,
+  keywords: import.meta.env.PUBLIC_WEBHOOK_KEYWORDS_URL,
 };
+
+export interface KeywordStudioInput {
+  country: string;
+  countryName: string;
+  language: string;
+  languageName: string;
+  anchor: string;
+  translation: 'auto' | 'none';
+}
 
 // Shared helper — POSTs an object of strings to /translate_uk, returns translated object.
 const postTranslateUk = async <T extends Record<string, string>>(payload: T): Promise<T> => {
@@ -184,6 +198,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   articleHtml: null, articleStatus: 'idle', articleError: null,
+  keywordHtml: null, keywordStatus: 'idle', keywordError: null,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
@@ -301,6 +316,41 @@ export const useAppStore = create<AppState>((set, get) => ({
         const msg = humanizeError(e);
         set({ articleStatus: 'error', articleError: msg, articleHtml: null });
         get().showError(`Article generation failed: ${msg}`);
+        return;
+      }
+    }
+  },
+
+  generateKeywords: async (input) => {
+    if (!WEBHOOKS.keywords) {
+      const msg = 'PUBLIC_WEBHOOK_KEYWORDS_URL is not set in .env';
+      set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
+      get().showError(msg);
+      return;
+    }
+    set({ keywordStatus: 'loading', keywordError: null, keywordHtml: null });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        console.log('[generateKeywords] request payload:', input);
+        // KeywordTool sweep + drill + 2x Opus analysis — can run ~60-180s.
+        const { data } = await axios.post(WEBHOOKS.keywords, input, {
+          timeout: 300_000,
+          responseType: 'text',
+          transformResponse: (v) => v,
+        });
+        const html = typeof data === 'string' ? data : String(data ?? '');
+        if (!html.trim()) throw new Error('Webhook returned empty response');
+        set({ keywordHtml: html, keywordStatus: 'success', keywordError: null });
+        return;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        const msg = humanizeError(e);
+        set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
+        get().showError(`Keyword research failed: ${msg}`);
         return;
       }
     }

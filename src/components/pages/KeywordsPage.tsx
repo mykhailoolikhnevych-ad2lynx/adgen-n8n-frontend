@@ -1,30 +1,89 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
-import { GEOS } from '@/lib/geos';
+import { KEYWORD_GEOS, KEYWORD_GEO_NAMES } from '@/lib/geos';
+import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
 
-const ANCHOR_TRANSLATIONS: { label: string; value: string }[] = [
-  { label: 'Automatic', value: 'automatic' },
+const ANCHOR_TRANSLATIONS: { label: string; value: 'auto' | 'none' }[] = [
+  { label: 'Automatic', value: 'auto' },
   { label: 'None', value: 'none' },
 ];
+
+const STATUS_LABEL: Record<ArticleStatus, string> = {
+  idle: 'Idle',
+  loading: 'Researching…',
+  success: 'Done',
+  error: 'Error',
+};
+
+const STATUS_COLOR: Record<ArticleStatus, string> = {
+  idle: 'text-slate-600',
+  loading: 'text-blue-600',
+  success: 'text-green-600',
+  error: 'text-red-600',
+};
 
 export const KeywordsPage = () => {
   const [geo, setGeo] = useState('United States');
   const [language, setLanguage] = useState('English');
   const [anchor, setAnchor] = useState('');
-  const [anchorTranslation, setAnchorTranslation] = useState('automatic');
-  const [errors, setErrors] = useState({ language: false, anchor: false });
+  const [anchorTranslation, setAnchorTranslation] = useState<'auto' | 'none'>('auto');
+  const [errors, setErrors] = useState({ geo: false, language: false, anchor: false });
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  const keywordStatus = useAppStore((s) => s.keywordStatus);
+  const keywordHtml = useAppStore((s) => s.keywordHtml);
+  const keywordError = useAppStore((s) => s.keywordError);
+  const generateKeywords = useAppStore((s) => s.generateKeywords);
+
+  const isLoading = keywordStatus === 'loading';
+
+  // Each GEO exposes only the languages valid for it (Switzerland → German/French/Italian),
+  // and carries the locale-specific code KeywordTool needs (de-CH, pt-BR…). The language
+  // dropdown is scoped to the selected GEO; picking a GEO resets it to that GEO's default.
+  const geoEntry = KEYWORD_GEOS.find((g) => g.name === geo);
+  const langOptions = geoEntry?.languages ?? [];
+  const langEntry = langOptions.find((l) => l.name === language);
+
+  // Live elapsed-time counter while a request is in flight — the run can take 1–3 min.
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    if (!startedAt) return;
+    if (keywordStatus === 'loading') {
+      tickRef.current = setInterval(() => {
+        setElapsedMs(Date.now() - startedAt);
+      }, 200);
+      return () => {
+        if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+      };
+    }
+    setElapsedMs(Date.now() - startedAt);
+  }, [keywordStatus, startedAt]);
 
   const handleResearch = () => {
     const newErrors = {
-      language: !language.trim(),
+      geo: !geoEntry,
+      language: !langEntry,
       anchor: !anchor.trim(),
     };
     setErrors(newErrors);
-    if (newErrors.language || newErrors.anchor) return;
-    // TODO: hook up webhook / store action
+    if (newErrors.geo || newErrors.language || newErrors.anchor || !geoEntry || !langEntry) return;
+
+    setStartedAt(Date.now());
+    setElapsedMs(0);
+    void generateKeywords({
+      country: geoEntry.country,
+      countryName: geoEntry.name,
+      language: langEntry.code,
+      languageName: langEntry.name,
+      anchor: anchor.trim(),
+      translation: anchorTranslation,
+    });
   };
+
+  const elapsedSec = (elapsedMs / 1000).toFixed(1);
 
   return (
     <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
@@ -35,38 +94,41 @@ export const KeywordsPage = () => {
 
           <div className="space-y-3">
             <div>
-              <label className="text-xs font-medium uppercase text-slate-500">Mode</label>
-              <Input
-                value="Deep"
-                readOnly
-                disabled
-                className="bg-slate-50 cursor-not-allowed"
-              />
-            </div>
-
-            <div>
-              <label className="text-xs font-medium uppercase text-slate-500">GEO</label>
+              <label className="text-xs font-medium uppercase text-slate-500">GEO *</label>
               <Combobox
                 value={geo}
-                onChange={setGeo}
-                options={GEOS}
+                onChange={(v) => {
+                  setGeo(v);
+                  if (errors.geo) setErrors((p) => ({ ...p, geo: false }));
+                  // Reset language to the newly-picked GEO's default (first in its list).
+                  const entry = KEYWORD_GEOS.find((g) => g.name === v);
+                  if (entry) {
+                    setLanguage(entry.languages[0].name);
+                    if (errors.language) setErrors((p) => ({ ...p, language: false }));
+                  }
+                }}
+                options={KEYWORD_GEO_NAMES}
                 placeholder="Click to choose or type… e.g. United States"
                 inputClassName="text-sm rounded-md bg-white px-2"
+                error={errors.geo}
               />
+              {errors.geo && <p className="text-[10px] text-red-500 mt-1">Pick a GEO from the list</p>}
             </div>
 
             <div>
               <label className="text-xs font-medium uppercase text-slate-500">Language *</label>
-              <Input
+              <Combobox
                 value={language}
-                onChange={(e) => {
-                  setLanguage(e.target.value);
+                onChange={(v) => {
+                  setLanguage(v);
                   if (errors.language) setErrors((p) => ({ ...p, language: false }));
                 }}
-                placeholder="e.g. English"
-                className={errors.language ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                options={langOptions.map((l) => l.name)}
+                placeholder="Click to choose or type… e.g. English"
+                inputClassName="text-sm rounded-md bg-white px-2"
+                error={errors.language}
               />
-              {errors.language && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+              {errors.language && <p className="text-[10px] text-red-500 mt-1">Pick a language from the list</p>}
             </div>
 
             <div>
@@ -79,6 +141,7 @@ export const KeywordsPage = () => {
                 }}
                 placeholder="Seed keyword"
                 className={errors.anchor ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                disabled={isLoading}
               />
               {errors.anchor && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
             </div>
@@ -87,8 +150,9 @@ export const KeywordsPage = () => {
               <label className="text-xs font-medium uppercase text-slate-500">Anchor translation</label>
               <select
                 value={anchorTranslation}
-                onChange={(e) => setAnchorTranslation(e.target.value)}
+                onChange={(e) => setAnchorTranslation(e.target.value as 'auto' | 'none')}
                 className="w-full text-sm border rounded-md px-2 py-1 bg-white"
+                disabled={isLoading}
               >
                 {ANCHOR_TRANSLATIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -97,125 +161,59 @@ export const KeywordsPage = () => {
             </div>
           </div>
 
-          <Button onClick={handleResearch} className="mt-4">
-            Research
+          <Button onClick={handleResearch} className="mt-4" disabled={isLoading}>
+            {isLoading ? 'Researching…' : 'Research'}
           </Button>
         </div>
       </div>
 
       {/* 2. Results — takes remaining width */}
-      <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-        <div className="flex flex-col gap-4">
-          <h2 className="font-bold text-xl mb-2">2. Results</h2>
+      <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
+        <div className="flex flex-col gap-4 flex-1 min-h-0">
+          <h2 className="font-bold text-xl mb-2 shrink-0">2. Results</h2>
 
-          {/* Full-width status bar (real-time status will go here later) */}
-          <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center">
-            <span>
-              <span className="font-semibold text-slate-700">Status:</span>{' '}
-              <span className="text-slate-600">Idle</span>
+          {/* Status bar — color-coded, with a live elapsed-time counter while loading. */}
+          <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center justify-between shrink-0">
+            <span className="flex items-center gap-2">
+              <span className="font-semibold text-slate-700">Status:</span>
+              {isLoading && (
+                <span
+                  aria-hidden="true"
+                  className="inline-block h-3 w-3 rounded-full border-2 border-blue-600 border-t-transparent animate-spin"
+                />
+              )}
+              <span className={`font-medium ${STATUS_COLOR[keywordStatus]}`}>
+                {STATUS_LABEL[keywordStatus]}
+              </span>
             </span>
+            {startedAt && (
+              <span className="text-xs text-slate-500 font-mono">{elapsedSec}s</span>
+            )}
           </div>
 
-          {/* Strategic narrative — one paragraph of generated text */}
-          <div>
-            <h3 className="text-sm font-bold text-slate-700 mb-1">Strategic narrative:</h3>
-            <p className="text-sm text-gray-400 italic whitespace-pre-wrap">
-              Waiting for input
-            </p>
-          </div>
-
-          {/* Full-width section header — TOP 10 Keywords */}
-          <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center">
-            <span className="font-semibold text-slate-700">TOP 10 Keywords</span>
-          </div>
-
-          {/* Keywords table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
-                  <th className="py-2 pr-2 w-10">Rank</th>
-                  <th className="py-2 pr-2">Keyword (original)</th>
-                  <th className="py-2 pr-2">Translation (UA)</th>
-                  <th className="py-2 pr-2 w-20">Volume</th>
-                  <th className="py-2 pr-2 w-16">CPC</th>
-                  <th className="py-2 pr-2 w-20">Trend</th>
-                  <th className="py-2 pr-2 w-10">Q</th>
-                  <th className="py-2 pr-2">Thesis (why this one)</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td colSpan={8} className="py-4 text-center text-gray-400 italic">
-                    Waiting for input
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* Full-width section header — Strategic Clusters */}
-          <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center">
-            <span className="font-semibold text-slate-700">
-              Strategic Clusters — Budget Allocation + Key Metrics
-            </span>
-          </div>
-
-          {/* Strategic Clusters table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
-                  <th className="py-2 pr-2 w-16">Priority</th>
-                  <th className="py-2 pr-2">Cluster name (original)</th>
-                  <th className="py-2 pr-2">Name (UA)</th>
-                  <th className="py-2 pr-2 w-20">Volume</th>
-                  <th className="py-2 pr-2 w-16">CPC</th>
-                  <th className="py-2 pr-2 w-20">Trend</th>
-                  <th className="py-2 pr-2 w-20">Budget %</th>
-                  <th className="py-2 pr-2">Justification (UA)</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td colSpan={8} className="py-4 text-center text-gray-400 italic">
-                    Waiting for input
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          {/* Full-width section header — Gem Hunter */}
-          <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center">
-            <span className="font-semibold text-slate-700">
-              Gem Hunter — Deep Analysis by Categories
-            </span>
-          </div>
-
-          {/* Gem Hunter table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
-                  <th className="py-2 pr-2">Category</th>
-                  <th className="py-2 pr-2">Keyword (original)</th>
-                  <th className="py-2 pr-2">Translation (UA)</th>
-                  <th className="py-2 pr-2 w-20">Volume</th>
-                  <th className="py-2 pr-2 w-16">CPC</th>
-                  <th className="py-2 pr-2 w-20">Trend</th>
-                  <th className="py-2 pr-2 w-10">Q</th>
-                  <th className="py-2 pr-2">Why GEM (UA)</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td colSpan={8} className="py-4 text-center text-gray-400 italic">
-                    Waiting for input
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          {/* Deep research report (UA HTML) — fills the remaining space. */}
+          <div className="flex-1 min-h-0 overflow-hidden">
+            {keywordStatus === 'idle' && (
+              <div className="text-gray-400 italic">Waiting for input</div>
+            )}
+            {keywordStatus === 'loading' && (
+              <div className="text-slate-600 text-sm">
+                Researching keywords — this typically takes 1–3 minutes (KeywordTool sweep + drill expansion + LLM analysis).
+              </div>
+            )}
+            {keywordStatus === 'error' && (
+              <div className="text-red-600 text-sm whitespace-pre-wrap">
+                {keywordError ?? 'Unknown error'}
+              </div>
+            )}
+            {keywordStatus === 'success' && keywordHtml && (
+              <iframe
+                title="Keyword research results"
+                srcDoc={keywordHtml}
+                sandbox="allow-same-origin"
+                className="w-full h-full border-0 rounded-md bg-white"
+              />
+            )}
           </div>
         </div>
       </div>
