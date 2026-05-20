@@ -322,38 +322,130 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateKeywords: async (input) => {
+    // Async pattern (the KeywordTool run takes ~120-180s, past Cloudflare's 100s cap):
+    // the webhook returns a job_id immediately, then we poll the n8n executions API
+    // until the run finishes and pull the final HTML out of the last node. Mirrors
+    // generateCreative — same executions-API plumbing.
     if (!WEBHOOKS.keywords) {
       const msg = 'PUBLIC_WEBHOOK_KEYWORDS_URL is not set in .env';
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
       get().showError(msg);
       return;
     }
+    if (!N8N_EXECUTIONS_URL) {
+      const msg = 'PUBLIC_N8N_EXECUTIONS_URL is not set in .env';
+      set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
+      get().showError(msg);
+      return;
+    }
     set({ keywordStatus: 'loading', keywordError: null, keywordHtml: null });
+
+    const t0 = Date.now();
+    const elapsed = () => ((Date.now() - t0) / 1000).toFixed(1);
+
+    const fail = (msg: string) => {
+      set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
+      get().showError(`Keyword research failed: ${msg}`);
+    };
+
+    // Step 1: kick off the run and grab the execution id (job_id) returned immediately.
+    let jobId: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         console.log('[generateKeywords] request payload:', input);
-        // KeywordTool sweep + drill + 2x Opus analysis — can run ~60-180s.
-        const { data } = await axios.post(WEBHOOKS.keywords, input, {
-          timeout: 300_000,
-          responseType: 'text',
-          transformResponse: (v) => v,
-        });
-        const html = typeof data === 'string' ? data : String(data ?? '');
-        if (!html.trim()) throw new Error('Webhook returned empty response');
-        set({ keywordHtml: html, keywordStatus: 'success', keywordError: null });
-        return;
+        const { data } = await axios.post(WEBHOOKS.keywords, input);
+        const startPayload = Array.isArray(data) ? data[0] : data;
+        jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
+        if (!jobId) throw new Error('Webhook did not return a job_id');
+        break;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
           get().showWarning(`${humanizeError(e)}. Retrying...`);
           continue;
         }
         console.error(e);
-        const msg = humanizeError(e);
-        set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
-        get().showError(`Keyword research failed: ${msg}`);
+        fail(humanizeError(e));
         return;
       }
     }
+    if (!jobId) { fail('Webhook did not return a job_id'); return; }
+
+    // Step 2: poll the executions API until the run finishes.
+    const apiHeaders = { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY };
+    const metaUrl = `${N8N_EXECUTIONS_URL}/${jobId}`;
+    const fullUrl = `${N8N_EXECUTIONS_URL}/${jobId}?includeData=true`;
+    console.log(
+      '[generateKeywords] kicked off in %ss — job_id=%s, polling every %ss (max %ss)',
+      elapsed(), jobId, POLL_INTERVAL_MS / 1000, (POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000,
+    );
+
+    for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+      let meta: any;
+      try {
+        meta = (await axios.get(metaUrl, { headers: apiHeaders })).data;
+      } catch (e) {
+        // transient poll failure — keep going, the next tick may succeed
+        console.warn(`[generateKeywords] poll #${attempt + 1} @${elapsed()}s errored (will keep polling):`, humanizeError(e));
+        continue;
+      }
+      console.log(
+        '[generateKeywords] poll #%d @%ss — finished=%s status=%s',
+        attempt + 1, elapsed(), meta?.finished ?? false, meta?.status ?? '(running)',
+      );
+      if (!meta?.finished) continue;
+
+      let full: any;
+      try {
+        full = (await axios.get(fullUrl, { headers: apiHeaders })).data;
+      } catch (e) {
+        console.error(e);
+        fail(humanizeError(e));
+        return;
+      }
+
+      if (full?.status !== 'success') {
+        fail(`execution ${full?.status ?? 'failed'}`);
+        return;
+      }
+
+      // Pull the HTML out of the final node ("Final Output (Haiku)"), with a fallback
+      // to whatever node ran last.
+      const runData = full?.data?.resultData?.runData;
+      const lastNode = full?.data?.resultData?.lastNodeExecuted;
+
+      // Dev-only: break down where the run spent its time, slowest node first.
+      if (import.meta.env.DEV && runData) {
+        const rows = Object.entries(runData)
+          .map(([node, runs]: [string, any]) => ({
+            node,
+            runs: Array.isArray(runs) ? runs.length : 0,
+            seconds: +(
+              (Array.isArray(runs) ? runs : []).reduce((s: number, r: any) => s + (r?.executionTime ?? 0), 0) / 1000
+            ).toFixed(2),
+          }))
+          .sort((a, b) => b.seconds - a.seconds);
+        console.log(`[generateKeywords] execution ${jobId} finished — wall ${elapsed()}s. Per-node time (slowest first):`);
+        console.table(rows);
+      }
+      const readNode = (name?: string) =>
+        name ? runData?.[name]?.[0]?.data?.main?.[0]?.[0]?.json : undefined;
+      const result = readNode('Final Output (Haiku)') ?? readNode(lastNode);
+      const html =
+        typeof result?.text === 'string' ? result.text
+        : typeof result?.response === 'string' ? result.response
+        : typeof result === 'string' ? result
+        : '';
+      if (!html.trim()) {
+        fail('Run finished but returned no HTML');
+        return;
+      }
+      set({ keywordHtml: html, keywordStatus: 'success', keywordError: null });
+      return;
+    }
+
+    fail(`timed out after ${(POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`);
   },
 
   generateConcept: async (angleId) => {
