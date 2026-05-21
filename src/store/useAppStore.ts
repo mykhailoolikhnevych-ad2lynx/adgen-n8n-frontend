@@ -91,6 +91,13 @@ export interface Creative {
 }
 
 // === Angles tab — RSOC Audiences & Top-Pick Headlines (two-step HITL flow) ===
+export interface RsocAudienceTranslation {
+  segment_name: string;
+  description: string;
+  pain_points: string[];
+  desires: string[];
+  vocab_to_use: string[];
+}
 export interface RsocAudience {
   segment_id: string;
   segment_name: string;
@@ -102,6 +109,9 @@ export interface RsocAudience {
   objections: string[];
   vocab_to_use: string[];
   notes: string;
+  translation?: RsocAudienceTranslation;
+  isTranslating?: boolean;
+  showTranslation?: boolean;
 }
 // Everything webhook 1 hands back — passed verbatim into webhook 2 alongside `picked`.
 export interface RsocBundle {
@@ -171,6 +181,7 @@ interface AppState {
   generateKeywords: (input: KeywordStudioInput) => Promise<void>;
   generateRsocAudiences: (input: RsocAudiencesInput) => Promise<void>;
   generateRsocHeadlines: (pickedIds: string[]) => Promise<void>;
+  toggleRsocAudienceTranslation: (segmentId: string) => Promise<void>;
   generateConcept: (angleId: string) => Promise<void>;
   generateCreative: (conceptId: string) => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
@@ -599,6 +610,62 @@ export const useAppStore = create<AppState>((set, get) => ({
         get().showError(`Headline generation failed: ${msg}`);
         return;
       }
+    }
+  },
+
+  // Angles tab — translate one audience card to UA (reuses the shared /translate_uk webhook,
+  // same cache-and-toggle behaviour as toggleAngleTranslation). Arrays are sent as numbered
+  // keys (pain_0, desire_0…) so the generic translator round-trips them, then reassembled.
+  toggleRsocAudienceTranslation: async (segmentId) => {
+    const bundle = get().rsocBundle;
+    if (!bundle) return;
+    const audience = bundle.audiences.find((a) => a.segment_id === segmentId);
+    if (!audience) return;
+
+    const patch = (updater: (a: RsocAudience) => RsocAudience) =>
+      set((state) => (state.rsocBundle ? {
+        rsocBundle: {
+          ...state.rsocBundle,
+          audiences: state.rsocBundle.audiences.map((a) => (a.segment_id === segmentId ? updater(a) : a)),
+        },
+      } : {}));
+
+    // Cache hit — just flip visibility, no network call.
+    if (audience.translation) {
+      patch((a) => ({ ...a, showTranslation: !a.showTranslation }));
+      return;
+    }
+
+    patch((a) => ({ ...a, isTranslating: true }));
+    try {
+      const pains = audience.pain_points ?? [];
+      const desires = audience.desires ?? [];
+      const vocab = audience.vocab_to_use ?? [];
+      const payload: Record<string, string> = {
+        segment_name: audience.segment_name ?? '',
+        description: audience.description ?? '',
+      };
+      pains.forEach((p, i) => { payload[`pain_${i}`] = p; });
+      desires.forEach((d, i) => { payload[`desire_${i}`] = d; });
+      vocab.forEach((v, i) => { payload[`vocab_${i}`] = v; });
+
+      const tr = await postTranslateUk(payload);
+      patch((a) => ({
+        ...a,
+        translation: {
+          segment_name: tr.segment_name ?? '',
+          description: tr.description ?? '',
+          pain_points: pains.map((_, i) => tr[`pain_${i}`] ?? ''),
+          desires: desires.map((_, i) => tr[`desire_${i}`] ?? ''),
+          vocab_to_use: vocab.map((_, i) => tr[`vocab_${i}`] ?? ''),
+        },
+        isTranslating: false,
+        showTranslation: true,
+      }));
+    } catch (e) {
+      console.error('[toggleRsocAudienceTranslation]', e);
+      patch((a) => ({ ...a, isTranslating: false }));
+      get().showError(`Translation failed: ${humanizeError(e)}`);
     }
   },
 

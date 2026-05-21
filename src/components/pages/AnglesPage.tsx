@@ -31,8 +31,7 @@ const INPUT_HELP =
 const AUDIENCES_HELP =
   'Сегменти аудиторій з реальної видачі. Обери ті, під які хочеш заголовки (1–5), і тисни «Generate Headlines».';
 
-const HEADLINES_HELP =
-  'Топ-3 заголовки на кожну обрану аудиторію — вже відкуровані медіабайєром під твій ключ і GEO.';
+const HEADLINES_HELP = 'Топ-3 заголовки на кожну обрану аудиторію';
 
 const StatusBar = ({ status }: { status: ArticleStatus }) => (
   <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center gap-2 shrink-0">
@@ -63,6 +62,7 @@ export const AnglesPage = () => {
   const rsocHeadlines = useAppStore((s) => s.rsocHeadlines);
   const generateRsocAudiences = useAppStore((s) => s.generateRsocAudiences);
   const generateRsocHeadlines = useAppStore((s) => s.generateRsocHeadlines);
+  const toggleRsocAudienceTranslation = useAppStore((s) => s.toggleRsocAudienceTranslation);
 
   const isLoadingAudiences = rsocAudiencesStatus === 'loading';
   const isLoadingHeadlines = rsocHeadlinesStatus === 'loading';
@@ -228,13 +228,29 @@ export const AnglesPage = () => {
             )}
             {audiences.map((a) => {
               const isPicked = picked.has(a.segment_id);
+              const isUk = !!a.showTranslation && !!a.translation;
+              const nameVal = isUk ? (a.translation?.segment_name || a.segment_name) : a.segment_name;
+              const descVal = isUk ? (a.translation?.description ?? '') : a.description;
+              const painList = isUk ? (a.translation?.pain_points ?? []) : a.pain_points;
+              const desireList = isUk ? (a.translation?.desires ?? []) : a.desires;
+              const vocabList = isUk ? (a.translation?.vocab_to_use ?? []) : a.vocab_to_use;
+              let translateLabel = '🇺🇦 Translate';
+              if (a.isTranslating) translateLabel = 'Translating…';
+              else if (isUk) translateLabel = '🇺🇸 Original';
               return (
-                <button
+                <div
                   key={a.segment_id}
-                  type="button"
-                  onClick={() => togglePick(a.segment_id)}
+                  role="button"
+                  tabIndex={0}
                   aria-pressed={isPicked}
-                  className={`w-full text-left rounded-lg border bg-white p-3 transition-colors ${
+                  onClick={() => togglePick(a.segment_id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      togglePick(a.segment_id);
+                    }
+                  }}
+                  className={`w-full cursor-pointer text-left rounded-lg border bg-white p-3 transition-colors ${
                     isPicked ? 'border-blue-500 ring-1 ring-blue-500' : 'border-slate-200 hover:bg-slate-50'
                   }`}
                 >
@@ -248,20 +264,34 @@ export const AnglesPage = () => {
                       ✓
                     </span>
                     <div className="min-w-0 flex-1 space-y-2.5">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-white">
-                          {a.segment_id}
-                        </span>
-                        <span className="font-semibold text-sm leading-snug">{a.segment_name}</span>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-white">
+                            {a.segment_id}
+                          </span>
+                          <span className="font-semibold text-sm leading-snug">{nameVal}</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="shrink-0"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void toggleRsocAudienceTranslation(a.segment_id);
+                          }}
+                          disabled={a.isTranslating}
+                        >
+                          {translateLabel}
+                        </Button>
                       </div>
-                      {a.description && (
-                        <p className="text-xs leading-relaxed text-slate-900">{a.description}</p>
+                      {descVal && (
+                        <p className="text-xs leading-relaxed text-slate-900">{descVal}</p>
                       )}
-                      {a.pain_points?.length > 0 && (
+                      {painList.length > 0 && (
                         <div>
                           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Pain points</p>
                           <ul className="mt-1 space-y-0.5">
-                            {a.pain_points.map((p, i) => (
+                            {painList.map((p, i) => (
                               <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-900">
                                 <span className="text-slate-400" aria-hidden="true">•</span>
                                 <span>{p}</span>
@@ -270,11 +300,11 @@ export const AnglesPage = () => {
                           </ul>
                         </div>
                       )}
-                      {a.desires?.length > 0 && (
+                      {desireList.length > 0 && (
                         <div>
                           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Desires</p>
                           <ul className="mt-1 space-y-0.5">
-                            {a.desires.map((d, i) => (
+                            {desireList.map((d, i) => (
                               <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-900">
                                 <span className="text-slate-400" aria-hidden="true">•</span>
                                 <span>{d}</span>
@@ -283,11 +313,11 @@ export const AnglesPage = () => {
                           </ul>
                         </div>
                       )}
-                      {a.vocab_to_use?.length > 0 && (
+                      {vocabList.length > 0 && (
                         <div>
                           <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Vocab</p>
                           <div className="mt-1 flex flex-wrap gap-1">
-                            {a.vocab_to_use.map((v, i) => (
+                            {vocabList.map((v, i) => (
                               <span
                                 key={i}
                                 className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700"
@@ -300,7 +330,7 @@ export const AnglesPage = () => {
                       )}
                     </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
