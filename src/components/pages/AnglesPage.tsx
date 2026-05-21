@@ -247,26 +247,56 @@ export const AnglesPage = () => {
                     >
                       ✓
                     </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] font-mono font-bold text-slate-400">{a.segment_id}</span>
-                        <span className="font-semibold text-sm">{a.segment_name}</span>
+                    <div className="min-w-0 flex-1 space-y-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-white">
+                          {a.segment_id}
+                        </span>
+                        <span className="font-semibold text-sm leading-snug">{a.segment_name}</span>
                       </div>
-                      {a.description && <p className="text-xs text-slate-600 mt-1">{a.description}</p>}
+                      {a.description && (
+                        <p className="text-xs leading-relaxed text-slate-800">{a.description}</p>
+                      )}
                       {a.pain_points?.length > 0 && (
-                        <p className="text-[11px] text-slate-500 mt-1">
-                          <span className="font-semibold">Pain:</span> {a.pain_points.join(' · ')}
-                        </p>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-wide text-rose-600">Pain points</p>
+                          <ul className="mt-1 space-y-0.5">
+                            {a.pain_points.map((p, i) => (
+                              <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-800">
+                                <span className="text-rose-400" aria-hidden="true">•</span>
+                                <span>{p}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       )}
                       {a.desires?.length > 0 && (
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          <span className="font-semibold">Desires:</span> {a.desires.join(' · ')}
-                        </p>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Desires</p>
+                          <ul className="mt-1 space-y-0.5">
+                            {a.desires.map((d, i) => (
+                              <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-800">
+                                <span className="text-emerald-500" aria-hidden="true">•</span>
+                                <span>{d}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
                       )}
                       {a.vocab_to_use?.length > 0 && (
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          <span className="font-semibold">Vocab:</span> {a.vocab_to_use.join(' · ')}
-                        </p>
+                        <div>
+                          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Vocab</p>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {a.vocab_to_use.map((v, i) => (
+                              <span
+                                key={i}
+                                className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-700"
+                              >
+                                {v}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
@@ -333,9 +363,14 @@ export const AnglesPage = () => {
                           {h.headline_kernel}
                         </span>
                       </div>
-                      <p className="text-sm font-medium">{h.headline}</p>
+                      <p className="text-sm font-medium leading-snug">{h.headline}</p>
                       {h.translation_ua && (
-                        <p className="text-xs text-slate-500 mt-1 italic">{h.translation_ua}</p>
+                        <div className="mt-2 flex items-start gap-1.5 border-t border-dashed border-slate-200 pt-2">
+                          <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">
+                            UA
+                          </span>
+                          <p className="text-xs leading-relaxed text-slate-500">{h.translation_ua}</p>
+                        </div>
                       )}
                     </div>
                   ))}

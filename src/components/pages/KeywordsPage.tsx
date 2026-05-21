@@ -24,6 +24,9 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
   error: 'text-red-600',
 };
 
+const sanitizeForFilename = (s: string): string =>
+  s.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
+
 export const KeywordsPage = () => {
   const [geo, setGeo] = useState('United States');
   const [language, setLanguage] = useState('English');
@@ -81,6 +84,24 @@ export const KeywordsPage = () => {
       anchor: anchor.trim(),
       translation: anchorTranslation,
     });
+  };
+
+  // Save the rendered research report (the iframe's HTML) to the user's PC, the same
+  // download-a-Blob pattern the Creatives batches use.
+  const handleDownload = () => {
+    if (!keywordHtml) return;
+    const namePart = sanitizeForFilename(anchor) || 'keywords';
+    const geoPart = sanitizeForFilename(geo);
+    const fileName = `keywords_${namePart}${geoPart ? `_${geoPart}` : ''}.html`;
+    const blob = new Blob([keywordHtml], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
@@ -170,7 +191,17 @@ export const KeywordsPage = () => {
       {/* 2. Results — takes remaining width */}
       <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
         <div className="flex flex-col gap-4 flex-1 min-h-0">
-          <h2 className="font-bold text-xl mb-2 shrink-0">2. Results</h2>
+          <div className="flex items-center justify-between mb-2 shrink-0">
+            <h2 className="font-bold text-xl">2. Results</h2>
+            <Button
+              onClick={handleDownload}
+              disabled={keywordStatus !== 'success' || !keywordHtml}
+              size="sm"
+              className="bg-black hover:bg-gray-800 text-white"
+            >
+              Download
+            </Button>
+          </div>
 
           {/* Status bar — color-coded, with a live elapsed-time counter while loading. */}
           <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center justify-between shrink-0">
