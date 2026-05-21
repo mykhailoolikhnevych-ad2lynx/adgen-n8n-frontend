@@ -234,8 +234,8 @@ export const AnglesPage = () => {
                   type="button"
                   onClick={() => togglePick(a.segment_id)}
                   aria-pressed={isPicked}
-                  className={`w-full text-left rounded-lg border p-3 transition-colors ${
-                    isPicked ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:bg-slate-50'
+                  className={`w-full text-left rounded-lg border bg-white p-3 transition-colors ${
+                    isPicked ? 'border-blue-500 ring-1 ring-blue-500' : 'border-slate-200 hover:bg-slate-50'
                   }`}
                 >
                   <div className="flex items-start gap-2">
@@ -255,15 +255,15 @@ export const AnglesPage = () => {
                         <span className="font-semibold text-sm leading-snug">{a.segment_name}</span>
                       </div>
                       {a.description && (
-                        <p className="text-xs leading-relaxed text-slate-800">{a.description}</p>
+                        <p className="text-xs leading-relaxed text-slate-900">{a.description}</p>
                       )}
                       {a.pain_points?.length > 0 && (
                         <div>
-                          <p className="text-xs font-bold uppercase tracking-wide text-rose-600">Pain points</p>
+                          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Pain points</p>
                           <ul className="mt-1 space-y-0.5">
                             {a.pain_points.map((p, i) => (
-                              <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-800">
-                                <span className="text-rose-400" aria-hidden="true">•</span>
+                              <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-900">
+                                <span className="text-slate-400" aria-hidden="true">•</span>
                                 <span>{p}</span>
                               </li>
                             ))}
@@ -272,11 +272,11 @@ export const AnglesPage = () => {
                       )}
                       {a.desires?.length > 0 && (
                         <div>
-                          <p className="text-xs font-bold uppercase tracking-wide text-emerald-600">Desires</p>
+                          <p className="text-xs font-bold uppercase tracking-wide text-slate-500">Desires</p>
                           <ul className="mt-1 space-y-0.5">
                             {a.desires.map((d, i) => (
-                              <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-800">
-                                <span className="text-emerald-500" aria-hidden="true">•</span>
+                              <li key={i} className="flex gap-1.5 text-xs leading-relaxed text-slate-900">
+                                <span className="text-slate-400" aria-hidden="true">•</span>
                                 <span>{d}</span>
                               </li>
                             ))}
