@@ -7,6 +7,7 @@ import { Column3 } from './columns/Column3';
 import { Column4 } from './columns/Column4';
 import { KeywordsPage } from './pages/KeywordsPage';
 import { ArticlePage } from './pages/ArticlePage';
+import { AnglesPage } from './pages/AnglesPage';
 import { TooltipProvider } from './ui/tooltip';
 
 type Page = 'keywords' | 'angles' | 'article' | 'creatives';
@@ -26,12 +27,6 @@ const formatErrorArg = (a: unknown): string => {
   }
   return String(a);
 };
-
-const EmptyPage = ({ label }: { label: string }) => (
-  <div className="flex h-full w-full items-center justify-center bg-slate-100 text-gray-400 italic">
-    {label} — coming soon
-  </div>
-);
 
 const CreativesPage = () => (
   <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
@@ -169,7 +164,7 @@ export default function MainApp() {
         <main className="flex-1 overflow-hidden">
           {page === 'creatives' && <CreativesPage />}
           {page === 'keywords' && <KeywordsPage />}
-          {page === 'angles' && <EmptyPage label="Angles" />}
+          {page === 'angles' && <AnglesPage />}
           {page === 'article' && <ArticlePage />}
         </main>
       </div>

@@ -1,0 +1,664 @@
+{
+  "name": "RSOC Audiences & Top-Pick Headlines",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rsoc-generate-audiences",
+        "responseMode": "lastNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "c0d211c3-143d-4dd5-ad84-3274d359c9ac",
+      "name": "Webhook: Start",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -16,
+        704
+      ],
+      "webhookId": "1ec92a07-750a-4bdf-ad17-16329dfde556"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = items[0].json.body || items[0].json;\nconst anchorInput = String(b.anchor || b['Anchor (keyword)'] || b.keyword || '').trim();\nconst geo = String(b.geo || b.GEO || '').trim();\nlet language = String(b.language || b.Language || '').trim();\nconst trRaw = String(b.translation || b['Anchor translation'] || '').trim().toLowerCase();\nconst translationMode = (trRaw === 'auto' || trRaw === 'автоматично') ? 'auto' : 'none';\nconst MAP = {\n  'United States':{gl:'us',lang:'English'}, 'United Kingdom':{gl:'gb',lang:'English'},\n  'Canada':{gl:'ca',lang:'English'}, 'Australia':{gl:'au',lang:'English'},\n  'Poland':{gl:'pl',lang:'Polish'}, 'Germany':{gl:'de',lang:'German'},\n  'France':{gl:'fr',lang:'French'}, 'Italy':{gl:'it',lang:'Italian'},\n  'Spain':{gl:'es',lang:'Spanish'}, 'Mexico':{gl:'mx',lang:'Spanish'},\n  'Brazil':{gl:'br',lang:'Portuguese'},\n};\nconst m = MAP[geo] || {gl:'us', lang:'English'};\nif (!language) language = m.lang;\nif (!anchorInput) throw new Error('anchor is empty (body.anchor).');\nif (!geo) throw new Error('geo is empty (body.geo).');\nreturn [{ json: { anchorInput, geo, gl: m.gl, language, translationMode } }];"
+      },
+      "id": "66ac9d66-93ed-4577-98e2-03891088c61d",
+      "name": "Normalize Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Keyword: \"{{ $json.keyword }}\"\nGEO: {{ $json.geo }}\nTarget language: {{ $json.language }}\n\nIdentify 3-5 distinct audience segments grounded in the RESEARCH below. Output JSON with this exact schema:\n{ \"audiences\": [ { \"segment_id\":\"A1\",\"segment_name\":string,\"description\":string,\"demographics\":string,\"psychographics\":string,\"pain_points\":[string],\"desires\":[string],\"objections\":[string],\"vocab_to_use\":[string],\"notes\":string } ] }\nRules:\n- 3 segments if research is thin or audiences clearly overlap; 5 only when the research shows genuinely distinct sub-populations.\n- segment_id is \"A1\"..\"A5\" in order.\n- Write all segment text fields IN {{ $json.language }}.\n- Output MUST be valid JSON, nothing else.\n\nRESEARCH (real Google SERP data for this keyword/GEO):\n{{ $json.research }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a senior performance marketing strategist specializing in audience segmentation for RSOC (Related Searches on Content) headline generation.\n\nYour job: given a keyword, a GEO market, a target language, and a RESEARCH block built from real Google SERP data, identify 3 to 5 distinct, marketable audience segments suitable for separate ad creatives.\n\nHARD RULES:\n- Every audience attribute MUST be grounded in the RESEARCH block. No outside knowledge, no invented signals.\n- Segments must be DISTINCT — no two segments overlap on more than 2 attributes.\n- Each segment must be MARKETABLE — clear enough that a copywriter could write a different headline for it.\n- vocab_to_use must be drawn from the RESEARCH (verbatim or near-verbatim phrases real searchers/SERPs use), written in {{ $json.language }}.\n- Pain points, desires, and objections must trace to concerns visible in the RESEARCH.\n- Output ONLY valid JSON matching the schema. No prose, no markdown fences."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "id": "2038bead-f0cd-4647-9744-874e21ab67a3",
+      "name": "Audience Excavator",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        1664,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-sonnet-4.6",
+        "options": {
+          "maxTokens": 8000,
+          "temperature": 0.7
+        }
+      },
+      "id": "22fe4c99-42d2-42ef-92a1-a95d096a3cfa",
+      "name": "Audience Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1664,
+        928
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "T4gZIZDKUxdUB2uC",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"audiences\": [\n    {\n      \"segment_id\": \"A1\",\n      \"segment_name\": \"string\",\n      \"description\": \"string\",\n      \"demographics\": \"string\",\n      \"psychographics\": \"string\",\n      \"pain_points\": [\n        \"string\"\n      ],\n      \"desires\": [\n        \"string\"\n      ],\n      \"objections\": [\n        \"string\"\n      ],\n      \"vocab_to_use\": [\n        \"string\"\n      ],\n      \"notes\": \"string\"\n    }\n  ]\n}"
+      },
+      "id": "1ba35c19-6f2d-4d67-b56e-30f42c4f60c1",
+      "name": "Audience Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1808,
+        944
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rsoc-generate-headlines",
+        "responseMode": "lastNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "14e44215-01c0-4b94-9b7b-5f0a8b431810",
+      "name": "Webhook: Pick Audiences",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        2016,
+        704
+      ],
+      "webhookId": "4bd1162e-3040-42b6-9e83-f82446cc22be"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $json.body || $json;\nlet picked = b.picked;\nif (Array.isArray(picked)) picked = picked.join(',');\npicked = String(picked || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean);\nconst all = b.audiences || [];\nconst sel = all.filter(a => picked.includes(String(a.segment_id).toUpperCase()));\nif (sel.length < 1) throw new Error('No audiences picked (send body.picked, e.g. \"A1,A3\").');\nif (sel.length > 5) throw new Error('Pick at most 5 audiences.');\nreturn [{ json: {\n  keyword: b.keyword, geo: b.geo, language: b.language,\n  research: b.research || '', audiences: sel\n} }];"
+      },
+      "id": "947e88f0-f4c5-4cf9-90cf-fc210df70143",
+      "name": "Filter Picked Audiences",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2256,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Keyword: \"{{ $json.keyword }}\"\nGEO: {{ $json.geo }}\n\n=== RESEARCH (real Google SERP data — use this vocabulary verbatim where possible) ===\n{{ $json.research }}\n\n=== AUDIENCES SELECTED BY OPERATOR (HITL1) ===\n{{ JSON.stringify($json.audiences) }}\n\n=== OUTPUT SCHEMA ===\n{ \"headlines\":[ { \"headline_id\":\"H01\",\"audience_id\":\"A1\",\"angle_formula\":\"AF7\",\"headline_kernel\":\"HK1\",\"headline\":\"...\",\"char_count\":67,\"reading_scope\":\"buyer\"|\"broadened\",\"translation_ua\":\"...\" } ] }\nGenerate 6-10 headlines per audience. Output MUST be valid JSON, nothing else.",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are Agent 3: Angle Strategist for an RSOC headline generator.\nYour job: cross each selected audience with the 15 ANGLE FORMULAS (AF1-AF15) and 6 HOOK KERNELS (HK1-HK6) to produce 6-10 headlines per audience that a real media buyer would test. Each headline = AF × HK (two dimensions, multiplicative variety).\n\n=== 15 ANGLE FORMULAS (the WHAT) ===  [scope]  template\n  BUYER-DIRECT:\n  AF1  Identity Lock        [buyer]      [Keyword] for [Audience]\n  AF2  Hidden Eligibility   [buyer]      [Audience] don't realize they qualify for [Keyword]...\n  AF3  Friction Removal     [buyer]      Get [Keyword] without [Barrier]\n  AF4  Comparison Frame     [buyer]      [Keyword] for [Audience] vs general\n  AF5  Insider Process      [buyer]      How [Audience] actually get [Keyword]\n  AF6  Stigma Bypass        [buyer]      [Keyword] for [Audience] — skip [shame]\n  AF7  Number Anchor        [buyer]      [N] [Keyword] options for [Audience]\n  AF8  Authority Endorsed   [buyer]      [Authority/Program] [Keyword] for [Audience]\n  AF9  Time Window          [buyer]      [Year] [Keyword] for [Audience]\n  AF10 Reverse Frame        [buyer]      Why [Audience] get denied [Keyword]...\n  BROADENED-SCOPE (for casual readers, not just buyers):\n  AF11 System Reveal        [broadened]  Why [Industry] [Counter-intuitive Action]...\n  AF12 Outrage Story        [broadened]  [N] Things [Authority] Quietly Get Away With\n  AF13 Number Anchor Big    [broadened]  The $[Big Number] [Outcome] That Surprised...\n  AF14 Insider Knowledge    [broadened]  [N] Things [Profession] Tell Family Not Clients\n  AF15 Time-Bomb Preparedness [broadened] What to Do If [Bad Thing] Happens in 2026...\n\n=== 6 HOOK KERNELS (the HOW) ===\n  HK1 Curiosity Gap    — unfilled info gap. Words: Discover, What [X] Don't Tell You, Hidden, What Most Miss.\n  HK2 Question         — commitment principle. \"Are You [Audience]?\", \"Did You Know...?\", \"Why [Outcome]?\"\n  HK3 Negative Framing — loss aversion. Words: Mistakes, Hidden Fees, Avoid, Warning, Don't.\n  HK4 Comparison       — add \"vs\"/\"instead of\" axis. \"X vs Y for [Audience]\".\n  HK5 Time Pressure    — urgency anchor. \"2026 Update\", \"Before [Date]\", \"Just Changed\".\n  HK6 Identity Stack   — stack 2-3 audience filters. \"Single Mums on Universal Credit Looking for First Car\".\n\n=== STRONG AF × HK PAIRINGS ===\n  AF1->HK6,HK5  AF2->HK1,HK2  AF3->HK3,HK4  AF4->HK4,HK5  AF5->HK1,HK6\n  AF6->HK2,HK6  AF7->HK1,HK3  AF8->HK5,HK4  AF9->HK5,HK3  AF10->HK1,HK3\n  AF11->HK1,HK2  AF12->HK3  AF13->HK1,HK4  AF14->HK1  AF15->HK5,HK3\n\n=== HARD RULES (violations get the headline rejected) ===\n  H1.  Length 50-90 characters. CJK: count each full-width char as 2 (target 25-45 CJK chars).\n  H2.  Primary keyword \"{{ $json.keyword }}\" MUST appear in every headline (or a very close near-synonym).\n  H3.  Audience must be implied or named — speak to that audience specifically.\n  H4.  No double punctuation: no \"!!\", no \"?!\", max ONE \":\" per headline.\n  H5.  Source language of every headline MUST be {{ $json.language }} (target market {{ $json.geo }}). translation_ua is ALWAYS Ukrainian regardless of source language.\n  H6.  Each headline declares its angle_formula (AF1-AF15) AND headline_kernel (HK1-HK6 or HKnone).\n  H7.  Mix: 40-60% of output broadened-scope (AF11-AF15); rest buyer-direct (AF1-AF10).\n  H8.  Diversity: across ALL output use >=3 different AF codes AND >=3 different HK codes.\n  H8a. HK6 IDENTITY STACK — per audience with 2+ stackable demographic filters, generate AT LEAST 2 HK6 headlines with 2+ filters EXPLICIT in the text. (1-filter callouts don't count.)\n  H8b. Aim to use at least one headline per HK1-HK5 across the full output.\n  H9.  Per audience: 6-10 headlines, with >=2 different AFs and >=2 different HKs.\n  H10. Generate translation_ua for every headline (idiomatic Ukrainian for UA diaspora).\n\n=== FORBIDDEN PHRASES (auto-reject, case-insensitive) ===\n  \"100% compensation\", \"guaranteed million\", \"maximum payout\", \"$10m lawsuit\", \"free money\", \"government will pay\", \"hidden cash\", \"they don't want you to know\", \"shocking truth\", \"secret they're hiding\", \"one weird trick\"\n\n=== FORMULA-SPECIFIC COMPLIANCE ===\n  AF12/AF14: every \"insider/outrage\" claim must trace to a real, public, commonly-known source; no conspiracy framing, no \"they don't want you to know\". AF13: the big number must be realistic, and the full primary keyword must still appear (don't swap it for a generic term). AF11/AF15: no false urgency, no fabricated stats.\n\n=== VOCABULARY GROUNDING ===\n  Use each audience's vocab_to_use phrases verbatim or near-verbatim where natural — these are the real native phrases for this keyword/market.\n\nOutput ONLY valid JSON. No prose, no markdown fences."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "id": "cf89c761-45d3-4ff3-b2c8-682a7606f172",
+      "name": "Headline Generator",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        2448,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-sonnet-4.6",
+        "options": {
+          "maxTokens": 8000,
+          "temperature": 0.7
+        }
+      },
+      "id": "62dc2e61-2cff-415e-aebd-4bff35571104",
+      "name": "Headline Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        2464,
+        528
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "T4gZIZDKUxdUB2uC",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"headlines\": [\n    {\n      \"headline_id\": \"H01\",\n      \"audience_id\": \"A1\",\n      \"angle_formula\": \"AF7\",\n      \"headline_kernel\": \"HK1\",\n      \"headline\": \"string\",\n      \"char_count\": 67,\n      \"reading_scope\": \"buyer\",\n      \"translation_ua\": \"string\"\n    }\n  ]\n}"
+      },
+      "id": "2060ff48-35c6-490a-8b74-33d7442e7878",
+      "name": "Headline Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        2592,
+        896
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('Filter Picked Audiences').first().json;\nconst hs = (($json.output || {}).headlines) || [];\nconst FORBIDDEN = [\"100% compensation\",\"guaranteed million\",\"maximum payout\",\"$10m lawsuit\",\"free money\",\"government will pay\",\"hidden cash\",\"they don't want you to know\",\"shocking truth\",\"secret they're hiding\",\"one weird trick\"];\nconst kw = String(meta.keyword || '').toLowerCase();\nconst kwTokens = kw.split(/\\s+/).filter(t => t.length > 3);\nconst dlen = s => { let n = 0; for (const ch of String(s||'')) { const c = ch.codePointAt(0); n += ((c>=0x3000&&c<=0x9FFF)||(c>=0xAC00&&c<=0xD7AF)||(c>=0xFF00&&c<=0xFFEF)||(c>=0x20000&&c<=0x2FFFF)) ? 2 : 1; } return n; };\nhs.forEach(h => {\n  const t = String(h.headline || ''); const v = []; const L = dlen(t);\n  if (L < 50 || L > 90) v.push('len' + L);\n  if (t.includes('!!')) v.push('!!');\n  if (t.includes('?!')) v.push('?!');\n  if ((t.match(/:/g) || []).length > 1) v.push('colon');\n  const low = t.toLowerCase();\n  for (const p of FORBIDDEN) { if (low.includes(p)) { v.push('forbidden'); break; } }\n  if (kwTokens.length) { const m = kwTokens.filter(x => low.includes(x)).length; if (m / kwTokens.length < 0.5) v.push('kw'); }\n  h.has_violations = v.length > 0; h._violations = v;\n});\nconst aud = meta.audiences || [];\nconst audiences_slim = aud.map(a => ({ id: a.segment_id, name: a.segment_name, pain_points: a.pain_points || [], desires: a.desires || [], vocab_to_use: a.vocab_to_use || [] }));\nconst candidates_slim = hs.map(h => ({ headline_id: h.headline_id, audience_id: h.audience_id, AF: h.angle_formula, HK: h.headline_kernel, scope: h.reading_scope, headline: h.headline, has_violations: !!h.has_violations }));\nreturn [{ json: { keyword: meta.keyword, geo: meta.geo, language: meta.language, audiences: aud, headlines: hs, audiences_slim, candidates_slim } }];"
+      },
+      "id": "05375da1-a276-4160-93c9-060cee02430d",
+      "name": "Validate Headlines",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2768,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Anchor keyword: \"{{ $json.keyword }}\"\nGEO: {{ $json.geo }} ; Language: {{ $json.language }}\nPick the TOP 3 headlines PER audience from the candidates below.\nOUTPUT JSON:\n{ \"selections\":[ { \"audience_id\":\"A1\",\"audience_name\":\"...\",\"top_picks\":[ {\"rank\":1,\"headline_id\":\"H08\",\"why_this\":\"...\",\"vs_alternatives\":\"...\"} ],\"fallback_note\": null } ] }\nRULES:\n- One entry per picked audience; audience order matches input order.\n- headline_id must EXACTLY match a candidate's id.\n- If <3 valid candidates: include all available, set fallback_note. If 0: top_picks=[], explain.\n- Output ONLY valid JSON.\nAUDIENCES (slim: id, name, pain_points, desires, vocab_to_use):\n{{ JSON.stringify($json.audiences_slim) }}\nHEADLINE CANDIDATES (slim: headline_id, audience_id, AF, HK, scope, headline, has_violations):\n{{ JSON.stringify($json.candidates_slim) }}",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "You are a senior direct-response copywriter and media buyer for RSOC arbitrage campaigns. You have multiple headline candidates per audience. Task: PICK THE TOP 3 PER AUDIENCE — the ones an operator should actually run. You are not generating new content; you are CURATING.\n\nSELECTION CRITERIA (priority order):\n  1. COMPLIANCE — skip any candidate with has_violations=true. If a flagged candidate is the only option, skip the audience and note it in fallback_note.\n  2. KEYWORD PRESENCE — anchor keyword must appear (verify).\n  3. AUDIENCE FIT — must address THIS audience's pain points/desires/vocab; specific beats generic.\n  4. DIVERSITY WITHIN THE 3 — the 3 picks use 3 different AF codes AND 3 different HK codes; if not possible, use what's distinct and note in fallback_note.\n  5. SCOPE BALANCE — if both buyer and broadened candidates exist, include >=1 of each.\n  6. CLICK-WORTHINESS — would a real user in this segment click in a newsfeed?\nRANKING: rank 1 = strongest (highest budget), rank 3 = solid backup.\nWrite why_this / vs_alternatives in English (operator notes). Do NOT translate the headlines."
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "id": "5d3057df-d4a2-47ec-9ec3-def54ec5a1ab",
+      "name": "Top-Pick Selection",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        2976,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-sonnet-4.6",
+        "options": {
+          "maxTokens": 8000,
+          "temperature": 0.7
+        }
+      },
+      "id": "c6d3f016-fdab-436e-b67f-4d9cf21794e5",
+      "name": "Selection Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        2976,
+        912
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "T4gZIZDKUxdUB2uC",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"selections\": [\n    {\n      \"audience_id\": \"A1\",\n      \"audience_name\": \"string\",\n      \"top_picks\": [\n        {\n          \"rank\": 1,\n          \"headline_id\": \"H08\",\n          \"why_this\": \"string\",\n          \"vs_alternatives\": \"string\"\n        }\n      ],\n      \"fallback_note\": \"string\"\n    }\n  ]\n}"
+      },
+      "id": "8c7c618e-045a-4012-aba4-1e1678ed1f6e",
+      "name": "Selection Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        3120,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const sels = (($json.output || {}).selections) || [];\nconst vh = $('Validate Headlines').first().json;\nconst byId = {}; (vh.headlines || []).forEach(h => { byId[h.headline_id] = h; });\nconst audInput = vh.audiences || [];\nconst order = audInput.map(a => a.segment_id);\nconst nameById = {}; audInput.forEach(a => { nameById[a.segment_id] = a.segment_name; });\nlet rows = [];\nsels.forEach(s => { (s.top_picks || []).forEach(p => {\n  const h = byId[p.headline_id]; if (!h) return;\n  rows.push({\n    pick: false, rank: p.rank,\n    audience: s.audience_id + ' · ' + (nameById[s.audience_id] || s.audience_name || ''),\n    angle_formula: h.angle_formula, headline_kernel: h.headline_kernel,\n    headline: h.headline, translation_ua: h.translation_ua || '', headline_id: p.headline_id\n  });\n}); });\nrows.sort((a, b) => {\n  const ai = order.indexOf(String(a.audience).split(' · ')[0]);\n  const bi = order.indexOf(String(b.audience).split(' · ')[0]);\n  if (ai !== bi) return ai - bi;\n  return (a.rank || 99) - (b.rank || 99);\n});\nreturn [{ json: { top_picks: rows } }];"
+      },
+      "id": "b9bbce54-e329-406e-861e-152a4aeeab89",
+      "name": "Flatten Top Picks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3376,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cb50368e-b191-4927-b7fd-ca90c3184d48",
+              "leftValue": "={{ $json.translationMode }}",
+              "rightValue": "auto",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "252d2058-d348-4721-b0f8-aff079642d15",
+      "name": "IF: Auto Translate Anchor?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        432,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a search-keyword localization expert for paid media campaigns.\nTranslate the anchor keyword into the most idiomatic NATIVE search query a real user in {{ $('Normalize Request').first().json.geo }} would type into Google for the SAME intent.\nRules: use the actual term searchers use (not a literal dictionary translation); preserve commercial intent; use the target market's script; match native casing. If the input is already in {{ $('Normalize Request').first().json.language }}, return it unchanged.\nReturn ONLY the translated keyword as plain text — no quotes, no commentary.\n\nAnchor: {{ $('Normalize Request').first().json.anchorInput }}\nTarget language: {{ $('Normalize Request').first().json.language }}",
+        "batching": {}
+      },
+      "id": "ac5b909f-6161-48df-9633-42ad56aec95f",
+      "name": "Anchor Translator",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        608,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "model": "anthropic/claude-sonnet-4.6",
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "fddde9f3-3861-4cc9-ba7e-a532aa45060a",
+      "name": "Translator Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        608,
+        832
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "T4gZIZDKUxdUB2uC",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "34b27dc7-1ac3-49e6-9414-62a4e49c33d5",
+      "name": "Merge Anchor Paths",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        944,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.searchapi.io/api/v1/search",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ ($json.text || $json.anchorInput || $('Normalize Request').first().json.anchorInput || '').toString().trim() }}"
+            },
+            {
+              "name": "engine",
+              "value": "google"
+            },
+            {
+              "name": "gl",
+              "value": "={{ $('Normalize Request').first().json.gl }}"
+            },
+            {
+              "name": "num",
+              "value": "10"
+            },
+            {
+              "name": "api_key",
+              "value": "TL54DFPhEAqCNkuAKSYhprhP"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "750f2e2e-b27a-4742-ba58-d99b29021a79",
+      "name": "Fetch SERP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1216,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const serp = $json || {};\nconst meta = $('Normalize Request').first().json;\nconst keyword = (serp.search_parameters && serp.search_parameters.q) || meta.anchorInput;\nconst org = (serp.organic_results || []).slice(0, 10).map((r, i) =>\n  `${i + 1}. ${r.title || ''} — ${r.snippet || ''} (${r.link || r.displayed_link || ''})`);\nconst related = (serp.related_searches || []).map(r => r.query || r.title || r).filter(Boolean);\nconst paa = (serp.related_questions || serp.people_also_ask || []).map(q => q.question || q.title || q).filter(Boolean);\nlet ai = '';\nif (serp.answer_box) ai = serp.answer_box.answer || serp.answer_box.snippet || '';\nelse if (serp.ai_overview) ai = JSON.stringify(serp.ai_overview).slice(0, 1500);\nlet research = `SEARCH QUERY: ${keyword}\\nGEO: ${meta.geo}\\n\\nTOP ORGANIC RESULTS:\\n${org.join('\\n')}`;\nif (ai) research += `\\n\\nAI OVERVIEW / ANSWER BOX:\\n${ai}`;\nif (related.length) research += `\\n\\nRELATED SEARCHES:\\n- ${related.join('\\n- ')}`;\nif (paa.length) research += `\\n\\nPEOPLE ALSO ASK:\\n- ${paa.join('\\n- ')}`;\nreturn [{ json: { keyword, geo: meta.geo, gl: meta.gl, language: meta.language, research } }];"
+      },
+      "id": "91f6a452-a96f-48b3-91a1-ea59e295b373",
+      "name": "Clean SERP",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1424,
+        704
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('Clean SERP').first().json;\nconst audiences = (($json.output) || {}).audiences || [];\n// Returned to the caller. Send this whole object back to /rsoc-generate-headlines\n// together with `picked` (the segment_ids to keep).\nreturn [{ json: {\n  keyword: meta.keyword, geo: meta.geo, language: meta.language,\n  research: meta.research, audiences\n} }];"
+      },
+      "id": "6966d1dd-9ff0-40ec-9d1f-318a37850abf",
+      "name": "Bundle for FE",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1884,
+        704
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Audience Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Audience Excavator",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audience Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Audience Excavator",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Headline Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Headline Generator",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Headline Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Headline Generator",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Selection Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Top-Pick Selection",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Selection Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Top-Pick Selection",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Translator Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Anchor Translator",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Start": {
+      "main": [
+        [
+          {
+            "node": "Normalize Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Request": {
+      "main": [
+        [
+          {
+            "node": "IF: Auto Translate Anchor?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Auto Translate Anchor?": {
+      "main": [
+        [
+          {
+            "node": "Anchor Translator",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Anchor Paths",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Anchor Translator": {
+      "main": [
+        [
+          {
+            "node": "Merge Anchor Paths",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Anchor Paths": {
+      "main": [
+        [
+          {
+            "node": "Fetch SERP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch SERP": {
+      "main": [
+        [
+          {
+            "node": "Clean SERP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean SERP": {
+      "main": [
+        [
+          {
+            "node": "Audience Excavator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audience Excavator": {
+      "main": [
+        [
+          {
+            "node": "Bundle for FE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook: Pick Audiences": {
+      "main": [
+        [
+          {
+            "node": "Filter Picked Audiences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Picked Audiences": {
+      "main": [
+        [
+          {
+            "node": "Headline Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Headline Generator": {
+      "main": [
+        [
+          {
+            "node": "Validate Headlines",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Headlines": {
+      "main": [
+        [
+          {
+            "node": "Top-Pick Selection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Top-Pick Selection": {
+      "main": [
+        [
+          {
+            "node": "Flatten Top Picks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "82c040a9-9c3c-4158-ad0d-ed06c55b3003",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "1901eba0192716d867191e6028962c97084f9353bc51143edabe0f2f7ca2e976"
+  },
+  "id": "m3uW773JdCECtFDF",
+  "tags": []
+}

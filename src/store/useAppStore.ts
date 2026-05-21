@@ -90,6 +90,43 @@ export interface Creative {
   fileMeta?: CreativeFileMeta;
 }
 
+// === Angles tab — RSOC Audiences & Top-Pick Headlines (two-step HITL flow) ===
+export interface RsocAudience {
+  segment_id: string;
+  segment_name: string;
+  description: string;
+  demographics: string;
+  psychographics: string;
+  pain_points: string[];
+  desires: string[];
+  objections: string[];
+  vocab_to_use: string[];
+  notes: string;
+}
+// Everything webhook 1 hands back — passed verbatim into webhook 2 alongside `picked`.
+export interface RsocBundle {
+  keyword: string;
+  geo: string;
+  language: string;
+  research: string;
+  audiences: RsocAudience[];
+}
+export interface RsocHeadline {
+  rank: number;
+  audience: string;
+  angle_formula: string;
+  headline_kernel: string;
+  headline: string;
+  translation_ua: string;
+  headline_id: string;
+}
+export interface RsocAudiencesInput {
+  anchor: string;
+  geo: string;
+  language: string;
+  translation: 'auto' | 'none';
+}
+
 interface ErrorBanner { message: string; count: number; }
 interface NoticeBanner { message: string; }
 
@@ -115,6 +152,12 @@ interface AppState {
   keywordHtml: string | null;
   keywordStatus: ArticleStatus;
   keywordError: string | null;
+  rsocBundle: RsocBundle | null;
+  rsocAudiencesStatus: ArticleStatus;
+  rsocAudiencesError: string | null;
+  rsocHeadlines: RsocHeadline[];
+  rsocHeadlinesStatus: ArticleStatus;
+  rsocHeadlinesError: string | null;
   errorBanner: ErrorBanner | null;
   noticeBanner: NoticeBanner | null;
   updateFormData: (field: keyof FormData, value: string) => void;
@@ -126,6 +169,8 @@ interface AppState {
   generateAngles: () => Promise<void>;
   generateArticle: (input: { topic: string; geo: string }) => Promise<void>;
   generateKeywords: (input: KeywordStudioInput) => Promise<void>;
+  generateRsocAudiences: (input: RsocAudiencesInput) => Promise<void>;
+  generateRsocHeadlines: (pickedIds: string[]) => Promise<void>;
   generateConcept: (angleId: string) => Promise<void>;
   generateCreative: (conceptId: string) => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
@@ -165,6 +210,8 @@ const WEBHOOKS = {
   translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
   article: import.meta.env.PUBLIC_WEBHOOK_ARTICLE_URL,
   keywords: import.meta.env.PUBLIC_WEBHOOK_KEYWORDS_URL,
+  rsocAudiences: import.meta.env.PUBLIC_WEBHOOK_RSOC_AUDIENCES_URL,
+  rsocHeadlines: import.meta.env.PUBLIC_WEBHOOK_RSOC_HEADLINES_URL,
 };
 
 export interface KeywordStudioInput {
@@ -199,6 +246,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
+  rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
+  rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
@@ -446,6 +495,111 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     fail(`timed out after ${(POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`);
+  },
+
+  // Angles tab — step 1: anchor/geo/language/translation -> SERP research -> audience segments.
+  // Synchronous webhook (responseMode=lastNode), returns the full bundle we feed back in step 2.
+  generateRsocAudiences: async (input) => {
+    if (!WEBHOOKS.rsocAudiences) {
+      const msg = 'PUBLIC_WEBHOOK_RSOC_AUDIENCES_URL is not set in .env';
+      set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
+      get().showError(msg);
+      return;
+    }
+    set({
+      rsocAudiencesStatus: 'loading', rsocAudiencesError: null, rsocBundle: null,
+      rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        console.log('[generateRsocAudiences] request payload:', input);
+        const { data } = await axios.post(WEBHOOKS.rsocAudiences, input, { timeout: 180_000 });
+        const outer = Array.isArray(data) ? data[0] : data;
+        const bundle: any = (outer && typeof outer === 'object' && 'json' in outer && outer.json) ? outer.json : outer;
+        if (!bundle || !Array.isArray(bundle.audiences)) {
+          console.error('[generateRsocAudiences] unexpected payload shape:', outer);
+          throw new Error('Webhook response missing audiences[]');
+        }
+        set({
+          rsocBundle: {
+            keyword: bundle.keyword ?? input.anchor,
+            geo: bundle.geo ?? input.geo,
+            language: bundle.language ?? input.language,
+            research: bundle.research ?? '',
+            audiences: bundle.audiences,
+          },
+          rsocAudiencesStatus: 'success', rsocAudiencesError: null,
+        });
+        return;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        const msg = humanizeError(e);
+        set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
+        get().showError(`Audience generation failed: ${msg}`);
+        return;
+      }
+    }
+  },
+
+  // Angles tab — step 2: operator picks audience segment_ids, we send them back with the
+  // step-1 bundle to get the curated top-3 headlines per audience.
+  generateRsocHeadlines: async (pickedIds) => {
+    const bundle = get().rsocBundle;
+    if (!bundle) { get().showError('Generate audiences first'); return; }
+    if (!pickedIds.length) { get().showError('Pick at least one audience'); return; }
+    if (!WEBHOOKS.rsocHeadlines) {
+      const msg = 'PUBLIC_WEBHOOK_RSOC_HEADLINES_URL is not set in .env';
+      set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
+      get().showError(msg);
+      return;
+    }
+    set({ rsocHeadlinesStatus: 'loading', rsocHeadlinesError: null, rsocHeadlines: [] });
+    const payload = {
+      picked: pickedIds.join(','),
+      keyword: bundle.keyword,
+      geo: bundle.geo,
+      language: bundle.language,
+      research: bundle.research,
+      audiences: bundle.audiences,
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        console.log('[generateRsocHeadlines] request payload:', { ...payload, research: '…', audiences: `${bundle.audiences.length} items` });
+        const { data } = await axios.post(WEBHOOKS.rsocHeadlines, payload, { timeout: 180_000 });
+        const outer = Array.isArray(data) ? data[0] : data;
+        const result: any = (outer && typeof outer === 'object' && 'json' in outer && outer.json) ? outer.json : outer;
+        const rows = result?.top_picks;
+        if (!Array.isArray(rows)) {
+          console.error('[generateRsocHeadlines] unexpected payload shape:', outer);
+          throw new Error('Webhook response missing top_picks[]');
+        }
+        const headlines: RsocHeadline[] = rows.map((r: any) => ({
+          rank: Number(r.rank) || 0,
+          audience: r.audience ?? '',
+          angle_formula: r.angle_formula ?? '',
+          headline_kernel: r.headline_kernel ?? '',
+          headline: r.headline ?? '',
+          translation_ua: r.translation_ua ?? '',
+          headline_id: r.headline_id ?? '',
+        }));
+        set({ rsocHeadlines: headlines, rsocHeadlinesStatus: 'success', rsocHeadlinesError: null });
+        return;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        const msg = humanizeError(e);
+        set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
+        get().showError(`Headline generation failed: ${msg}`);
+        return;
+      }
+    }
   },
 
   generateConcept: async (angleId) => {
