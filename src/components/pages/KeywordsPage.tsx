@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
@@ -27,6 +27,105 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 const sanitizeForFilename = (s: string): string =>
   s.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80);
 
+// A trend cell is a short string that is *only* a signed percentage, e.g. "+307%", "0%",
+// "-56%", "+604900%". The full-string anchors keep us from matching sentences that merely
+// contain a "%", so we only touch the Trend column (the lone %-suffixed column in the report).
+const TREND_CELL_RE = /^[+\-−]?\s*[\d.,\s]+%$/;
+
+const parseTrendValue = (text: string): number | null => {
+  const t = text.trim();
+  if (t.length > 14 || !TREND_CELL_RE.test(t)) return null;
+  const negative = /[-−]/.test(t);
+  const num = parseFloat(t.replace(/[^\d.]/g, ''));
+  if (Number.isNaN(num)) return null;
+  return negative ? -num : num;
+};
+
+// Color a trend value so growth / flat / decline read at a glance. Saturation scales with
+// magnitude: a small +12% gets a pale green, a +600900% gets solid green.
+const trendBadgeStyle = (v: number): string => {
+  let bg = '#f1f5f9';
+  let fg = '#64748b'; // flat / 0%
+  if (v > 0) {
+    if (v >= 500) { bg = '#15803d'; fg = '#ffffff'; }
+    else if (v >= 100) { bg = '#22c55e'; fg = '#ffffff'; }
+    else if (v >= 20) { bg = '#bbf7d0'; fg = '#14532d'; }
+    else { bg = '#dcfce7'; fg = '#166534'; }
+  } else if (v < 0) {
+    if (v <= -50) { bg = '#dc2626'; fg = '#ffffff'; }
+    else if (v <= -20) { bg = '#f87171'; fg = '#ffffff'; }
+    else { bg = '#fee2e2'; fg = '#991b1b'; }
+  }
+  return `background-color:${bg};color:${fg};font-weight:700;padding:2px 8px;border-radius:6px;display:inline-block;white-space:nowrap;`;
+};
+
+// A CPC cell holds a dollar range like "$1.78–$6.07" (or a single "$5.00"). We rank by the
+// upper bound — the earning ceiling — and only touch cells that actually contain "$".
+const parseCpcValue = (text: string): number | null => {
+  const t = text.trim();
+  if (t.length > 24 || !t.includes('$')) return null;
+  const nums = (t.match(/\d+(?:\.\d+)?/g) ?? []).map(Number).filter((n) => !Number.isNaN(n));
+  if (!nums.length) return null;
+  return Math.max(...nums);
+};
+
+const quantile = (sorted: number[], p: number): number =>
+  sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(p * sorted.length)))];
+
+// Highlight the highest-CPC keywords. Coloring is relative to the table's own spread (CPC
+// scale differs wildly by niche), so the top tier greens out and everything else stays black.
+const cpcTextStyle = (v: number, p70: number, p88: number): string | null => {
+  if (v >= p88) return 'color:#15803d;font-weight:700;';
+  if (v >= p70) return 'color:#16a34a;font-weight:600;';
+  return null; // low / default — leave as the report's default black
+};
+
+// Post-process the n8n report HTML: color the Trend % cells (badges) and high-value CPC cells.
+// The iframe is sandboxed without scripts, so we transform the static markup here in the parent.
+const colorizeKeywordHtml = (html: string): string => {
+  if (typeof DOMParser === 'undefined') return html;
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const cells = Array.from(doc.querySelectorAll('td'));
+
+    const restyle = (cell: Element, text: string, style: string) => {
+      const span = doc.createElement('span');
+      span.setAttribute('style', style);
+      span.textContent = text;
+      cell.textContent = '';
+      cell.appendChild(span);
+    };
+
+    // Pass 1 — Trend %.
+    for (const cell of cells) {
+      const text = (cell.textContent ?? '').trim();
+      const v = parseTrendValue(text);
+      if (v !== null) restyle(cell, text, trendBadgeStyle(v));
+    }
+
+    // Pass 2 — CPC, shaded relative to the column's own distribution.
+    const cpc: { cell: Element; text: string; v: number }[] = [];
+    for (const cell of cells) {
+      const text = (cell.textContent ?? '').trim();
+      const v = parseCpcValue(text);
+      if (v !== null) cpc.push({ cell, text, v });
+    }
+    if (cpc.length >= 3) {
+      const sorted = cpc.map((e) => e.v).sort((a, b) => a - b);
+      const p70 = quantile(sorted, 0.7);
+      const p88 = quantile(sorted, 0.88);
+      for (const { cell, text, v } of cpc) {
+        const style = cpcTextStyle(v, p70, p88);
+        if (style) restyle(cell, text, style);
+      }
+    }
+
+    return `<!DOCTYPE html>${doc.documentElement.outerHTML}`;
+  } catch {
+    return html;
+  }
+};
+
 export const KeywordsPage = () => {
   const [geo, setGeo] = useState('United States');
   const [language, setLanguage] = useState('English');
@@ -42,6 +141,12 @@ export const KeywordsPage = () => {
   const generateKeywords = useAppStore((s) => s.generateKeywords);
 
   const isLoading = keywordStatus === 'loading';
+
+  // Trend-colored version of the report — what we render and download.
+  const styledHtml = useMemo(
+    () => (keywordHtml ? colorizeKeywordHtml(keywordHtml) : null),
+    [keywordHtml],
+  );
 
   // Each GEO exposes only the languages valid for it (Switzerland → German/French/Italian),
   // and carries the locale-specific code KeywordTool needs (de-CH, pt-BR…). The language
@@ -89,11 +194,12 @@ export const KeywordsPage = () => {
   // Save the rendered research report (the iframe's HTML) to the user's PC, the same
   // download-a-Blob pattern the Creatives batches use.
   const handleDownload = () => {
-    if (!keywordHtml) return;
+    const html = styledHtml ?? keywordHtml;
+    if (!html) return;
     const namePart = sanitizeForFilename(anchor) || 'keywords';
     const geoPart = sanitizeForFilename(geo);
     const fileName = `keywords_${namePart}${geoPart ? `_${geoPart}` : ''}.html`;
-    const blob = new Blob([keywordHtml], { type: 'text/html;charset=utf-8' });
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -237,10 +343,10 @@ export const KeywordsPage = () => {
                 {keywordError ?? 'Unknown error'}
               </div>
             )}
-            {keywordStatus === 'success' && keywordHtml && (
+            {keywordStatus === 'success' && styledHtml && (
               <iframe
                 title="Keyword research results"
-                srcDoc={keywordHtml}
+                srcDoc={styledHtml}
                 sandbox="allow-same-origin"
                 className="w-full h-full border-0 rounded-md bg-white"
               />
