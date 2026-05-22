@@ -4,6 +4,10 @@ import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { KEYWORD_GEOS, KEYWORD_GEO_NAMES } from '@/lib/geos';
+
+// "Global / Worldwide" has no real Google SERP country, so it would just fall back to a US
+// search here — hide it from the Angles GEO picker (it stays available in the Keywords tab).
+const ANGLES_GEO_NAMES = KEYWORD_GEO_NAMES.filter((n) => n !== 'Global / Worldwide');
 import { useAppStore, type ArticleStatus, type RsocHeadline } from '@/store/useAppStore';
 
 const ANCHOR_TRANSLATIONS: { label: string; value: 'auto' | 'none' }[] = [
@@ -82,10 +86,17 @@ export const AnglesPage = () => {
     setErrors(newErrors);
     if (newErrors.geo || newErrors.language || newErrors.anchor || !geoEntry || !langEntry) return;
 
+    // Google SERP needs a real country code. KEYWORD_GEOS carries an ISO code per GEO; the
+    // "Global / Worldwide" pseudo-GEO (GLB) has no SERP equivalent, so fall back to US.
+    const gl = geoEntry.country && geoEntry.country !== 'GLB'
+      ? geoEntry.country.toLowerCase()
+      : 'us';
+
     setPicked(new Set());
     void generateRsocAudiences({
       anchor: anchor.trim(),
       geo: geoEntry.name,
+      gl,
       language: langEntry.name,
       translation: anchorTranslation,
     });
@@ -139,7 +150,7 @@ export const AnglesPage = () => {
                     if (errors.language) setErrors((p) => ({ ...p, language: false }));
                   }
                 }}
-                options={KEYWORD_GEO_NAMES}
+                options={ANGLES_GEO_NAMES}
                 placeholder="Click to choose or type… e.g. United States"
                 inputClassName="text-sm rounded-md bg-white px-2"
                 error={errors.geo}

@@ -133,6 +133,7 @@ export interface RsocHeadline {
 export interface RsocAudiencesInput {
   anchor: string;
   geo: string;
+  gl: string; // Google SERP country code (e.g. "us", "ca", "gb") — drives the SearchApi fetch.
   language: string;
   translation: 'auto' | 'none';
 }
