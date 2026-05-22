@@ -266,6 +266,13 @@ const LANG_STEMS: Record<string, { stem: string; fallback: string }> = {
   Spanish: { stem: 'es', fallback: 'es' },
   // KeywordTool's regional "Español (Latinoamérica)" — used as the default for LATAM GEOs.
   'Spanish (Latin America)': { stem: 'es-419', fallback: 'es-419' },
+  // Descriptive variant labels for the Global / Worldwide GEO dropdown. These resolve to the
+  // same KeywordTool codes as their generic counterparts (en / fr / ar / pt-PT) but spell out
+  // the variant so the operator knows exactly which dialect they're targeting.
+  'English (American)': { stem: 'en', fallback: 'en' },
+  'French (France)': { stem: 'fr', fallback: 'fr' },
+  'Arabic (Standard)': { stem: 'ar', fallback: 'ar' },
+  'Portuguese (Portugal)': { stem: 'pt', fallback: 'pt-PT' },
   Portuguese: { stem: 'pt', fallback: 'pt-PT' },
   French: { stem: 'fr', fallback: 'fr' },
   German: { stem: 'de', fallback: 'de' },
@@ -366,7 +373,7 @@ const resolveLang = (name: string, country: string): KeywordLanguage => {
 
 // [display name, KeywordTool country code, [language names — default first]]
 const GEO_DEFS: [string, string, string[]][] = [
-  ['Global / Worldwide', 'GLB', ['English']],
+  ['Global / Worldwide', 'GLB', ['English (American)', 'French (France)', 'Spanish (Latin America)', 'Arabic (Standard)', 'Italian', 'Portuguese (Portugal)', 'Polish']],
   ['Afghanistan', 'AF', ['Persian', 'Pashto']],
   ['Albania', 'AL', ['Albanian']],
   ['Algeria', 'DZ', ['Arabic', 'French']],
