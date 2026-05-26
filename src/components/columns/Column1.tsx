@@ -4,9 +4,13 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { Combobox } from '@/components/ui/Combobox';
+import { adLanguagesForGeo } from '@/lib/geos';
 
 const INPUT_DATA_HELP =
   "Стартова точка всього пайплайну. Вводимо URL статті лендингу, 1–3 ключі, цільове GEO та ім'я байєра. ШІ використовує статтю й ключові слова, щоб зрозуміти, хто аудиторія; усе далі — кути, хуки, банери — будується на тому, що ввели тут.";
+
+const AD_LANGUAGE_HELP =
+  "Мова, якою ШІ напише фінальні рекламні тексти. Застосовується вже на кроці «3. Concepts» — хуки, акценти, CTA й Meta-копія повертаються одразу цією мовою, а не англійською. Той самий вибір використовується і для банерів у «4. Creatives batches». Список мов залежить від обраного GEO — показуються лише релевантні для країни.";
 
 const COUNTRIES: string[] = [
   'United States (US)',
@@ -93,7 +97,7 @@ const COUNTRIES: string[] = [
 ];
 
 export const Column1 = () => {
-  const { formData, updateFormData, generateAngles, isLoadingAngles } = useAppStore();
+  const { formData, updateFormData, generateAngles, isLoadingAngles, adLanguage, setAdLanguage } = useAppStore();
   
   // Локальный стейт для отслеживания ошибок
   const [errors, setErrors] = useState({
@@ -133,12 +137,23 @@ export const Column1 = () => {
     }
   };
 
+  // Ad languages are restricted to the picked GEO (same system as Keywords/Angles).
+  const adLangOptions = adLanguagesForGeo(formData.geo);
+
+  // When GEO changes, keep the Ad language valid for the new country.
+  const handleGeoChange = (value: string) => {
+    handleChange('geo', value);
+    const allowed = adLanguagesForGeo(value);
+    if (!allowed.includes(adLanguage)) setAdLanguage(allowed[0]);
+  };
+
   const fillTestData = () => {
     handleChange('articleUrl', import.meta.env.PUBLIC_TEST_ARTICLE_URL);
     handleChange('keyword1', import.meta.env.PUBLIC_TEST_KEYWORD1);
     handleChange('geo', import.meta.env.PUBLIC_TEST_GEO || 'United States (US)');
     handleChange('buyer', import.meta.env.PUBLIC_TEST_BUYER);
     handleChange('campaignName', import.meta.env.PUBLIC_TEST_CAMPAIGN_NAME || 'CN_MVP_TEST');
+    setAdLanguage(import.meta.env.PUBLIC_TEST_AD_LANGUAGE || 'English (US)');
   };
 
   return (
@@ -198,12 +213,26 @@ export const Column1 = () => {
           <label className="text-xs font-medium uppercase text-slate-500">GEO *</label>
           <Combobox
             value={formData.geo}
-            onChange={(v) => handleChange('geo', v)}
+            onChange={handleGeoChange}
             options={COUNTRIES}
             placeholder="Click to choose or type… e.g. United States, Ukraine, DE"
             error={errors.geo}
           />
           {errors.geo && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+        </div>
+
+        {/* Ad language — moved here from Concepts; now drives step 3 (Concepts) AND step 4 (Creatives). */}
+        <div>
+          <label className="flex items-center gap-1 text-xs font-medium uppercase text-slate-500">
+            Ad language
+            <InfoTooltip text={AD_LANGUAGE_HELP} />
+          </label>
+          <Combobox
+            value={adLanguage}
+            onChange={setAdLanguage}
+            options={adLangOptions}
+            placeholder="Click to choose or type… e.g. English (US), Polish, German"
+          />
         </div>
 
         {/* Buyer (Required) */}

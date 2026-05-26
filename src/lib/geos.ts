@@ -571,6 +571,126 @@ export const KEYWORD_GEOS: KeywordGeo[] = GEO_DEFS.map(([name, country, langs]) 
 
 export const KEYWORD_GEO_NAMES: string[] = KEYWORD_GEOS.map((g) => g.name);
 
+// ---------------------------------------------------------------------------
+// Ad language (Creatives tab) — master list + per-GEO restriction.
+// Same idea as Keywords/Angles: a country only exposes the languages relevant
+// to it. We reuse GEO_DEFS (the single source of truth) and map its base
+// language names to the locale-specific Ad-language labels below.
+// ---------------------------------------------------------------------------
+export const AD_LANGUAGES: string[] = [
+  'English (US)',
+  'Spanish (Latin America)',
+  'Arabic',
+  'French',
+  'Portuguese (Brazil)',
+  'Indonesian',
+  'German',
+  'Japanese',
+  'Turkish',
+  'Vietnamese',
+  'English (UK)',
+  'Italian',
+  'Korean',
+  'Spanish (Spain)',
+  'Portuguese (Portugal)',
+  'Polish',
+  'Ukrainian',
+  'Malay',
+  'Dutch',
+  'Romanian',
+  'Hungarian',
+  'Greek',
+  'Czech',
+  'Serbian',
+  'Swedish',
+  'Catalan',
+  'Bulgarian',
+  'Albanian',
+  'Danish',
+  'Finnish',
+  'Norwegian',
+  'Slovak',
+  'Belarusian',
+  'Croatian',
+  'Lithuanian',
+  'Slovenian',
+  'Latvian',
+  'Macedonian',
+  'Estonian',
+];
+
+const AD_LANGUAGE_SET = new Set(AD_LANGUAGES);
+
+// Base language name (as used in GEO_DEFS) → Ad-language label. Locale-sensitive
+// languages (English/Spanish/Portuguese) are resolved per-country in resolveAdLang.
+const BASE_TO_AD_LANG: Record<string, string> = {
+  French: 'French',
+  'French (France)': 'French',
+  German: 'German',
+  Italian: 'Italian',
+  Dutch: 'Dutch',
+  Polish: 'Polish',
+  Czech: 'Czech',
+  Slovak: 'Slovak',
+  Hungarian: 'Hungarian',
+  Romanian: 'Romanian',
+  Bulgarian: 'Bulgarian',
+  Croatian: 'Croatian',
+  Serbian: 'Serbian',
+  Slovenian: 'Slovenian',
+  Macedonian: 'Macedonian',
+  Albanian: 'Albanian',
+  Estonian: 'Estonian',
+  Latvian: 'Latvian',
+  Lithuanian: 'Lithuanian',
+  Greek: 'Greek',
+  Turkish: 'Turkish',
+  Ukrainian: 'Ukrainian',
+  Belarusian: 'Belarusian',
+  Arabic: 'Arabic',
+  'Arabic (Standard)': 'Arabic',
+  Catalan: 'Catalan',
+  Swedish: 'Swedish',
+  Norwegian: 'Norwegian',
+  Danish: 'Danish',
+  Finnish: 'Finnish',
+  Japanese: 'Japanese',
+  Korean: 'Korean',
+  Indonesian: 'Indonesian',
+  Malay: 'Malay',
+  Vietnamese: 'Vietnamese',
+};
+
+// Countries that use UK-style English for ad copy.
+const UK_ENGLISH = new Set(['GB', 'IE', 'AU', 'NZ', 'ZA', 'MT', 'CY']);
+
+const resolveAdLang = (base: string, country: string): string => {
+  if (base === 'English') return UK_ENGLISH.has(country) ? 'English (UK)' : 'English (US)';
+  if (base === 'Spanish') return country === 'ES' || country === 'AD' ? 'Spanish (Spain)' : 'Spanish (Latin America)';
+  if (base === 'Spanish (Latin America)') return 'Spanish (Latin America)';
+  if (base === 'Portuguese') return country === 'BR' ? 'Portuguese (Brazil)' : 'Portuguese (Portugal)';
+  if (base === 'Portuguese (Portugal)') return 'Portuguese (Portugal)';
+  return BASE_TO_AD_LANG[base] ?? base;
+};
+
+// Given a Creatives GEO string ("Poland (PL)", "United States (US)", or a raw
+// country name), return the Ad languages valid for it. Falls back to the full
+// list when the GEO can't be matched or none of its languages are supported,
+// so the picker is never empty.
+export const adLanguagesForGeo = (geo: string): string[] => {
+  const trimmed = (geo ?? '').trim();
+  if (!trimmed) return AD_LANGUAGES;
+  const code = (trimmed.match(/\(([A-Za-z]+)\)\s*$/)?.[1] ?? '').toUpperCase();
+  const name = trimmed.replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
+  const def = GEO_DEFS.find(([n, c]) => n.toLowerCase() === name || (!!code && c === code));
+  if (!def) return AD_LANGUAGES;
+  const mapped = def[2]
+    .map((b) => resolveAdLang(b, def[1]))
+    .filter((l) => AD_LANGUAGE_SET.has(l));
+  const uniq = [...new Set(mapped)];
+  return uniq.length ? uniq : AD_LANGUAGES;
+};
+
 export const GEOS: string[] = [
   // Tier 1 — Anglosphere
   'United States',

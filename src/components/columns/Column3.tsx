@@ -4,7 +4,6 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
-import { Combobox } from '@/components/ui/Combobox';
 
 const CONCEPTS_HELP =
   "Три тактичні варіанти креативу для обраного кута. Кожен — окремий хук + акцент + CTA + Meta-копія, побудовані за різними хук-формулами:\n" +
@@ -63,48 +62,6 @@ const IMAGE_MODELS: { label: string; value: string }[] = [
 
 const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
 
-const AD_LANGUAGES: string[] = [
-  'English (US)',
-  'Spanish (Latin America)',
-  'Arabic',
-  'French',
-  'Portuguese (Brazil)',
-  'Indonesian',
-  'German',
-  'Japanese',
-  'Turkish',
-  'Vietnamese',
-  'English (UK)',
-  'Italian',
-  'Korean',
-  'Spanish (Spain)',
-  'Portuguese (Portugal)',
-  'Polish',
-  'Ukrainian',
-  'Malay',
-  'Dutch',
-  'Romanian',
-  'Hungarian',
-  'Greek',
-  'Czech',
-  'Serbian',
-  'Swedish',
-  'Catalan',
-  'Bulgarian',
-  'Albanian',
-  'Danish',
-  'Finnish',
-  'Norwegian',
-  'Slovak',
-  'Belarusian',
-  'Croatian',
-  'Lithuanian',
-  'Slovenian',
-  'Latvian',
-  'Macedonian',
-  'Estonian',
-];
-
 export const Column3 = () => {
   const {
     concepts,
@@ -114,10 +71,8 @@ export const Column3 = () => {
     isLoadingConcepts,
     clearConcepts,
     imageGenerationModel,
-    adLanguage,
     aspectRatio,
     setImageGenerationModel,
-    setAdLanguage,
     setAspectRatio,
     toggleConceptTranslation,
   } = useAppStore();
@@ -148,16 +103,6 @@ export const Column3 = () => {
             <option key={r} value={r}>{r}</option>
           ))}
         </select>
-      </div>
-      <div>
-        <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">Ad language</label>
-        <Combobox
-          value={adLanguage}
-          onChange={setAdLanguage}
-          options={AD_LANGUAGES}
-          placeholder="Click to choose or type… e.g. English (US), Ukrainian"
-          inputClassName="text-sm rounded-md bg-white px-2"
-        />
       </div>
     </div>
   );
@@ -321,9 +266,14 @@ export const Column3 = () => {
           <Button
             onClick={() => generateCreative(concept.id)}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white mt-2"
-            disabled={isLoadingCreatives}
+            disabled={isLoadingCreatives || !concept.compliant}
+            title={!concept.compliant ? 'Blocked — this creative is not compliant and cannot be released' : undefined}
           >
-            {isLoadingCreatives ? 'Generating Images...' : 'Generate Creative Batch'}
+            {!concept.compliant
+              ? 'Blocked — not compliant'
+              : isLoadingCreatives
+                ? 'Generating Images...'
+                : 'Generate Creative Batch'}
           </Button>
         </Card>
         );

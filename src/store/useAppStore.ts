@@ -687,6 +687,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           agent1_output: get().agent1Output,
           operator_note: get().operatorNote,
           article: get().article,
+          ad_language: get().adLanguage,
         };
         console.log('[generateConcept] request payload:', conceptPayload);
         const { data } = await axios.post(WEBHOOKS.concept, conceptPayload);
