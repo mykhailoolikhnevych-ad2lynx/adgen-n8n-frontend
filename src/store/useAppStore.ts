@@ -178,7 +178,7 @@ interface AppState {
   deleteCreative: (id: string) => void;
   clearConcepts: () => void;
   generateAngles: () => Promise<void>;
-  generateArticle: (input: { topic: string; geo: string }) => Promise<void>;
+  generateArticle: (input: { topic: string; geo: string; language: string; mode: string }) => Promise<void>;
   generateKeywords: (input: KeywordStudioInput) => Promise<void>;
   generateRsocAudiences: (input: RsocAudiencesInput) => Promise<void>;
   generateRsocHeadlines: (pickedIds: string[]) => Promise<void>;
@@ -346,7 +346,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  generateArticle: async ({ topic, geo }) => {
+  generateArticle: async ({ topic, geo, language, mode }) => {
     if (!WEBHOOKS.article) {
       const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
       set({ articleStatus: 'error', articleError: msg, articleHtml: null });
@@ -356,7 +356,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ articleStatus: 'loading', articleError: null, articleHtml: null });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const payload = { 'Article topic': topic, GEO: geo };
+        // GEO drives the SERP fetch; `language` is used only by the article-writing
+        // chains (after Aggregate); `mode` picks which Basic LLM Chain prompt runs.
+        const payload = { 'Article topic': topic, GEO: geo, language, mode };
         console.log('[generateArticle] request payload:', payload);
         // The n8n workflow scrapes the SERP top-10 + LLM rewrite — can run ~60-120s.
         const { data } = await axios.post(WEBHOOKS.article, payload, {

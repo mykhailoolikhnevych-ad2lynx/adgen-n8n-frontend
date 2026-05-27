@@ -2,8 +2,23 @@ import { useEffect, useRef, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
-import { ARTICLE_GEOS } from '@/lib/geos';
+import { InfoTooltip } from '@/components/ui/InfoTooltip';
+import { ARTICLE_GEOS, adLanguagesForGeo } from '@/lib/geos';
 import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
+
+// The 3 "Basic LLM Chain" prompt variants in the n8n RSOC webhook (the `mode` field),
+// ordered from the most informative to the least. mode "1" is the n8n default.
+const CONCEPT_MODES: { value: string; label: string; hint: string }[] = [
+  { value: '1', label: 'Detailed', hint: 'Most concrete: real facts, ranges and comparisons plus a short bullet rundown. Withholds only the reader’s personal answer.' },
+  { value: '2', label: 'Balanced', hint: 'Moderate: round-number ranges in each paragraph, no exact figures or brand lists.' },
+  { value: '3', label: 'Teaser', hint: 'Least info: almost no numbers, maximum curiosity gap to push clicks to the search box.' },
+];
+
+const CONCEPT_HELP =
+  'Який промпт-варіант генерує статтю — від найбільш інформативного до найменш:\n' +
+  '• Detailed — найбільше конкретики: реальні факти, діапазони, порівняння + короткий список-перелік. Притримує лише персональну відповідь читача.\n' +
+  '• Balanced — помірно: округлені діапазони чисел у кожному абзаці, без точних цифр і переліків брендів.\n' +
+  '• Teaser — мінімум конкретики, майже без чисел. Максимальний «розрив цікавості», щоб підштовхнути клік у пошуковий блок.';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -60,9 +75,12 @@ const extractArticleText = (html: string): string => {
 export const ArticlePage = () => {
   const [topic, setTopic] = useState('');
   const [geo, setGeo] = useState('United States (US)');
-  const [errors, setErrors] = useState<{ topic: boolean; geo: boolean; geoMsg?: string }>({
+  const [language, setLanguage] = useState(() => adLanguagesForGeo('United States (US)')[0]);
+  const [mode, setMode] = useState('1');
+  const [errors, setErrors] = useState<{ topic: boolean; geo: boolean; geoMsg?: string; language: boolean }>({
     topic: false,
     geo: false,
+    language: false,
   });
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -92,9 +110,24 @@ export const ArticlePage = () => {
     setElapsedMs(Date.now() - startedAt);
   }, [articleStatus, startedAt]);
 
+  // Languages are restricted to the picked GEO — same logic as the Creatives tab.
+  const langOptions = adLanguagesForGeo(geo);
+
+  // When GEO changes, keep the language valid for the new country.
+  const handleGeoChange = (v: string) => {
+    setGeo(v);
+    if (errors.geo) setErrors((p) => ({ ...p, geo: false, geoMsg: undefined }));
+    const allowed = adLanguagesForGeo(v);
+    if (!allowed.includes(language)) {
+      setLanguage(allowed[0]);
+      if (errors.language) setErrors((p) => ({ ...p, language: false }));
+    }
+  };
+
   const handleGenerate = () => {
     const trimmedTopic = topic.trim();
     const trimmedGeo = geo.trim();
+    const trimmedLang = language.trim();
 
     const topicErr = !trimmedTopic;
     let geoErr = false;
@@ -106,13 +139,14 @@ export const ArticlePage = () => {
       geoErr = true;
       geoMsg = 'Pick a GEO from the list';
     }
+    const langErr = !trimmedLang;
 
-    setErrors({ topic: topicErr, geo: geoErr, geoMsg });
-    if (topicErr || geoErr) return;
+    setErrors({ topic: topicErr, geo: geoErr, geoMsg, language: langErr });
+    if (topicErr || geoErr || langErr) return;
 
     setStartedAt(Date.now());
     setElapsedMs(0);
-    void generateArticle({ topic: trimmedTopic, geo: trimmedGeo });
+    void generateArticle({ topic: trimmedTopic, geo: trimmedGeo, language: trimmedLang, mode });
   };
 
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
@@ -157,10 +191,7 @@ export const ArticlePage = () => {
               {/* Same typeahead UX as the Creatives page (Column1). Type "UK" → list narrows to UK. */}
               <Combobox
                 value={geo}
-                onChange={(v) => {
-                  setGeo(v);
-                  if (errors.geo) setErrors((p) => ({ ...p, geo: false, geoMsg: undefined }));
-                }}
+                onChange={handleGeoChange}
                 options={ARTICLE_GEOS}
                 placeholder="Click to choose or type… e.g. United States (US)"
                 inputClassName="text-sm rounded-md bg-white px-2"
@@ -169,6 +200,44 @@ export const ArticlePage = () => {
               {errors.geo && (
                 <p className="text-[10px] text-red-500 mt-1">{errors.geoMsg ?? 'Required field'}</p>
               )}
+            </div>
+
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">Language *</label>
+              {/* Restricted to the picked GEO — same system as the Creatives tab. */}
+              <Combobox
+                value={language}
+                onChange={(v) => {
+                  setLanguage(v);
+                  if (errors.language) setErrors((p) => ({ ...p, language: false }));
+                }}
+                options={langOptions}
+                placeholder="Click to choose… e.g. English (US)"
+                inputClassName="text-sm rounded-md bg-white px-2"
+                error={errors.language}
+              />
+              {errors.language && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+            </div>
+
+            <div>
+              <label className="flex items-center gap-1 text-xs font-medium uppercase text-slate-500">
+                Concept
+                <InfoTooltip text={CONCEPT_HELP} />
+              </label>
+              {/* Picks which Basic LLM Chain prompt runs in n8n (the `mode` field). */}
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value)}
+                disabled={isLoading}
+                className="w-full text-sm border rounded-md px-2 py-1 bg-white"
+              >
+                {CONCEPT_MODES.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-400 mt-1">
+                {CONCEPT_MODES.find((m) => m.value === mode)?.hint}
+              </p>
             </div>
           </div>
 
