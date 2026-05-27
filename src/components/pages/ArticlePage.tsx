@@ -7,7 +7,8 @@ import { ARTICLE_GEOS, adLanguagesForGeo } from '@/lib/geos';
 import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
 
 // The 3 "Basic LLM Chain" prompt variants in the n8n RSOC webhook (the `mode` field),
-// ordered from the most informative to the least. mode "1" is the n8n default.
+// ordered from the most informative to the least. The UI defaults to "2" (Balanced);
+// mode "1" is the n8n Switch fallback.
 const CONCEPT_MODES: { value: string; label: string; hint: string }[] = [
   { value: '1', label: 'Detailed', hint: 'Most concrete: real facts, ranges and comparisons plus a short bullet rundown. Withholds only the reader’s personal answer.' },
   { value: '2', label: 'Balanced', hint: 'Moderate: round-number ranges in each paragraph, no exact figures or brand lists.' },
@@ -76,7 +77,7 @@ export const ArticlePage = () => {
   const [topic, setTopic] = useState('');
   const [geo, setGeo] = useState('United States (US)');
   const [language, setLanguage] = useState(() => adLanguagesForGeo('United States (US)')[0]);
-  const [mode, setMode] = useState('1');
+  const [mode, setMode] = useState('2'); // default = Balanced
   const [errors, setErrors] = useState<{ topic: boolean; geo: boolean; geoMsg?: string; language: boolean }>({
     topic: false,
     geo: false,
