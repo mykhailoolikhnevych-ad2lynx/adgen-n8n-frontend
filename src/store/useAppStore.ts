@@ -252,6 +252,50 @@ const N8N_EXECUTIONS_API_KEY = import.meta.env.PUBLIC_N8N_EXECUTIONS_API;
 const POLL_INTERVAL_MS = 5000;
 const POLL_MAX_ATTEMPTS = 60; // 5 minutes
 
+// Shared helper for the "Respond job_id" async pattern: poll the n8n executions
+// API until the run finishes, then return the JSON of the last node that ran.
+// Used by RSOC Audiences / Headlines and (soon) any other long-running webhook
+// that would otherwise hit Cloudflare's ~100s edge cap.
+const pollExecutionResult = async (jobId: string, label: string): Promise<any> => {
+  if (!N8N_EXECUTIONS_URL) {
+    throw new Error('PUBLIC_N8N_EXECUTIONS_URL is not set in .env');
+  }
+  const apiHeaders = N8N_EXECUTIONS_API_KEY
+    ? { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY }
+    : undefined;
+  const metaUrl = `${N8N_EXECUTIONS_URL}/${jobId}`;
+  const fullUrl = `${N8N_EXECUTIONS_URL}/${jobId}?includeData=true`;
+
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    let meta: any;
+    try {
+      const res = await axios.get(metaUrl, { headers: apiHeaders });
+      meta = res.data;
+    } catch (e) {
+      // transient poll failure — log and try again on the next tick
+      console.warn(`[${label}] poll error (will keep polling):`, e);
+      continue;
+    }
+    if (!meta?.finished) continue;
+
+    const res = await axios.get(fullUrl, { headers: apiHeaders });
+    const full = res.data;
+    if (full?.status !== 'success') {
+      throw new Error(`Execution failed with status: ${full?.status ?? 'unknown'}`);
+    }
+    const lastNode = full?.data?.resultData?.lastNodeExecuted;
+    const json = full?.data?.resultData?.runData?.[lastNode]?.[0]?.data?.main?.[0]?.[0]?.json;
+    if (!json) {
+      throw new Error('Execution finished but the last node returned no result');
+    }
+    return json;
+  }
+  throw new Error(
+    `Polling timed out after ${(POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`,
+  );
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'United States (US)', buyer: '', campaignName: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
@@ -524,38 +568,34 @@ export const useAppStore = create<AppState>((set, get) => ({
       rsocAudiencesStatus: 'loading', rsocAudiencesError: null, rsocBundle: null,
       rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
     });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        console.log('[generateRsocAudiences] request payload:', input);
-        const { data } = await axios.post(WEBHOOKS.rsocAudiences, input, { timeout: 180_000 });
-        const outer = Array.isArray(data) ? data[0] : data;
-        const bundle: any = (outer && typeof outer === 'object' && 'json' in outer && outer.json) ? outer.json : outer;
-        if (!bundle || !Array.isArray(bundle.audiences)) {
-          console.error('[generateRsocAudiences] unexpected payload shape:', outer);
-          throw new Error('Webhook response missing audiences[]');
-        }
-        set({
-          rsocBundle: {
-            keyword: bundle.keyword ?? input.anchor,
-            geo: bundle.geo ?? input.geo,
-            language: bundle.language ?? input.language,
-            research: bundle.research ?? '',
-            audiences: bundle.audiences,
-          },
-          rsocAudiencesStatus: 'success', rsocAudiencesError: null,
-        });
-        return;
-      } catch (e) {
-        if (attempt === 0 && isRetryableError(e)) {
-          get().showWarning(`${humanizeError(e)}. Retrying...`);
-          continue;
-        }
-        console.error(e);
-        const msg = humanizeError(e);
-        set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
-        get().showError(`Audience generation failed: ${msg}`);
-        return;
+    try {
+      console.log('[generateRsocAudiences] request payload:', input);
+      // Step 1 — kick off the run; n8n's Respond job_id node returns instantly.
+      const kickoff = await axios.post(WEBHOOKS.rsocAudiences, input, { timeout: 30_000 });
+      const startPayload = Array.isArray(kickoff.data) ? kickoff.data[0] : kickoff.data;
+      const jobId = startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id;
+      if (!jobId) throw new Error('Webhook did not return a job_id');
+      // Step 2 — poll the executions API; survives Cloudflare's ~100s edge cap.
+      const bundle: any = await pollExecutionResult(String(jobId), 'generateRsocAudiences');
+      if (!bundle || !Array.isArray(bundle.audiences)) {
+        console.error('[generateRsocAudiences] unexpected payload shape:', bundle);
+        throw new Error('Webhook response missing audiences[]');
       }
+      set({
+        rsocBundle: {
+          keyword: bundle.keyword ?? input.anchor,
+          geo: bundle.geo ?? input.geo,
+          language: bundle.language ?? input.language,
+          research: bundle.research ?? '',
+          audiences: bundle.audiences,
+        },
+        rsocAudiencesStatus: 'success', rsocAudiencesError: null,
+      });
+    } catch (e) {
+      console.error(e);
+      const msg = humanizeError(e);
+      set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
+      get().showError(`Audience generation failed: ${msg}`);
     }
   },
 
@@ -580,39 +620,35 @@ export const useAppStore = create<AppState>((set, get) => ({
       research: bundle.research,
       audiences: bundle.audiences,
     };
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        console.log('[generateRsocHeadlines] request payload:', { ...payload, research: '…', audiences: `${bundle.audiences.length} items` });
-        const { data } = await axios.post(WEBHOOKS.rsocHeadlines, payload, { timeout: 180_000 });
-        const outer = Array.isArray(data) ? data[0] : data;
-        const result: any = (outer && typeof outer === 'object' && 'json' in outer && outer.json) ? outer.json : outer;
-        const rows = result?.top_picks;
-        if (!Array.isArray(rows)) {
-          console.error('[generateRsocHeadlines] unexpected payload shape:', outer);
-          throw new Error('Webhook response missing top_picks[]');
-        }
-        const headlines: RsocHeadline[] = rows.map((r: any) => ({
-          rank: Number(r.rank) || 0,
-          audience: r.audience ?? '',
-          angle_formula: r.angle_formula ?? '',
-          headline_kernel: r.headline_kernel ?? '',
-          headline: r.headline ?? '',
-          translation_ua: r.translation_ua ?? '',
-          headline_id: r.headline_id ?? '',
-        }));
-        set({ rsocHeadlines: headlines, rsocHeadlinesStatus: 'success', rsocHeadlinesError: null });
-        return;
-      } catch (e) {
-        if (attempt === 0 && isRetryableError(e)) {
-          get().showWarning(`${humanizeError(e)}. Retrying...`);
-          continue;
-        }
-        console.error(e);
-        const msg = humanizeError(e);
-        set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
-        get().showError(`Headline generation failed: ${msg}`);
-        return;
+    try {
+      console.log('[generateRsocHeadlines] request payload:', { ...payload, research: '…', audiences: `${bundle.audiences.length} items` });
+      // Step 1 — kick off; the Respond job_id node returns instantly.
+      const kickoff = await axios.post(WEBHOOKS.rsocHeadlines, payload, { timeout: 30_000 });
+      const startPayload = Array.isArray(kickoff.data) ? kickoff.data[0] : kickoff.data;
+      const jobId = startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id;
+      if (!jobId) throw new Error('Webhook did not return a job_id');
+      // Step 2 — poll until finished; survives Cloudflare's ~100s edge cap.
+      const result: any = await pollExecutionResult(String(jobId), 'generateRsocHeadlines');
+      const rows = result?.top_picks;
+      if (!Array.isArray(rows)) {
+        console.error('[generateRsocHeadlines] unexpected payload shape:', result);
+        throw new Error('Webhook response missing top_picks[]');
       }
+      const headlines: RsocHeadline[] = rows.map((r: any) => ({
+        rank: Number(r.rank) || 0,
+        audience: r.audience ?? '',
+        angle_formula: r.angle_formula ?? '',
+        headline_kernel: r.headline_kernel ?? '',
+        headline: r.headline ?? '',
+        translation_ua: r.translation_ua ?? '',
+        headline_id: r.headline_id ?? '',
+      }));
+      set({ rsocHeadlines: headlines, rsocHeadlinesStatus: 'success', rsocHeadlinesError: null });
+    } catch (e) {
+      console.error(e);
+      const msg = humanizeError(e);
+      set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
+      get().showError(`Headline generation failed: ${msg}`);
     }
   },
 
