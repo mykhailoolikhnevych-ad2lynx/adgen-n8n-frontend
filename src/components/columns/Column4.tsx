@@ -10,6 +10,12 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip';
 const CREATIVES_BATCHES_HELP =
   "Готові пакети креативів — кожен містить 4 варіанти банера (A / B / C / D) в різних візуальних стилях: YouTube-thumbnail, organic-social, highlight-block та illustrated. Усі 4 використовують той самий хук, акцент і CTA — тестуємо, як саме візуальний стиль впливає на CTR. Можна завантажити пакет ZIP-ом або одразу надіслати в Telegram-канал команди.";
 
+// Hard rule: every Facebook Ad name MUST be the creative's file name (so the
+// standardized name carries through to Ads Manager). Surfaced as an amber alert
+// on every card and repeated throughout the ZIP's info.txt for maximum visibility.
+const FILE_NAME_REMINDER_UA =
+  "Обов'язково! Ad name в Facebook маєш брати з назви файлу креатива!";
+
 type LightboxState = { creative: Creative; index: number } | null;
 
 const sanitizeForFilename = (s: string): string =>
@@ -42,6 +48,10 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
   });
 
   const lines: string[] = [];
+  // Top-of-file reminder — first thing the buyer sees on opening the archive.
+  lines.push(FILE_NAME_REMINDER_UA);
+  lines.push('='.repeat(40));
+  lines.push('');
   lines.push(`Creatives batch ${batchIndex + 1}`);
   lines.push(batchName);
   lines.push('='.repeat(40));
@@ -201,6 +211,15 @@ export const Column4 = () => {
                 {ctaVal}
               </p>
             )}
+          </div>
+
+          {/* Hard rule — the Facebook Ad name MUST be the creative's file name. */}
+          <div
+            role="alert"
+            className="flex items-start gap-2 bg-amber-100 border border-amber-400 text-amber-900 rounded-md px-3 py-2 text-sm font-semibold"
+          >
+            <span aria-hidden="true" className="text-base leading-none">⚠️</span>
+            <span>{FILE_NAME_REMINDER_UA}</span>
           </div>
 
           <div>
