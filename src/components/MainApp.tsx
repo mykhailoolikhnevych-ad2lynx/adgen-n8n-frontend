@@ -14,11 +14,15 @@ import { getAuthEmail } from '@/lib/identity';
 
 type Page = 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard';
 
-// Admin Google emails that get the Dashboard tab. Lowercase. Edit this list
-// directly when adding/removing admins.
-const ADMIN_EMAILS = new Set<string>([
-  'ivan.bazyliev@ad2lynx.com',
-]);
+// Admin Google emails that get the Dashboard tab. Sourced from PUBLIC_ADMIN_EMAILS
+// (comma-separated) — value lives in local .env for dev and in Vercel's env vars
+// for prod. Never commit real emails to the repo.
+const ADMIN_EMAILS: Set<string> = new Set(
+  String(import.meta.env.PUBLIC_ADMIN_EMAILS ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.includes('@')),
+);
 
 const BASE_NAV: { value: Page; label: string }[] = [
   { value: 'keywords', label: 'Keywords' },
