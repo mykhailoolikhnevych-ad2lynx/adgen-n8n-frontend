@@ -8,15 +8,27 @@ import { Column4 } from './columns/Column4';
 import { KeywordsPage } from './pages/KeywordsPage';
 import { ArticlePage } from './pages/ArticlePage';
 import { AnglesPage } from './pages/AnglesPage';
+import { DashboardPage } from './pages/DashboardPage';
 import { TooltipProvider } from './ui/tooltip';
+import { getAuthEmail } from '@/lib/identity';
 
-type Page = 'keywords' | 'angles' | 'article' | 'creatives';
+type Page = 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard';
 
-const NAV_ITEMS: { value: Page; label: string }[] = [
+// Admin Google emails that get the Dashboard tab. Lowercase. Edit this list
+// directly when adding/removing admins.
+const ADMIN_EMAILS = new Set<string>([
+  'ivan.bazyliev@ad2lynx.com',
+]);
+
+const BASE_NAV: { value: Page; label: string }[] = [
   { value: 'keywords', label: 'Keywords' },
   { value: 'angles', label: 'Angles' },
   { value: 'article', label: 'Article' },
   { value: 'creatives', label: 'Creatives' },
+];
+
+const ADMIN_NAV: { value: Page; label: string }[] = [
+  { value: 'dashboard', label: 'Dashboard' },
 ];
 
 const formatErrorArg = (a: unknown): string => {
@@ -51,6 +63,19 @@ export default function MainApp() {
   const noticeBanner = useAppStore((s) => s.noticeBanner);
 
   const [page, setPage] = useState<Page>('keywords');
+
+  // Resolve the signed-in email once (Cloudflare Access in prod, PUBLIC_DEV_AUTH_EMAIL locally).
+  // Used only to decide whether to render the admin Dashboard tab. Identity lookup is async,
+  // so the tab appears once it resolves; non-admins never see it.
+  const [isAdmin, setIsAdmin] = useState(false);
+  useEffect(() => {
+    (async () => {
+      const ident = await getAuthEmail();
+      if (ident?.email && ADMIN_EMAILS.has(ident.email.toLowerCase())) setIsAdmin(true);
+    })();
+  }, []);
+
+  const NAV_ITEMS = isAdmin ? [...BASE_NAV, ...ADMIN_NAV] : BASE_NAV;
 
   useEffect(() => {
     const originalError = console.error;
@@ -166,6 +191,7 @@ export default function MainApp() {
           {page === 'keywords' && <KeywordsPage />}
           {page === 'angles' && <AnglesPage />}
           {page === 'article' && <ArticlePage />}
+          {page === 'dashboard' && isAdmin && <DashboardPage />}
         </main>
       </div>
     </TooltipProvider>

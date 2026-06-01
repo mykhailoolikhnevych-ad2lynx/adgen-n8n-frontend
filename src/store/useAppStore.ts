@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import axios from 'axios';
 import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFilename';
+import { logEvent } from '@/lib/usage';
 
 interface FormData {
   articleUrl: string;
@@ -346,6 +347,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearConcepts: () => set({ concepts: [] }),
 
   generateAngles: async () => {
+    logEvent({ tab: 'creatives', action: 'generateAngles', status: 'start', meta: { geo: get().formData.geo, buyer: get().formData.buyer } });
     set({ isLoadingAngles: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -391,6 +393,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateArticle: async ({ topic, geo, language, mode }) => {
+    logEvent({ tab: 'article', action: 'generateArticle', status: 'start', meta: { topic, geo, language, mode } });
     if (!WEBHOOKS.article) {
       const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
       set({ articleStatus: 'error', articleError: msg, articleHtml: null });
@@ -433,6 +436,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // the webhook returns a job_id immediately, then we poll the n8n executions API
     // until the run finishes and pull the final HTML out of the last node. Mirrors
     // generateCreative — same executions-API plumbing.
+    logEvent({ tab: 'keywords', action: 'generateKeywords', status: 'start', meta: { country: input.country, language: input.language, anchor: input.anchor } });
     if (!WEBHOOKS.keywords) {
       const msg = 'PUBLIC_WEBHOOK_KEYWORDS_URL is not set in .env';
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
@@ -558,6 +562,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Angles tab — step 1: anchor/geo/language/translation -> SERP research -> audience segments.
   // Synchronous webhook (responseMode=lastNode), returns the full bundle we feed back in step 2.
   generateRsocAudiences: async (input) => {
+    logEvent({ tab: 'angles', action: 'generateRsocAudiences', status: 'start', meta: { geo: (input as any)?.geo, language: (input as any)?.language, anchor: (input as any)?.anchor } });
     if (!WEBHOOKS.rsocAudiences) {
       const msg = 'PUBLIC_WEBHOOK_RSOC_AUDIENCES_URL is not set in .env';
       set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
@@ -602,6 +607,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Angles tab — step 2: operator picks audience segment_ids, we send them back with the
   // step-1 bundle to get the curated top-3 headlines per audience.
   generateRsocHeadlines: async (pickedIds) => {
+    logEvent({ tab: 'angles', action: 'generateRsocHeadlines', status: 'start', meta: { picked: pickedIds.join(','), pickedCount: pickedIds.length } });
     const bundle = get().rsocBundle;
     if (!bundle) { get().showError('Generate audiences first'); return; }
     if (!pickedIds.length) { get().showError('Pick at least one audience'); return; }
@@ -709,6 +715,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateConcept: async (angleId) => {
+    logEvent({ tab: 'creatives', action: 'generateConcept', status: 'start', meta: { angleId, adLanguage: get().adLanguage } });
     set({ isLoadingConcepts: true });
     const angle = get().angles.find(a => a.id === angleId);
     const angleForWebhook = angle ? {
@@ -777,6 +784,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateCreative: async (conceptId) => {
+    logEvent({ tab: 'creatives', action: 'generateCreative', status: 'start', meta: { conceptId, adLanguage: get().adLanguage, aspectRatio: get().aspectRatio, imageModel: get().imageGenerationModel } });
     const concept = get().concepts.find(c => c.id === conceptId);
     if (!concept) return;
 
@@ -1016,6 +1024,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   sendToTelegram: async (creativeId) => {
+    logEvent({ tab: 'creatives', action: 'sendToTelegram', status: 'start', meta: { creativeId } });
     const creative = get().creatives.find(c => c.id === creativeId);
     if (!creative) return;
 
