@@ -147,7 +147,7 @@ export default function MainApp() {
         <header className="flex h-12 shrink-0 items-center justify-between bg-black px-4 text-white">
           <div className="flex items-center gap-2">
             <img src="/favicon.svg" alt="" className="h-7 w-7" aria-hidden="true" />
-            <span className="text-base font-bold tracking-wide">Project X - Make Advertising Great Again</span>
+            <span className="text-base font-bold tracking-wide">MEGATOOL - Make Advertising Great Again</span>
           </div>
           <div className="flex items-center gap-2">
             <nav className="flex items-center gap-1">
