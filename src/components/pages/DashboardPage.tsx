@@ -34,7 +34,7 @@ const SUB_TABS: { value: SubTab; label: string }[] = [
 const LIST_URL = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
 const POLL_MS = 30_000;
 const FETCH_LIMIT = 5000;
-const RANGE_DAYS = 30;
+const DEFAULT_RANGE_DAYS = 30;
 
 const fmtTime = (iso: string): string => {
   try {
@@ -44,21 +44,51 @@ const fmtTime = (iso: string): string => {
   } catch { return iso; }
 };
 
-const fmtDate = (iso: string): string => {
-  try {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString();
-  } catch { return iso; }
+// Convert a YYYY-MM-DD input value (what <input type="date"> gives us) into an
+// ISO string anchored at the start of that day in the user's local timezone.
+const dateInputToIso = (yyyyMmDd: string): string => {
+  const [y, m, d] = yyyyMmDd.split('-').map(Number);
+  if (!y || !m || !d) return new Date(0).toISOString();
+  return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
 };
 
-// Compute the ISO string for N days ago (start of that day) — used as the `since`
-// filter so the n8n side can clip the response.
-const sinceIso = (days: number): string => {
+// Format a Date as YYYY-MM-DD (what <input type="date"> expects).
+const toDateInput = (d: Date): string => {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+// Today minus N days, as a YYYY-MM-DD string.
+const daysAgoInput = (days: number): string => {
   const d = new Date();
   d.setDate(d.getDate() - days);
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+  return toDateInput(d);
+};
+
+const todayInput = (): string => toDateInput(new Date());
+
+// Preset ranges available in the picker dropdown. Each preset knows how to
+// compute its own "from" date (as YYYY-MM-DD). "Custom" has no computed value;
+// it just keeps whatever the user typed into the date input.
+type PresetKey = 'today' | 'last7' | 'last30' | 'thisMonth' | 'custom';
+
+const PRESETS: { value: PresetKey; label: string; compute: (() => string) | null }[] = [
+  { value: 'today',     label: 'Today',         compute: () => todayInput() },
+  { value: 'last7',     label: 'Last 7 days',   compute: () => daysAgoInput(7) },
+  { value: 'last30',    label: 'Last 30 days',  compute: () => daysAgoInput(30) },
+  { value: 'thisMonth', label: 'This month',    compute: () => {
+      const d = new Date(); d.setDate(1); return toDateInput(d);
+    } },
+  { value: 'custom',    label: 'Custom',        compute: null },
+];
+
+// Look at the current `fromDate` and tell which preset it corresponds to.
+// Anything that doesn't match a preset exactly falls through to "custom".
+const detectPreset = (fromDate: string): PresetKey => {
+  for (const p of PRESETS) {
+    if (p.compute && p.compute() === fromDate) return p.value;
+  }
+  return 'custom';
 };
 
 // ---------------------------------------------------------------------------
@@ -239,8 +269,11 @@ export const DashboardPage = () => {
   const [emailFilter, setEmailFilter] = useState('');
   const [actionFilter, setActionFilter] = useState('');
   const [activeTab, setActiveTab] = useState<SubTab>('events');
+  // User-controlled lower bound for the date range. Defaults to 30 days ago;
+  // the upper bound is always "now". Re-fetches when this changes.
+  const [fromDate, setFromDate] = useState<string>(() => daysAgoInput(DEFAULT_RANGE_DAYS));
 
-  const fetchEvents = async () => {
+  const fetchEvents = async (sinceOverride?: string) => {
     if (!LIST_URL) {
       setStatus('error');
       setError('PUBLIC_WEBHOOK_LIST_EVENTS_URL is not set in .env');
@@ -248,9 +281,10 @@ export const DashboardPage = () => {
     }
     setStatus('loading');
     try {
+      const since = sinceOverride ?? dateInputToIso(fromDate);
       const { data } = await axios.post(
         LIST_URL,
-        { limit: FETCH_LIMIT, since: sinceIso(RANGE_DAYS) },
+        { limit: FETCH_LIMIT, since },
         { timeout: 30_000 },
       );
       const outer = Array.isArray(data) ? data[0] : data;
@@ -281,12 +315,13 @@ export const DashboardPage = () => {
     }
   };
 
+  // Re-fetch (and restart the 30s poll) whenever the lower-bound date changes.
   useEffect(() => {
     void fetchEvents();
     const id = setInterval(() => { void fetchEvents(); }, POLL_MS);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fromDate]);
 
   // Email/action filters narrow the rows for every sub-tab (raw or aggregated).
   const filtered = useMemo(() => {
@@ -299,16 +334,47 @@ export const DashboardPage = () => {
     );
   }, [rows, emailFilter, actionFilter]);
 
-  const sinceLabel = useMemo(() => fmtDate(sinceIso(RANGE_DAYS)), []);
   const lastFetchedLabel = lastFetched ? new Date(lastFetched).toLocaleTimeString() : '—';
+  const todayMax = todayInput();
 
   return (
     <div className="flex h-full w-full flex-col gap-4 p-4 bg-slate-100 overflow-hidden">
       {/* Header */}
-      <div className="bg-white rounded-xl border p-4 shadow-sm flex items-center gap-3 shrink-0">
+      <div className="bg-white rounded-xl border p-4 shadow-sm flex items-center gap-3 shrink-0 flex-wrap">
         <h2 className="font-bold text-xl">Usage Dashboard</h2>
         <span className="text-xs text-slate-500">{filtered.length} of {rows.length} events</span>
-        <span className="text-xs text-slate-400">range: {sinceLabel} → now</span>
+
+        {/* Range presets + custom from-date picker. Picking a preset updates the date;
+            editing the date manually flips the preset to "Custom" automatically. */}
+        <div className="flex items-center gap-2 ml-2">
+          <label className="text-[10px] font-bold uppercase text-slate-500" htmlFor="dash-range">Range</label>
+          <select
+            id="dash-range"
+            value={detectPreset(fromDate)}
+            onChange={(e) => {
+              const p = PRESETS.find((x) => x.value === e.target.value);
+              if (p?.compute) setFromDate(p.compute());
+              // "Custom" doesn't change fromDate — just keeps whatever's in the input.
+            }}
+            className="text-sm border rounded-md px-2 py-1 bg-white"
+          >
+            {PRESETS.map((p) => (
+              <option key={p.value} value={p.value}>{p.label}</option>
+            ))}
+          </select>
+
+          <label className="text-[10px] font-bold uppercase text-slate-500 ml-1" htmlFor="dash-from">From</label>
+          <input
+            id="dash-from"
+            type="date"
+            value={fromDate}
+            max={todayMax}
+            onChange={(e) => setFromDate(e.target.value || daysAgoInput(DEFAULT_RANGE_DAYS))}
+            className="text-sm border rounded-md px-2 py-1 bg-white"
+          />
+          <span className="text-xs text-slate-400">→ now</span>
+        </div>
+
         <span className="text-xs text-slate-400 ml-auto">
           Last fetched: <span className="font-mono">{lastFetchedLabel}</span>
         </span>
@@ -356,7 +422,7 @@ export const DashboardPage = () => {
           <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Unknown error fetching usage events'}</div>
         )}
         {status !== 'error' && rows.length === 0 && status !== 'loading' && (
-          <div className="p-6 text-gray-400 italic">No events in the last {RANGE_DAYS} days yet.</div>
+          <div className="p-6 text-gray-400 italic">No events in the selected range.</div>
         )}
         {status !== 'error' && (rows.length > 0 || status === 'loading') && (
           <>
