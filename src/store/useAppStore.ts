@@ -153,6 +153,11 @@ interface AppState {
   imageGenerationModel: string;
   adLanguage: string;
   aspectRatio: string;
+  /** Which image presets to generate. n8n filters by these IDs:
+   *  'A' YT Thumbnail · 'B' Organic Social · 'C' Highlight Block · 'D' Illustrated · 'Custom' */
+  selectedPresets: string[];
+  /** Optional user-authored prompt; only used when 'Custom' is in selectedPresets. */
+  customPrompt: string;
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -197,6 +202,8 @@ interface AppState {
   setImageGenerationModel: (value: string) => void;
   setAdLanguage: (value: string) => void;
   setAspectRatio: (value: string) => void;
+  setSelectedPresets: (value: string[]) => void;
+  setCustomPrompt: (value: string) => void;
 }
 
 let _noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -337,9 +344,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
+  // Default: generate all 4 standard presets; Custom off, no custom text.
+  selectedPresets: ['A', 'B', 'C', 'D'],
+  customPrompt: '',
   setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
   setAdLanguage: (value) => set({ adLanguage: value }),
   setAspectRatio: (value) => set({ aspectRatio: value }),
+  setSelectedPresets: (value) => set({ selectedPresets: value }),
+  setCustomPrompt: (value) => set({ customPrompt: value }),
   errorBanner: null,
   noticeBanner: null,
 
@@ -875,6 +887,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       image_generation_model: get().imageGenerationModel,
       ad_language: get().adLanguage,
       aspect_ratio: get().aspectRatio,
+      // n8n side filters its 5 preset branches by these IDs ('A','B','C','D','Custom').
+      // Custom only contributes if the user also typed a custom_prompt.
+      presets: get().selectedPresets,
+      custom_prompt: get().customPrompt,
     };
 
     const cleanupOnFailure = () => {

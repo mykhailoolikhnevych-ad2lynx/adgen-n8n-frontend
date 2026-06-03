@@ -13,9 +13,11 @@ yarn-error.log*
 pnpm-debug.log*
 
 
-# environment variables
+# environment variables — ignore every .env file except the committed template.
+# Covers .env, .env.dev, .env.production, .env.local, etc.
 .env
-.env.production
+.env.*
+!.env.example
 
 # macOS-specific files
 .DS_Store
