@@ -973,10 +973,32 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
+      // Prefer Aggregate Images by name (terminal node of the creative graph).
+      // Fall back to whatever lastNodeExecuted reports if the workflow's been
+      // renamed or its terminal node moved. Walk every run of the chosen node
+      // and merge so per-item Code-node executions don't lose images.
+      const runData = full?.data?.resultData?.runData ?? {};
       const lastNode = full?.data?.resultData?.lastNodeExecuted;
-      const result = full?.data?.resultData?.runData?.[lastNode]?.[0]?.data?.main?.[0]?.[0]?.json;
-      if (!result) {
-        console.error('[generateCreative] no result data in execution:', full);
+      const pickResultsFor = (nodeName?: string): any[] => {
+        if (!nodeName) return [];
+        const runs = runData[nodeName] ?? [];
+        return runs.flatMap((r: any) => (r?.data?.main?.[0] ?? []).map((it: any) => it?.json).filter(Boolean));
+      };
+      const aggregateResults = pickResultsFor('Aggregate Images');
+      const lastNodeResults  = pickResultsFor(lastNode);
+      // Merge into one result. Aggregate Images is the authoritative source if it ran.
+      const sources = aggregateResults.length ? aggregateResults : lastNodeResults;
+      const result: any = sources.reduce((acc: any, j: any) => {
+        if (!j || typeof j !== 'object') return acc;
+        if (Array.isArray(j.images)) acc.images = [...(acc.images ?? []), ...j.images];
+        for (const [k, v] of Object.entries(j)) {
+          if (k === 'images') continue;
+          if (!(k in acc)) acc[k] = v;
+        }
+        return acc;
+      }, {});
+      if (!result || Object.keys(result).length === 0) {
+        console.error('[generateCreative] no result data in execution. lastNode=%s, runData keys=%o', lastNode, Object.keys(runData));
         get().showError('Creative generation finished but returned no result');
         cleanupOnFailure();
         return;
