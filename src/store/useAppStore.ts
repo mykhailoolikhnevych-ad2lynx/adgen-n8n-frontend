@@ -253,6 +253,36 @@ const N8N_EXECUTIONS_API_KEY = import.meta.env.PUBLIC_N8N_EXECUTIONS_API;
 const POLL_INTERVAL_MS = 5000;
 const POLL_MAX_ATTEMPTS = 60; // 5 minutes
 
+// Treat an execution as "done" for both success and failure. n8n 1.x sets
+// finished=true on errored runs too, but older versions left finished=false and
+// only populated stoppedAt — so we OR both signals together to avoid polling
+// the full 300s on a workflow that already errored out 3 seconds in.
+const isExecutionDone = (meta: any): boolean => {
+  if (!meta) return false;
+  if (meta.finished === true) return true;
+  const s = String(meta.status ?? '').toLowerCase();
+  if (s === 'error' || s === 'failed' || s === 'canceled' || s === 'cancelled' || s === 'crashed') return true;
+  if (meta.stoppedAt && s !== 'running' && s !== 'new') return true;
+  return false;
+};
+
+// Pull a human-readable error out of an n8n execution payload. Returns null when
+// the execution actually succeeded.
+const extractExecutionError = (full: any): string | null => {
+  const status = String(full?.status ?? '').toLowerCase();
+  if (status === 'success') return null;
+  const r = full?.data?.resultData;
+  const err: any = r?.error;
+  const nodeMsg: string | undefined =
+    err?.message ?? err?.description ?? err?.cause?.message ?? err?.stack?.split('\n')[0];
+  const nodeName: string | undefined = err?.node?.name ?? err?.node?.type;
+  if (nodeMsg) {
+    return nodeName ? `${nodeMsg} — in node "${nodeName}"` : nodeMsg;
+  }
+  // No structured error → fall back to whatever status n8n reported.
+  return `Execution ${status || 'failed'}`;
+};
+
 // Shared helper for the "Respond job_id" async pattern: poll the n8n executions
 // API until the run finishes, then return the JSON of the last node that ran.
 // Used by RSOC Audiences / Headlines and (soon) any other long-running webhook
@@ -278,13 +308,12 @@ const pollExecutionResult = async (jobId: string, label: string): Promise<any> =
       console.warn(`[${label}] poll error (will keep polling):`, e);
       continue;
     }
-    if (!meta?.finished) continue;
+    if (!isExecutionDone(meta)) continue;
 
     const res = await axios.get(fullUrl, { headers: apiHeaders });
     const full = res.data;
-    if (full?.status !== 'success') {
-      throw new Error(`Execution failed with status: ${full?.status ?? 'unknown'}`);
-    }
+    const errMessage = extractExecutionError(full);
+    if (errMessage) throw new Error(errMessage);
     const lastNode = full?.data?.resultData?.lastNodeExecuted;
     const json = full?.data?.resultData?.runData?.[lastNode]?.[0]?.data?.main?.[0]?.[0]?.json;
     if (!json) {
@@ -505,7 +534,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         '[generateKeywords] poll #%d @%ss — finished=%s status=%s',
         attempt + 1, elapsed(), meta?.finished ?? false, meta?.status ?? '(running)',
       );
-      if (!meta?.finished) continue;
+      if (!isExecutionDone(meta)) continue;
 
       let full: any;
       try {
@@ -516,8 +545,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
-      if (full?.status !== 'success') {
-        fail(`execution ${full?.status ?? 'failed'}`);
+      const errMessage = extractExecutionError(full);
+      if (errMessage) {
+        console.error('[generateKeywords] execution failed:', errMessage, full?.data?.resultData?.error);
+        fail(errMessage);
         return;
       }
 
@@ -905,7 +936,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         continue;
       }
 
-      if (!meta?.finished) continue;
+      if (!isExecutionDone(meta)) continue;
 
       // Finished — fetch the full execution data once
       let full: any;
@@ -918,9 +949,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
 
-      if (full?.status !== 'success') {
-        console.error('[generateCreative] execution failed with status:', full?.status);
-        get().showError(`Creative generation failed: ${full?.status ?? 'unknown error'}`);
+      const errMessage = extractExecutionError(full);
+      if (errMessage) {
+        console.error('[generateCreative] execution failed:', errMessage, full?.data?.resultData?.error);
+        get().showError(`Creative generation failed: ${errMessage}`);
         cleanupOnFailure();
         return;
       }
