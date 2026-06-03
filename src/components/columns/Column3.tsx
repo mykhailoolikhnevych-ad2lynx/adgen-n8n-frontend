@@ -53,6 +53,19 @@ const COMPLIANCE_DESCRIPTION_HELP =
 const POLICY_REFERENCE_HELP =
   "Внутрішній код політики, проти якої знайдено порушення. Категорію видно вище в полі Type — її достатньо, щоб зрозуміти проблему.";
 
+// Image presets shipped by the n8n graph. IDs match the preset_id each preset
+// node emits — never reorder/rename without updating the workflow's filter.
+const IMAGE_PRESETS: { id: string; label: string; hint: string }[] = [
+  { id: 'A',      label: 'YT Thumbnail',    hint: 'YouTube-thumbnail для віральної реклами — висока насиченість, сильний контраст, жирний хук + кнопка CTA. Кінематографічна подача.' },
+  { id: 'B',      label: 'Organic Social',  hint: 'Виглядає як UGC-пост у стрічці. Великий хук із товстою обводкою поверх затемненого фото, декоративні пастельні стікери, курсивний CTA без кнопки.' },
+  { id: 'C',      label: 'Highlight Block', hint: 'Повнокадрове фото + ОДИН однотонний блок зверху з хуком. Без акценту, без CTA. Найпростіший варіант.' },
+  { id: 'D',      label: 'Illustrated',     hint: 'Преміум native-ad стиль (як Outbrain/Taboola): редакторська ілюстрація на фоні, жовтий курсивний хук + біла картка + яскравий pill-CTA.' },
+  { id: 'Custom', label: 'Custom',          hint: 'Опиши лише ДИЗАЙН (стиль, композиція, настрій, кольори). Хук, акцент і CTA з обраного концепту накладаються автоматично — повторювати їх не треба.' },
+];
+
+const CUSTOM_PROMPT_PLACEHOLDER =
+  'Опиши лише візуальний дизайн — напр. «Яскрава графіка з іконкою {theme}, великий домінантний текст, високий контраст, мінімум елементів, оптимізовано під мобільний». Хук / акцент / CTA підтягнуться з обраного концепту.';
+
 const IMAGE_MODELS: { label: string; value: string }[] = [
   { label: 'Nano banana 2', value: 'google/gemini-3.1-flash-image-preview' },
   { label: 'Nano banana pro', value: 'google/gemini-3-pro-image-preview' },
@@ -72,10 +85,30 @@ export const Column3 = () => {
     clearConcepts,
     imageGenerationModel,
     aspectRatio,
+    selectedPresets,
+    customPrompt,
     setImageGenerationModel,
     setAspectRatio,
+    setSelectedPresets,
+    setCustomPrompt,
     toggleConceptTranslation,
   } = useAppStore();
+
+  // A preset is "effectively selected" when it's checked AND (if Custom) has text.
+  // n8n's Filter Active Presets throws if zero presets reach it, so we mirror that
+  // here to keep the Generate Creative Batch button disabled when invalid.
+  const customActive = selectedPresets.includes('Custom') && customPrompt.trim().length > 0;
+  const effectivePresetCount =
+    selectedPresets.filter((p) => p !== 'Custom').length + (customActive ? 1 : 0);
+  const presetsInvalid = effectivePresetCount === 0;
+
+  const togglePreset = (id: string, checked: boolean) => {
+    setSelectedPresets(
+      checked
+        ? Array.from(new Set([...selectedPresets, id]))
+        : selectedPresets.filter((p) => p !== id),
+    );
+  };
 
   const settingsBlock = (
     <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
@@ -103,6 +136,55 @@ export const Column3 = () => {
             <option key={r} value={r}>{r}</option>
           ))}
         </select>
+      </div>
+
+      {/* Image presets — which preset branches run in n8n. Default: all four standard
+          presets; Custom is opt-in and requires a prompt to actually contribute. */}
+      <div>
+        <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+          Image presets {presetsInvalid && (
+            <span className="ml-1 normal-case font-normal text-red-500">— pick at least one</span>
+          )}
+        </label>
+        <div className="space-y-0.5">
+          {IMAGE_PRESETS.map((p) => {
+            const checked = selectedPresets.includes(p.id);
+            return (
+              <div key={p.id} className="flex items-center gap-1.5 text-xs">
+                <label className="flex items-center gap-1.5 cursor-pointer select-none flex-1">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={(e) => togglePreset(p.id, e.target.checked)}
+                  />
+                  <span className="font-medium text-slate-800">{p.label}</span>
+                </label>
+                <InfoTooltip text={p.hint} iconSize={11} />
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Custom-prompt textarea — visible only when Custom is checked. */}
+        {selectedPresets.includes('Custom') && (
+          <div className="mt-2">
+            <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+              Custom prompt
+              {selectedPresets.includes('Custom') && customPrompt.trim().length === 0 && (
+                <span className="ml-1 normal-case font-normal text-red-500">
+                  — required when Custom is checked
+                </span>
+              )}
+            </label>
+            <Textarea
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value)}
+              placeholder={CUSTOM_PROMPT_PLACEHOLDER}
+              className="bg-white text-xs"
+              rows={4}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -266,14 +348,22 @@ export const Column3 = () => {
           <Button
             onClick={() => generateCreative(concept.id)}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white mt-2"
-            disabled={isLoadingCreatives || !concept.compliant}
-            title={!concept.compliant ? 'Blocked — this creative is not compliant and cannot be released' : undefined}
+            disabled={isLoadingCreatives || !concept.compliant || presetsInvalid}
+            title={
+              !concept.compliant
+                ? 'Blocked — this creative is not compliant and cannot be released'
+                : presetsInvalid
+                  ? 'Pick at least one image preset (Custom needs a non-empty prompt to count)'
+                  : undefined
+            }
           >
             {!concept.compliant
               ? 'Blocked — not compliant'
-              : isLoadingCreatives
-                ? 'Generating Images...'
-                : 'Generate Creative Batch'}
+              : presetsInvalid
+                ? 'Pick at least one preset'
+                : isLoadingCreatives
+                  ? 'Generating Images...'
+                  : `Generate Creative Batch (${effectivePresetCount})`}
           </Button>
         </Card>
         );
