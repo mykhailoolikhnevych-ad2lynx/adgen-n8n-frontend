@@ -158,6 +158,11 @@ interface AppState {
   selectedPresets: string[];
   /** Optional user-authored prompt; only used when 'Custom' is in selectedPresets. */
   customPrompt: string;
+  /** Which scaffolding blocks to include in the Custom preset prompt. n8n's Preset
+   *  Custom node assembles the final prompt as: [TR][Scene][user design direction]
+   *  [Hook][Accent][CTA][UF] — each block included only if its flag is true. Default
+   *  is all true so a fresh user gets the same building blocks as Presets A/B/C/D. */
+  customBlocks: CustomBlocks;
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -204,6 +209,16 @@ interface AppState {
   setAspectRatio: (value: string) => void;
   setSelectedPresets: (value: string[]) => void;
   setCustomPrompt: (value: string) => void;
+  setCustomBlocks: (value: CustomBlocks) => void;
+}
+
+export interface CustomBlocks {
+  textRules: boolean;
+  scene: boolean;
+  hook: boolean;
+  accent: boolean;
+  cta: boolean;
+  forbidden: boolean;
 }
 
 let _noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -347,11 +362,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Default: generate all 4 standard presets; Custom off, no custom text.
   selectedPresets: ['A', 'B', 'C', 'D'],
   customPrompt: '',
+  // Default Custom blocks: same scaffolding the 4 standard presets use.
+  customBlocks: { textRules: true, scene: true, hook: true, accent: true, cta: true, forbidden: true },
   setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
   setAdLanguage: (value) => set({ adLanguage: value }),
   setAspectRatio: (value) => set({ aspectRatio: value }),
   setSelectedPresets: (value) => set({ selectedPresets: value }),
   setCustomPrompt: (value) => set({ customPrompt: value }),
+  setCustomBlocks: (value) => set({ customBlocks: value }),
   errorBanner: null,
   noticeBanner: null,
 
@@ -891,6 +909,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Custom only contributes if the user also typed a custom_prompt.
       presets: get().selectedPresets,
       custom_prompt: get().customPrompt,
+      // Toggleable scaffolding for Preset Custom — see Build Image Context / Preset Custom in n8n.
+      custom_blocks: get().customBlocks,
     };
 
     const cleanupOnFailure = () => {
@@ -1007,8 +1027,44 @@ export const useAppStore = create<AppState>((set, get) => ({
       const fallbackConcept = get().concepts.find(c => c.id === conceptId);
       const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
 
+      // n8n's Aggregate Images keys every image by preset_id: image_a_url / image_b_url /
+      // image_c_url / image_d_url / image_custom_url. The same node also emits a flat
+      // `images: [...]` array in response order, but that order loses which preset each
+      // image came from — so a partial run like {A, D} would otherwise get filenamed _1, _2
+      // instead of _1, _4. Prefer the keyed entries so the trailing slot matches the preset.
+      const PRESET_ORDER = ['a', 'b', 'c', 'd', 'custom'] as const;
+      const PRESET_SLOT: Record<string, number | string> = {
+        a: 1, b: 2, c: 3, d: 4, custom: 'custom',
+      };
+
       let images: ImageVariant[] = [];
-      if (Array.isArray(result.images)) {
+      const keyed = Object.entries(result)
+        .filter(([k, v]) => /^image_[a-z0-9]+_url$/i.test(k) && typeof v === 'string')
+        .map(([k, v]) => {
+          const suffix = (k.match(/^image_([a-z0-9]+)_url$/i)?.[1] ?? '').toLowerCase();
+          const styleFromResponse = readString(`style_${suffix}`);
+          const style = styleFromResponse.trim() || suffix.toUpperCase();
+          const metaTitle = readString(`meta_title_${suffix}`) || readString('meta_ad_title');
+          const metaCopy  = readString(`meta_copy_${suffix}`)  || readString('meta_ad_copy');
+          const cta       = readString(`banner_cta_${suffix}`);
+          return { suffix, url: v as string, style, metaTitle, metaCopy, cta };
+        });
+
+      if (keyed.length > 0) {
+        // Display order: A -> B -> C -> D -> Custom, anything unknown at the end.
+        keyed.sort((a, b) => {
+          const ai = PRESET_ORDER.indexOf(a.suffix as typeof PRESET_ORDER[number]);
+          const bi = PRESET_ORDER.indexOf(b.suffix as typeof PRESET_ORDER[number]);
+          return (ai === -1 ? PRESET_ORDER.length : ai) - (bi === -1 ? PRESET_ORDER.length : bi);
+        });
+        images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta }) => ({
+          url, style, metaTitle, metaCopy, cta,
+          fileName: buildCreativeFilename(fileMeta, PRESET_SLOT[suffix] ?? suffix),
+        }));
+      } else if (Array.isArray(result.images)) {
+        // Legacy fallback — older n8n versions only returned the flat array. Numbers
+        // 1..N stay in response order; partial selections will be misnumbered, which is
+        // the original behaviour we accept only when keyed entries are unavailable.
         images = result.images
           .filter((s: any) => typeof s === 'string')
           .map((url: string, i: number) => ({
@@ -1017,41 +1073,18 @@ export const useAppStore = create<AppState>((set, get) => ({
             metaTitle: '',
             metaCopy: '',
             cta: '',
+            fileName: buildCreativeFilename(fileMeta, i + 1),
           }));
-      } else {
-        images = Object.entries(result)
-          .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
-          .map(([k, v]) => {
-            const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
-            const suffix = (match?.[1] ?? '').toLowerCase();
-
-            const styleFromResponse = readString(suffix ? `style_${suffix}` : 'style');
-            const style = styleFromResponse.trim() || suffix.toUpperCase();
-
-            const metaTitle = readString(suffix ? `meta_title_${suffix}` : 'meta_title')
-              || readString('meta_ad_title');
-            const metaCopy = readString(suffix ? `meta_copy_${suffix}` : 'meta_copy')
-              || readString('meta_ad_copy');
-            const cta = readString(suffix ? `banner_cta_${suffix}` : 'banner_cta');
-
-            return { url: v as string, style, metaTitle, metaCopy, cta };
-          });
-        if (images.length === 0 && typeof result.image_url === 'string') {
-          images = [{
-            url: result.image_url,
-            style: readString('style'),
-            metaTitle: readString('meta_title') || readString('meta_ad_title'),
-            metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
-            cta: readString('banner_cta'),
-          }];
-        }
+      } else if (typeof result.image_url === 'string') {
+        images = [{
+          url: result.image_url,
+          style: readString('style'),
+          metaTitle: readString('meta_title') || readString('meta_ad_title'),
+          metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
+          cta: readString('banner_cta'),
+          fileName: buildCreativeFilename(fileMeta, 1),
+        }];
       }
-
-      // Stamp the standardized file name on every variant (A/B/C/D -> _1/_2/_3/_4).
-      images = images.map((img, i) => ({
-        ...img,
-        fileName: buildCreativeFilename(fileMeta, i),
-      }));
 
       // Card-level fields take values from the first variant; if it has none, fall back to the concept.
       const firstVariant = images[0];

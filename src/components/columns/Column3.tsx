@@ -1,5 +1,5 @@
 import React from 'react';
-import { useAppStore } from '@/store/useAppStore';
+import { useAppStore, type CustomBlocks } from '@/store/useAppStore';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
@@ -60,11 +60,30 @@ const IMAGE_PRESETS: { id: string; label: string; hint: string }[] = [
   { id: 'B',      label: 'Organic Social',  hint: 'Виглядає як UGC-пост у стрічці. Великий хук із товстою обводкою поверх затемненого фото, декоративні пастельні стікери, курсивний CTA без кнопки.' },
   { id: 'C',      label: 'Highlight Block', hint: 'Повнокадрове фото + ОДИН однотонний блок зверху з хуком. Без акценту, без CTA. Найпростіший варіант.' },
   { id: 'D',      label: 'Illustrated',     hint: 'Преміум native-ad стиль (як Outbrain/Taboola): редакторська ілюстрація на фоні, жовтий курсивний хук + біла картка + яскравий pill-CTA.' },
-  { id: 'Custom', label: 'Custom',          hint: 'Опиши лише ДИЗАЙН (стиль, композиція, настрій, кольори). Хук, акцент і CTA з обраного концепту накладаються автоматично — повторювати їх не треба.' },
+  { id: 'Custom', label: 'Custom',          hint: 'Свій варіант. Базово містить той самий каркас, що A/B/C/D (правила тексту, сцена, хук, акцент, CTA, заборонене). Чіпами нижче вмикаєш/вимикаєш блоки. Перетягни чіп у текстове поле, щоб закріпити блок у конкретній позиції — без перетягування блоки рендеряться у порядку за замовчуванням.' },
 ];
 
 const CUSTOM_PROMPT_PLACEHOLDER =
-  'Опиши лише візуальний дизайн — напр. «Яскрава графіка з іконкою {theme}, великий домінантний текст, високий контраст, мінімум елементів, оптимізовано під мобільний». Хук / акцент / CTA підтягнуться з обраного концепту.';
+  'Опиши лише ВІЗУАЛЬНИЙ ДИЗАЙН — стиль, композиція, настрій, кольори. ' +
+  'Каркасні блоки (text rules / scene / hook / accent / CTA / forbidden) n8n додає у позиціях за замовчуванням. ' +
+  'Перетягни чіп згори сюди, щоб закріпити його блок inline на місці дропу — повторне перетягування того ж чіпа прибере попереднє входження. ' +
+  'Також підтримуються плейсхолдери для сирого тексту: {hook_text}, {accent_text}, {cta_text}, {theme}, {meta_ad_title}, {meta_ad_copy}.';
+
+// Each chip toggles + positions a block in the Preset Custom prompt that n8n's
+// Build Image Context / Preset Custom assembles. Defaults to ON so the user
+// starts with the same scaffolding A/B/C/D use; turning a chip OFF removes that
+// block entirely. `token` is the placeholder inserted when the chip is dragged
+// into the textarea — n8n substitutes the block's content at that position
+// instead of placing it in the default order. Labels stay English so they match
+// the placeholder tokens; tooltips/helper text are Ukrainian per user request.
+const CUSTOM_BLOCK_DEFS: { key: keyof CustomBlocks; label: string; token: string; hint: string }[] = [
+  { key: 'textRules', label: 'Text rules', token: '{text_rules}', hint: 'Жорсткі правила рендеру тексту: verbatim, без дублювань, без заміни синонімами. Той самий TR-блок, що у A/B/C/D — тримай ввімкненим, якщо немає конкретної причини.' },
+  { key: 'scene',     label: 'Scene',      token: '{scene}',      hint: 'Сцена з обраного концепту: суб’єкт, оточення, реквізит, настрій. Вимкни, якщо опис дизайну сам задає сцену з нуля.' },
+  { key: 'hook',      label: 'Hook',       token: '{hook}',       hint: 'Рендерить banner_hook великим жирним шрифтом у верхній зоні. Вимикай тільки якщо твій дизайн навмисно ховає хук.' },
+  { key: 'accent',    label: 'Accent',     token: '{accent}',     hint: 'Рендерить banner_accent другим, меншим рядком під хуком.' },
+  { key: 'cta',       label: 'CTA',        token: '{cta}',        hint: 'Рендерить banner_cta як кнопку: велика заокруглена, яскравий fill, білий текст, нижня зона.' },
+  { key: 'forbidden', label: 'Forbidden',  token: '{forbidden}',  hint: 'Універсальний UF-блок: ніяких стрілок, бабблів, спотворених облич, 16:9, дублікатів / вигаданих слів. Той самий, що у A/B/C/D.' },
+];
 
 const IMAGE_MODELS: { label: string; value: string }[] = [
   { label: 'Nano banana 2', value: 'google/gemini-3.1-flash-image-preview' },
@@ -74,6 +93,19 @@ const IMAGE_MODELS: { label: string; value: string }[] = [
 ];
 
 const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
+
+// Character offset for a drop inside a <textarea>. We rely on the browser's
+// drop-caret: when dragover is preventDefault'd, Chromium/Firefox update
+// selectionStart to track the mouse, so reading it in onDrop gives the drop
+// position. caretRangeFromPoint can't be used here — for replaced elements
+// like <textarea> it returns ranges anchored in a parent DOM node, not in the
+// textarea's internal text. Falls back to end-of-text when selection looks
+// unset (selectionStart === 0 while the user clearly dropped further down).
+const getDropOffset = (ta: HTMLTextAreaElement): number => {
+  const sel = ta.selectionStart;
+  if (typeof sel === 'number' && sel >= 0 && sel <= ta.value.length) return sel;
+  return ta.value.length;
+};
 
 export const Column3 = () => {
   const {
@@ -87,10 +119,12 @@ export const Column3 = () => {
     aspectRatio,
     selectedPresets,
     customPrompt,
+    customBlocks,
     setImageGenerationModel,
     setAspectRatio,
     setSelectedPresets,
     setCustomPrompt,
+    setCustomBlocks,
     toggleConceptTranslation,
   } = useAppStore();
 
@@ -165,24 +199,105 @@ export const Column3 = () => {
           })}
         </div>
 
-        {/* Custom-prompt textarea — visible only when Custom is checked. */}
+        {/* Custom-prompt block — visible only when Custom is checked. Chips
+            toggle blocks on/off AND are draggable: dropping a chip into the
+            textarea inserts its placeholder ({hook} etc.) at the drop point so
+            n8n renders that block inline at that position instead of in the
+            default order. Re-dragging the same chip removes any previous
+            occurrence so blocks can't end up duplicated. */}
         {selectedPresets.includes('Custom') && (
-          <div className="mt-2">
-            <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
-              Custom prompt
-              {selectedPresets.includes('Custom') && customPrompt.trim().length === 0 && (
-                <span className="ml-1 normal-case font-normal text-red-500">
-                  — required when Custom is checked
-                </span>
-              )}
-            </label>
-            <Textarea
-              value={customPrompt}
-              onChange={(e) => setCustomPrompt(e.target.value)}
-              placeholder={CUSTOM_PROMPT_PLACEHOLDER}
-              className="bg-white text-xs"
-              rows={4}
-            />
+          <div className="mt-2 space-y-2">
+            <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Custom blocks
+              </label>
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {CUSTOM_BLOCK_DEFS.map((b) => (
+                  <label
+                    key={b.key}
+                    draggable={customBlocks[b.key]}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/plain', b.token);
+                      e.dataTransfer.setData('application/x-custom-block', b.token);
+                      e.dataTransfer.effectAllowed = 'copy';
+                    }}
+                    className={`flex items-center gap-1.5 text-xs select-none ${
+                      customBlocks[b.key] ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer opacity-60'
+                    }`}
+                    title={customBlocks[b.key] ? 'Drag onto the textarea to pin at a specific position' : undefined}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={customBlocks[b.key]}
+                      onChange={(e) =>
+                        setCustomBlocks({ ...customBlocks, [b.key]: e.target.checked })
+                      }
+                    />
+                    <span className="font-medium text-slate-800">{b.label}</span>
+                    <InfoTooltip text={b.hint} iconSize={11} />
+                  </label>
+                ))}
+              </div>
+              <div className="mt-1 text-[10px] text-gray-500">
+                Перетягни чіп у текстове поле нижче, щоб закріпити блок у конкретній позиції. Без перетягування блоки рендеряться у порядку за замовчуванням ({CUSTOM_BLOCK_DEFS.map((b) => b.label).join(' → ')}).
+              </div>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Design direction
+                {customPrompt.trim().length === 0 && (
+                  <span className="ml-1 normal-case font-normal text-red-500">
+                    — обов’язкове, коли Custom увімкнено
+                  </span>
+                )}
+              </label>
+              <Textarea
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                onDragOver={(e) => {
+                  // Only intercept drops that come from our chips, otherwise let
+                  // the browser handle normal text-paste-style drops natively.
+                  if (e.dataTransfer.types.includes('application/x-custom-block')) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'copy';
+                  }
+                }}
+                onDrop={(e) => {
+                  const token = e.dataTransfer.getData('application/x-custom-block')
+                    || e.dataTransfer.getData('text/plain');
+                  if (!token || !CUSTOM_BLOCK_DEFS.some((b) => b.token === token)) return;
+                  e.preventDefault();
+                  const ta = e.currentTarget;
+                  const dropPos = getDropOffset(ta);
+                  // Remove any prior occurrence of this token before inserting.
+                  const existingIdx = customPrompt.indexOf(token);
+                  let newText: string;
+                  let cursorPos: number;
+                  if (existingIdx === -1) {
+                    newText = customPrompt.slice(0, dropPos) + token + customPrompt.slice(dropPos);
+                    cursorPos = dropPos + token.length;
+                  } else {
+                    const cleaned =
+                      customPrompt.slice(0, existingIdx) +
+                      customPrompt.slice(existingIdx + token.length);
+                    // If the existing occurrence was before the drop point, the
+                    // drop position shifts back by the token's length.
+                    const adjusted = existingIdx < dropPos ? dropPos - token.length : dropPos;
+                    const safePos = Math.max(0, Math.min(adjusted, cleaned.length));
+                    newText = cleaned.slice(0, safePos) + token + cleaned.slice(safePos);
+                    cursorPos = safePos + token.length;
+                  }
+                  setCustomPrompt(newText);
+                  requestAnimationFrame(() => {
+                    ta.focus();
+                    ta.setSelectionRange(cursorPos, cursorPos);
+                  });
+                }}
+                placeholder={CUSTOM_PROMPT_PLACEHOLDER}
+                className="bg-white text-xs"
+                rows={5}
+              />
+            </div>
           </div>
         )}
       </div>
