@@ -70,19 +70,20 @@ const CUSTOM_PROMPT_PLACEHOLDER =
   'Також підтримуються плейсхолдери для сирого тексту: {hook_text}, {accent_text}, {cta_text}, {theme}, {meta_ad_title}, {meta_ad_copy}.';
 
 // Each chip toggles + positions a block in the Preset Custom prompt that n8n's
-// Build Image Context / Preset Custom assembles. Defaults to ON so the user
-// starts with the same scaffolding A/B/C/D use; turning a chip OFF removes that
-// block entirely. `token` is the placeholder inserted when the chip is dragged
-// into the textarea — n8n substitutes the block's content at that position
-// instead of placing it in the default order. Labels stay English so they match
-// the placeholder tokens; tooltips/helper text are Ukrainian per user request.
+// Build Image Context / Preset Custom assembles. `token` is the placeholder
+// inserted when the chip is dragged into the textarea — n8n substitutes the
+// block's content at that position instead of placing it in the default order.
+// Labels stay English so they match the placeholder tokens; tooltips/helper
+// text are Ukrainian per user request.
+//
+// NOT exposed as chips (forced ON in the store, no toggle): Text rules and
+// Forbidden — those are guard rails the buyer should never disable. They render
+// at their default positions (TR at the start, Forbidden at the end).
 const CUSTOM_BLOCK_DEFS: { key: keyof CustomBlocks; label: string; token: string; hint: string }[] = [
-  { key: 'textRules', label: 'Text rules', token: '{text_rules}', hint: 'Жорсткі правила рендеру тексту: verbatim, без дублювань, без заміни синонімами. Той самий TR-блок, що у A/B/C/D — тримай ввімкненим, якщо немає конкретної причини.' },
-  { key: 'scene',     label: 'Scene',      token: '{scene}',      hint: 'Сцена з обраного концепту: суб’єкт, оточення, реквізит, настрій. Вимкни, якщо опис дизайну сам задає сцену з нуля.' },
-  { key: 'hook',      label: 'Hook',       token: '{hook}',       hint: 'Рендерить banner_hook великим жирним шрифтом у верхній зоні. Вимикай тільки якщо твій дизайн навмисно ховає хук.' },
-  { key: 'accent',    label: 'Accent',     token: '{accent}',     hint: 'Рендерить banner_accent другим, меншим рядком під хуком.' },
-  { key: 'cta',       label: 'CTA',        token: '{cta}',        hint: 'Рендерить banner_cta як кнопку: велика заокруглена, яскравий fill, білий текст, нижня зона.' },
-  { key: 'forbidden', label: 'Forbidden',  token: '{forbidden}',  hint: 'Універсальний UF-блок: ніяких стрілок, бабблів, спотворених облич, 16:9, дублікатів / вигаданих слів. Той самий, що у A/B/C/D.' },
+  { key: 'scene',  label: 'Scene',  token: '{scene}',  hint: 'Сцена з обраного концепту: суб’єкт, оточення, реквізит, настрій. Базово ВИМКНЕНО — вмикай, якщо хочеш накласти каркас сцени з концепту поверх свого опису.' },
+  { key: 'hook',   label: 'Hook',   token: '{hook}',   hint: 'Рендерить banner_hook великим жирним шрифтом у верхній зоні. Вимикай тільки якщо твій дизайн навмисно ховає хук.' },
+  { key: 'accent', label: 'Accent', token: '{accent}', hint: 'Рендерить banner_accent другим, меншим рядком під хуком.' },
+  { key: 'cta',    label: 'CTA',    token: '{cta}',    hint: 'Рендерить banner_cta як кнопку: велика заокруглена, яскравий fill, білий текст, нижня зона.' },
 ];
 
 const IMAGE_MODELS: { label: string; value: string }[] = [

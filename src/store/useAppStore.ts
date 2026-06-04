@@ -362,8 +362,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Default: generate all 4 standard presets; Custom off, no custom text.
   selectedPresets: ['A', 'B', 'C', 'D'],
   customPrompt: '',
-  // Default Custom blocks: same scaffolding the 4 standard presets use.
-  customBlocks: { textRules: true, scene: true, hook: true, accent: true, cta: true, forbidden: true },
+  // Default Custom blocks. textRules + forbidden are forced ON (no UI toggle —
+  // they're guard rails; see Column3.tsx CUSTOM_BLOCK_DEFS). Scene defaults OFF
+  // so the user's design direction isn't fighting the concept's scene.
+  customBlocks: { textRules: true, scene: false, hook: true, accent: true, cta: true, forbidden: true },
   setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
   setAdLanguage: (value) => set({ adLanguage: value }),
   setAspectRatio: (value) => set({ aspectRatio: value }),
