@@ -907,6 +907,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       image_generation_model: get().imageGenerationModel,
       ad_language: get().adLanguage,
       aspect_ratio: get().aspectRatio,
+      // Target country — Agent 3 / Agent 3 Patch use this to pick the right currency,
+      // local programmes, and regional references. Currency follows GEO, not ad_language.
+      geo: get().formData.geo,
       // n8n side filters its 5 preset branches by these IDs ('A','B','C','D','Custom').
       // Custom only contributes if the user also typed a custom_prompt.
       presets: get().selectedPresets,
