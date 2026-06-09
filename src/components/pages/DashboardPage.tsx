@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -110,11 +110,206 @@ const Bar = ({ value, max, tint = 'bg-blue-100' }: { value: number; max: number;
   );
 };
 
+// Pull every "data:image/...;base64,..." substring out of a meta_out blob. The
+// base64 alphabet is [A-Za-z0-9+/=] — none of which collide with JSON's quote
+// or backslash, so the run terminates cleanly at the closing quote of the JSON
+// string value. Returns [] for any value that doesn't contain "data:image/" at
+// all (cheap early-out for the common no-image case).
+//
+// Dedupe via Set: n8n's Aggregate Images node writes each image twice in the
+// response — once in `images: [...]` and once in `image_a_url` / `image_b_url`
+// keyed entries. Without dedupe a 1-image batch would render as 2 thumbnails.
+const BASE64_IMG_RE = /data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+/g;
+const MAX_IMAGES_PER_CELL = 5;
+const extractBase64Images = (s: string): string[] => {
+  if (!s || !s.includes('data:image/')) return [];
+  const matches = s.match(BASE64_IMG_RE) ?? [];
+  return Array.from(new Set(matches));
+};
+
+// Lightbox state — when set, an inline overlay shows the picked image full-size
+// with prev/next + ESC handling. Mirrors Column4's "Generated Images" pattern so
+// the experience is consistent: clicking a dashboard thumb feels the same as
+// clicking a creative card in tab 4.
+type LightboxState = { images: string[]; index: number } | null;
+
+const Lightbox = ({ state, onClose, onPrev, onNext }: {
+  state: LightboxState;
+  onClose: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+}) => {
+  // Keyboard nav: ESC closes, ←/→ moves through the current row's images.
+  useEffect(() => {
+    if (!state) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft') onPrev();
+      else if (e.key === 'ArrowRight') onNext();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [state, onClose, onPrev, onNext]);
+
+  if (!state) return null;
+  const { images, index } = state;
+  const src = images[index];
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
+        className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
+        aria-label="Close"
+      >
+        ×
+      </button>
+      {images.length > 1 && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+          className="absolute left-4 top-1/2 -translate-y-1/2 text-white text-4xl w-12 h-12 flex items-center justify-center hover:bg-white/10 rounded-full"
+          aria-label="Previous image"
+        >
+          ‹
+        </button>
+      )}
+      <div
+        className="flex items-center justify-center max-w-[92vw] max-h-[92vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={src}
+          alt={`Image ${index + 1}`}
+          className="max-w-full max-h-[88vh] object-contain rounded-md"
+        />
+      </div>
+      {images.length > 1 && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onNext(); }}
+          className="absolute right-4 top-1/2 -translate-y-1/2 text-white text-4xl w-12 h-12 flex items-center justify-center hover:bg-white/10 rounded-full"
+          aria-label="Next image"
+        >
+          ›
+        </button>
+      )}
+      {images.length > 1 && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full">
+          {index + 1} / {images.length}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// A single base64 thumb. Falls back to a clear "truncated" badge when the
+// browser can't decode the image — almost always means the row was written
+// before n8n's Normalize trim limit was bumped, so the base64 is cut mid-stream.
+// We also check the byte length up front: a real 1024×1024 JPEG is ~50-500 KB
+// base64, so anything under ~5 KB is almost certainly a truncated remnant.
+const MIN_VIABLE_BASE64 = 5000;
+const ImageThumb = ({ src, index, total, onClick }: {
+  src: string;
+  index: number;
+  total: number;
+  onClick: () => void;
+}) => {
+  const [broken, setBroken] = useState(src.length < MIN_VIABLE_BASE64);
+  if (broken) {
+    return (
+      <div
+        className="h-12 w-12 flex items-center justify-center rounded border border-amber-300 bg-amber-50 text-amber-700 text-[8px] font-mono leading-tight text-center px-0.5"
+        title={`Base64 truncated at ${src.length} chars — re-import the n8n Usage Log workflow so the Normalize node stops capping meta_out at 2000.`}
+      >
+        truncated
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Open image ${index + 1} of ${total}`}
+      className="cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-slate-500 rounded"
+    >
+      <img
+        src={src}
+        alt={`generated image ${index + 1}`}
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className="h-12 w-12 object-cover rounded border border-slate-200 hover:border-slate-400 transition-colors"
+      />
+    </button>
+  );
+};
+
+// Render a meta_out cell. If the value contains base64 image URLs (i.e. it's a
+// generateCreative response), show small lazy-loaded thumbnails — the raw bytes
+// would be hundreds of KB of unreadable garbage. Otherwise fall back to the
+// usual truncated mono text. The DB still stores the full base64 either way.
+const MetaOutCell = ({ value, onOpen }: {
+  value: string;
+  onOpen: (images: string[], index: number) => void;
+}) => {
+  const images = useMemo(() => extractBase64Images(value), [value]);
+  if (images.length === 0) {
+    return (
+      <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={value}>
+        {value}
+      </td>
+    );
+  }
+  const shown = images.slice(0, MAX_IMAGES_PER_CELL);
+  const extra = images.length - shown.length;
+  return (
+    <td className="py-1.5 px-3 max-w-md">
+      <div className="flex flex-wrap items-center gap-1">
+        {shown.map((src, i) => (
+          <ImageThumb key={i} src={src} index={i} total={images.length} onClick={() => onOpen(images, i)} />
+        ))}
+        {extra > 0 && (
+          <span className="font-mono text-[10px] text-slate-400">+{extra}</span>
+        )}
+      </div>
+    </td>
+  );
+};
+
 const EventsView = ({ rows }: { rows: UsageRow[] }) => {
+  // One lightbox per Events view — its state holds the row's image list + the
+  // currently-shown index. Lifted here (instead of per-cell) so only one
+  // overlay can be open at a time and keyboard nav is unambiguous.
+  const [lightbox, setLightbox] = useState<LightboxState>(null);
+  const closeLightbox = useCallback(() => setLightbox(null), []);
+  const showPrev = useCallback(() => {
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index - 1 + len) % len };
+    });
+  }, []);
+  const showNext = useCallback(() => {
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index + 1) % len };
+    });
+  }, []);
+  const openLightbox = useCallback((images: string[], index: number) => {
+    setLightbox({ images, index });
+  }, []);
+
   if (rows.length === 0) {
     return <div className="p-6 text-gray-400 italic">No events match the current filters.</div>;
   }
   return (
+    <>
     <table className="w-full text-sm border-collapse">
       <thead className="sticky top-0 bg-slate-100 z-10">
         <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
@@ -136,11 +331,13 @@ const EventsView = ({ rows }: { rows: UsageRow[] }) => {
             <td className="py-1.5 px-3 font-semibold">{r.action}</td>
             <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500" title={r.execution_id}>{r.execution_id || '—'}</td>
             <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={r.meta}>{r.meta}</td>
-            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={r.meta_out}>{r.meta_out}</td>
+            <MetaOutCell value={r.meta_out} onOpen={openLightbox} />
           </tr>
         ))}
       </tbody>
     </table>
+    <Lightbox state={lightbox} onClose={closeLightbox} onPrev={showPrev} onNext={showNext} />
+    </>
   );
 };
 

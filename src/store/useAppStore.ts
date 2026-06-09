@@ -408,7 +408,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearConcepts: () => set({ concepts: [] }),
 
   generateAngles: async () => {
-    const meta = { geo: get().formData.geo, buyer: get().formData.buyer };
+    // Capture every field of the "1. Input Data" panel — same shape as formData
+    // so the dashboard can show the full kickoff context, not just geo + buyer.
+    const meta = { ...get().formData };
     set({ isLoadingAngles: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -803,9 +805,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateConcept: async (angleId) => {
-    const logMeta = { angleId, adLanguage: get().adLanguage };
     set({ isLoadingConcepts: true });
     const angle = get().angles.find(a => a.id === angleId);
+    // Capture WHAT was picked, not just an opaque id — angle direction / code /
+    // hook seed + ad language + the GEO/buyer context that drives the concept run.
+    const logMeta = {
+      angleId,
+      angleSlot: angle?.slot,
+      angleDirection: angle?.direction,
+      angleCode: angle?.code,
+      angleHookSeed: angle?.hookSeed,
+      angleTrigger: angle?.trigger,
+      angleAwarenessLevel: angle?.awarenessLevel,
+      angleEmotionalAnchor: angle?.emotionalAnchor,
+      adLanguage: get().adLanguage,
+      geo: get().formData.geo,
+      buyer: get().formData.buyer,
+      campaignName: get().formData.campaignName,
+    };
     const angleForWebhook = angle ? {
       ...(angle.raw ?? {}),
       direction: angle.direction,
@@ -874,9 +891,34 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateCreative: async (conceptId) => {
-    const logMeta = { conceptId, adLanguage: get().adLanguage, aspectRatio: get().aspectRatio, imageModel: get().imageGenerationModel };
     const concept = get().concepts.find(c => c.id === conceptId);
     if (!concept) return;
+    // Mirror the generateConcept treatment: capture the actual concept content
+    // (hook / accent / cta / meta copy / formula) + the source angle's identity
+    // + every generation setting that affects the output. That way the dashboard
+    // can answer "what did this run produce, and from what?" without an id lookup.
+    const logMeta = {
+      conceptId,
+      hook: concept.hook,
+      accent: concept.accent,
+      cta: concept.cta,
+      metaTitle: concept.metaTitle,
+      metaCopy: concept.metaCopy,
+      formula: concept.formula,
+      formulaName: concept.formulaName,
+      aspectTested: concept.aspectTested,
+      aspectCategory: concept.aspectCategory,
+      angleSlot: concept.sourceAngle?.slot,
+      angleDirection: concept.sourceAngle?.direction,
+      angleCode: concept.sourceAngle?.code,
+      adLanguage: get().adLanguage,
+      aspectRatio: get().aspectRatio,
+      imageModel: get().imageGenerationModel,
+      geo: get().formData.geo,
+      buyer: get().formData.buyer,
+      campaignName: get().formData.campaignName,
+      presets: get().selectedPresets,
+    };
 
     const chosen_angle = concept.sourceAngle
       ? {

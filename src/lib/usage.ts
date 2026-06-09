@@ -23,16 +23,22 @@ export interface UsageEvent {
 
 const LOG_URL = import.meta.env.PUBLIC_WEBHOOK_LOG_EVENT_URL as string | undefined;
 
+// Input context — stays tight; only summary fields.
 const META_LIMIT = 2000;
+// Webhook response — generous, because generateCreative dumps Aggregate Images'
+// payload here (5x base64-encoded JPEGs at ~300-500 KB each → ~3 MB serialized).
+// Pick a ceiling that comfortably fits a full creative batch and still trips the
+// sentinel if something unexpected balloons even further.
+const META_OUT_LIMIT = 5_000_000;
 const ERROR_LIMIT = 500;
 
 const truncate = (s: string, max: number): string =>
   s.length > max ? s.slice(0, max) : s;
 
-// Serialize an arbitrary value into one Data-Table column. JSON > 2000 chars is
+// Serialize an arbitrary value into one Data-Table column. JSON over `limit` is
 // dropped in favour of a "limit reached" sentinel — a truncated JSON blob is
 // invalid and harder to read than an explicit notice.
-const serializeForColumn = (label: string, v: unknown): string => {
+const serializeForColumn = (label: string, v: unknown, limit: number): string => {
   if (v == null) return '';
   let s: string;
   try {
@@ -40,8 +46,8 @@ const serializeForColumn = (label: string, v: unknown): string => {
   } catch {
     s = String(v);
   }
-  if (s.length > META_LIMIT) {
-    return `[${label} limit reached: ${s.length} chars, max ${META_LIMIT}]`;
+  if (s.length > limit) {
+    return `[${label} limit reached: ${s.length} chars, max ${limit}]`;
   }
   return s;
 };
@@ -58,8 +64,8 @@ export const logEvent = (e: UsageEvent): void => {
         email: ident?.email ?? 'unknown@unknown',
         tab: e.tab,
         action: e.action,
-        meta: serializeForColumn('meta', e.meta),
-        meta_out: serializeForColumn('meta_out', e.metaOut),
+        meta: serializeForColumn('meta', e.meta, META_LIMIT),
+        meta_out: serializeForColumn('meta_out', e.metaOut, META_OUT_LIMIT),
         error_message: e.errorMessage ? truncate(e.errorMessage, ERROR_LIMIT) : '',
       };
       await axios.post(LOG_URL, body, { timeout: 10_000 });
