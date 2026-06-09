@@ -408,7 +408,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearConcepts: () => set({ concepts: [] }),
 
   generateAngles: async () => {
-    logEvent({ tab: 'creatives', action: 'generateAngles', status: 'start', meta: { geo: get().formData.geo, buyer: get().formData.buyer } });
+    const meta = { geo: get().formData.geo, buyer: get().formData.buyer };
     set({ isLoadingAngles: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -440,6 +440,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           raw: item,
         }));
         set({ angles: anglesWithIds, agent1Output, operatorNote, article, concepts: [], creatives: [], isLoadingAngles: false });
+        logEvent({ tab: 'creatives', action: 'generateAngles', meta, metaOut: data });
         return;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -448,17 +449,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         console.error(e);
         set({ isLoadingAngles: false });
+        logEvent({ tab: 'creatives', action: 'generateAngles', meta, metaOut: (e as any)?.response?.data, errorMessage: humanizeError(e) });
         return;
       }
     }
   },
 
   generateArticle: async ({ topic, geo, language, mode }) => {
-    logEvent({ tab: 'article', action: 'generateArticle', status: 'start', meta: { topic, geo, language, mode } });
+    const meta = { topic, geo, language, mode };
     if (!WEBHOOKS.article) {
       const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
       set({ articleStatus: 'error', articleError: msg, articleHtml: null });
       get().showError(msg);
+      logEvent({ tab: 'article', action: 'generateArticle', meta, errorMessage: msg });
       return;
     }
     set({ articleStatus: 'loading', articleError: null, articleHtml: null });
@@ -477,6 +480,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const html = typeof data === 'string' ? data : String(data ?? '');
         if (!html.trim()) throw new Error('Webhook returned empty response');
         set({ articleHtml: html, articleStatus: 'success', articleError: null });
+        logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: html });
         return;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -487,6 +491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const msg = humanizeError(e);
         set({ articleStatus: 'error', articleError: msg, articleHtml: null });
         get().showError(`Article generation failed: ${msg}`);
+        logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: (e as any)?.response?.data, errorMessage: msg });
         return;
       }
     }
@@ -497,17 +502,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     // the webhook returns a job_id immediately, then we poll the n8n executions API
     // until the run finishes and pull the final HTML out of the last node. Mirrors
     // generateCreative — same executions-API plumbing.
-    logEvent({ tab: 'keywords', action: 'generateKeywords', status: 'start', meta: { country: input.country, language: input.language, anchor: input.anchor } });
+    const logMeta = { country: input.country, language: input.language, anchor: input.anchor };
     if (!WEBHOOKS.keywords) {
       const msg = 'PUBLIC_WEBHOOK_KEYWORDS_URL is not set in .env';
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
       get().showError(msg);
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, errorMessage: msg });
       return;
     }
     if (!N8N_EXECUTIONS_URL) {
       const msg = 'PUBLIC_N8N_EXECUTIONS_URL is not set in .env';
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
       get().showError(msg);
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, errorMessage: msg });
       return;
     }
     set({ keywordStatus: 'loading', keywordError: null, keywordHtml: null });
@@ -515,9 +522,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const t0 = Date.now();
     const elapsed = () => ((Date.now() - t0) / 1000).toFixed(1);
 
-    const fail = (msg: string) => {
+    const fail = (msg: string, responseBody?: unknown) => {
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
       get().showError(`Keyword research failed: ${msg}`);
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, metaOut: responseBody, errorMessage: msg });
     };
 
     // Step 1: kick off the run and grab the execution id (job_id) returned immediately.
@@ -536,7 +544,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           continue;
         }
         console.error(e);
-        fail(humanizeError(e));
+        fail(humanizeError(e), (e as any)?.response?.data);
         return;
       }
     }
@@ -573,14 +581,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         full = (await axios.get(fullUrl, { headers: apiHeaders })).data;
       } catch (e) {
         console.error(e);
-        fail(humanizeError(e));
+        fail(humanizeError(e), (e as any)?.response?.data);
         return;
       }
 
       const errMessage = extractExecutionError(full);
       if (errMessage) {
         console.error('[generateKeywords] execution failed:', errMessage, full?.data?.resultData?.error);
-        fail(errMessage);
+        fail(errMessage, full?.data?.resultData?.error);
         return;
       }
 
@@ -612,10 +620,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         : typeof result === 'string' ? result
         : '';
       if (!html.trim()) {
-        fail('Run finished but returned no HTML');
+        fail('Run finished but returned no HTML', result);
         return;
       }
       set({ keywordHtml: html, keywordStatus: 'success', keywordError: null });
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, metaOut: html });
       return;
     }
 
@@ -625,11 +634,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Angles tab — step 1: anchor/geo/language/translation -> SERP research -> audience segments.
   // Synchronous webhook (responseMode=lastNode), returns the full bundle we feed back in step 2.
   generateRsocAudiences: async (input) => {
-    logEvent({ tab: 'angles', action: 'generateRsocAudiences', status: 'start', meta: { geo: (input as any)?.geo, language: (input as any)?.language, anchor: (input as any)?.anchor } });
+    const logMeta = { geo: (input as any)?.geo, language: (input as any)?.language, anchor: (input as any)?.anchor };
     if (!WEBHOOKS.rsocAudiences) {
       const msg = 'PUBLIC_WEBHOOK_RSOC_AUDIENCES_URL is not set in .env';
       set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
       get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocAudiences', meta: logMeta, errorMessage: msg });
       return;
     }
     set({
@@ -659,25 +669,38 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
         rsocAudiencesStatus: 'success', rsocAudiencesError: null,
       });
+      logEvent({ tab: 'angles', action: 'generateRsocAudiences', meta: logMeta, metaOut: bundle });
     } catch (e) {
       console.error(e);
       const msg = humanizeError(e);
       set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
       get().showError(`Audience generation failed: ${msg}`);
+      logEvent({ tab: 'angles', action: 'generateRsocAudiences', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
     }
   },
 
   // Angles tab — step 2: operator picks audience segment_ids, we send them back with the
   // step-1 bundle to get the curated top-3 headlines per audience.
   generateRsocHeadlines: async (pickedIds) => {
-    logEvent({ tab: 'angles', action: 'generateRsocHeadlines', status: 'start', meta: { picked: pickedIds.join(','), pickedCount: pickedIds.length } });
+    const logMeta = { picked: pickedIds.join(','), pickedCount: pickedIds.length };
     const bundle = get().rsocBundle;
-    if (!bundle) { get().showError('Generate audiences first'); return; }
-    if (!pickedIds.length) { get().showError('Pick at least one audience'); return; }
+    if (!bundle) {
+      const msg = 'Generate audiences first';
+      get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    if (!pickedIds.length) {
+      const msg = 'Pick at least one audience';
+      get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, errorMessage: msg });
+      return;
+    }
     if (!WEBHOOKS.rsocHeadlines) {
       const msg = 'PUBLIC_WEBHOOK_RSOC_HEADLINES_URL is not set in .env';
       set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
       get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, errorMessage: msg });
       return;
     }
     set({ rsocHeadlinesStatus: 'loading', rsocHeadlinesError: null, rsocHeadlines: [] });
@@ -713,11 +736,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         headline_id: r.headline_id ?? '',
       }));
       set({ rsocHeadlines: headlines, rsocHeadlinesStatus: 'success', rsocHeadlinesError: null });
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, metaOut: result });
     } catch (e) {
       console.error(e);
       const msg = humanizeError(e);
       set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
       get().showError(`Headline generation failed: ${msg}`);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
     }
   },
 
@@ -778,7 +803,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateConcept: async (angleId) => {
-    logEvent({ tab: 'creatives', action: 'generateConcept', status: 'start', meta: { angleId, adLanguage: get().adLanguage } });
+    const logMeta = { angleId, adLanguage: get().adLanguage };
     set({ isLoadingConcepts: true });
     const angle = get().angles.find(a => a.id === angleId);
     const angleForWebhook = angle ? {
@@ -833,6 +858,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           };
         });
         set((state) => ({ concepts: [...state.concepts, ...newConcepts], isLoadingConcepts: false }));
+        logEvent({ tab: 'creatives', action: 'generateConcept', meta: logMeta, metaOut: data });
         return;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -841,13 +867,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         console.error(e);
         set({ isLoadingConcepts: false });
+        logEvent({ tab: 'creatives', action: 'generateConcept', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: humanizeError(e) });
         return;
       }
     }
   },
 
   generateCreative: async (conceptId) => {
-    logEvent({ tab: 'creatives', action: 'generateCreative', status: 'start', meta: { conceptId, adLanguage: get().adLanguage, aspectRatio: get().aspectRatio, imageModel: get().imageGenerationModel } });
+    const logMeta = { conceptId, adLanguage: get().adLanguage, aspectRatio: get().aspectRatio, imageModel: get().imageGenerationModel };
     const concept = get().concepts.find(c => c.id === conceptId);
     if (!concept) return;
 
@@ -918,11 +945,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       custom_blocks: get().customBlocks,
     };
 
-    const cleanupOnFailure = () => {
+    const cleanupOnFailure = (errorMessage?: string, responseBody?: unknown) => {
       set((state) => ({
         creatives: state.creatives.filter(c => c.id !== creativeId),
         isLoadingCreatives: false,
       }));
+      logEvent({ tab: 'creatives', action: 'generateCreative', meta: logMeta, metaOut: responseBody, errorMessage });
     };
 
     // Step 1: kick off the job. n8n returns:
@@ -944,11 +972,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           continue;
         }
         console.error(e);
-        cleanupOnFailure();
+        cleanupOnFailure(humanizeError(e), (e as any)?.response?.data);
         return;
       }
     }
-    if (!jobId) { cleanupOnFailure(); return; }
+    if (!jobId) { cleanupOnFailure('Webhook did not return a job_id'); return; }
 
     // batch_number drives the file names + the Telegram "batch_<n>" label.
     // Fall back to the raw execution id only if n8n didn't return batch_number (legacy).
@@ -986,7 +1014,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         full = res.data;
       } catch (e) {
         console.error(e);
-        cleanupOnFailure();
+        cleanupOnFailure(humanizeError(e), (e as any)?.response?.data);
         return;
       }
 
@@ -994,7 +1022,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (errMessage) {
         console.error('[generateCreative] execution failed:', errMessage, full?.data?.resultData?.error);
         get().showError(`Creative generation failed: ${errMessage}`);
-        cleanupOnFailure();
+        cleanupOnFailure(errMessage, full?.data?.resultData?.error);
         return;
       }
 
@@ -1025,7 +1053,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!result || Object.keys(result).length === 0) {
         console.error('[generateCreative] no result data in execution. lastNode=%s, runData keys=%o', lastNode, Object.keys(runData));
         get().showError('Creative generation finished but returned no result');
-        cleanupOnFailure();
+        cleanupOnFailure('Creative generation finished but returned no result', { lastNode, runDataKeys: Object.keys(runData) });
         return;
       }
       // Extract images + per-variant texts (style, meta_title, meta_copy, banner_cta)
@@ -1122,17 +1150,19 @@ export const useAppStore = create<AppState>((set, get) => ({
           : c),
         isLoadingCreatives: false,
       }));
+      logEvent({ tab: 'creatives', action: 'generateCreative', meta: logMeta, metaOut: result });
       return;
     }
 
     // Polling exhausted without success
     console.error('[generateCreative] polling timed out after', POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000, 'seconds');
-    get().showError(`Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`);
-    cleanupOnFailure();
+    const timeoutMsg = `Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`;
+    get().showError(timeoutMsg);
+    cleanupOnFailure(timeoutMsg);
   },
 
   sendToTelegram: async (creativeId) => {
-    logEvent({ tab: 'creatives', action: 'sendToTelegram', status: 'start', meta: { creativeId } });
+    const logMeta = { creativeId };
     const creative = get().creatives.find(c => c.id === creativeId);
     if (!creative) return;
 
@@ -1149,12 +1179,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       chosen_creative: chosenCreative ?? null,
     };
     try {
-      await axios.post(WEBHOOKS.telegram, payload);
+      const { data } = await axios.post(WEBHOOKS.telegram, payload);
       set((state) => ({
         creatives: state.creatives.map(c => c.id === creativeId
           ? { ...c, isSending: false, isSent: true }
           : c),
       }));
+      logEvent({ tab: 'creatives', action: 'sendToTelegram', meta: logMeta, metaOut: data });
     } catch (e) {
       console.error('Ошибка отправки', e);
       set((state) => ({
@@ -1162,6 +1193,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...c, isSending: false, isSent: false }
           : c),
       }));
+      logEvent({ tab: 'creatives', action: 'sendToTelegram', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: humanizeError(e) });
     }
   },
 

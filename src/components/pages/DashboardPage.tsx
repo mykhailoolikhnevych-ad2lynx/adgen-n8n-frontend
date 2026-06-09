@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 //   - Top Users         (leaderboard by event count)
 //   - Action Popularity (each action ranked by count)
 //   - Tab Breakdown     (per-tab event share)
+//   - Graph             (per-day activity, segmented by user)
 // All aggregations happen client-side from the single fetched payload.
 
 interface UsageRow {
@@ -16,19 +17,20 @@ interface UsageRow {
   email: string;
   tab: string;
   action: string;
-  status: string;
-  duration_ms: number | null;
   meta: string;
+  meta_out: string;
   error_message: string;
+  execution_id: string;
 }
 
-type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs';
+type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph';
 
 const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'events',   label: 'Events' },
   { value: 'topUsers', label: 'Top Users' },
   { value: 'actions',  label: 'Action Popularity' },
   { value: 'tabs',     label: 'Tab Breakdown' },
+  { value: 'graph',    label: 'Graph' },
 ];
 
 const LIST_URL = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
@@ -95,15 +97,6 @@ const detectPreset = (fromDate: string): PresetKey => {
 // Sub-tab views — each takes the already-filtered rows.
 // ---------------------------------------------------------------------------
 
-const StatusPill = ({ value }: { value: string }) => (
-  <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
-    value === 'success' ? 'bg-green-100 text-green-700'
-    : value === 'error' ? 'bg-red-100 text-red-700'
-    : value === 'start' ? 'bg-blue-100 text-blue-700'
-    : 'bg-slate-100 text-slate-700'
-  }`}>{value || '—'}</span>
-);
-
 // Inline CSS bar that fills (count / max) of its row. Pure CSS, no library.
 const Bar = ({ value, max, tint = 'bg-blue-100' }: { value: number; max: number; tint?: string }) => {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
@@ -129,9 +122,9 @@ const EventsView = ({ rows }: { rows: UsageRow[] }) => {
           <th className="py-2 px-3">Email</th>
           <th className="py-2 px-3">Tab</th>
           <th className="py-2 px-3">Action</th>
-          <th className="py-2 px-3">Status</th>
-          <th className="py-2 px-3 w-24">Duration</th>
+          <th className="py-2 px-3 w-24">Exec</th>
           <th className="py-2 px-3">Meta</th>
+          <th className="py-2 px-3">Meta out</th>
         </tr>
       </thead>
       <tbody>
@@ -141,9 +134,9 @@ const EventsView = ({ rows }: { rows: UsageRow[] }) => {
             <td className="py-1.5 px-3">{r.email}</td>
             <td className="py-1.5 px-3 text-slate-600">{r.tab}</td>
             <td className="py-1.5 px-3 font-semibold">{r.action}</td>
-            <td className="py-1.5 px-3"><StatusPill value={r.status} /></td>
-            <td className="py-1.5 px-3 font-mono text-xs text-slate-500">{r.duration_ms != null ? `${r.duration_ms}ms` : '—'}</td>
+            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500" title={r.execution_id}>{r.execution_id || '—'}</td>
             <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={r.meta}>{r.meta}</td>
+            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={r.meta_out}>{r.meta_out}</td>
           </tr>
         ))}
       </tbody>
@@ -257,6 +250,226 @@ const CountView = ({
   );
 };
 
+// Graph view — daily activity, segmented per action (event type). Two
+// interactive filters narrow the data on top of the page-level filters:
+//   - Tab pills: multi-select. Empty = all tabs.
+//   - Clickable legend: multi-select. Empty = all events.
+// Each day shows one horizontal bar whose length is proportional to the day's
+// max in the (filtered) range, split into colored segments per action with
+// rare actions folded into a grey "others" segment.
+// Curated 8-hue palette — 500-shade Tailwind colors picked for maximum
+// distinguishability when stacked as small segments. Hues are spaced around the
+// wheel: indigo / sky for cool blues, emerald / teal for greens, amber / orange
+// for warm yellows, rose / pink for warm reds — avoiding any two that read as
+// the same color at glance.
+const ACTION_PALETTE = [
+  'bg-indigo-500', 'bg-emerald-500', 'bg-amber-500', 'bg-rose-500',
+  'bg-violet-500', 'bg-sky-500',     'bg-orange-500', 'bg-pink-500',
+];
+const TOP_ACTIONS_IN_GRAPH = ACTION_PALETTE.length;
+const TAB_OPTIONS = ['creatives', 'keywords', 'angles', 'article'] as const;
+
+const GraphView = ({ rows }: { rows: UsageRow[] }) => {
+  const [selectedTabs, setSelectedTabs] = useState<Set<string>>(new Set());
+  const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());
+
+  const toggleTab = (tab: string) => {
+    setSelectedTabs((prev) => {
+      const next = new Set(prev);
+      if (next.has(tab)) next.delete(tab); else next.add(tab);
+      return next;
+    });
+  };
+  const toggleAction = (action: string) => {
+    setSelectedActions((prev) => {
+      const next = new Set(prev);
+      if (next.has(action)) next.delete(action); else next.add(action);
+      return next;
+    });
+  };
+
+  // Tab filter narrows the input set first; legend & aggregations all flow from this.
+  const tabFiltered = useMemo(
+    () => (selectedTabs.size === 0 ? rows : rows.filter((r) => selectedTabs.has(r.tab))),
+    [rows, selectedTabs],
+  );
+
+  // Legend reflects whatever survived the tab filter — selecting an action that no
+  // longer exists in the data is a non-issue because the legend won't list it.
+  const topActions = useMemo<string[]>(() => {
+    const counts = new Map<string, number>();
+    for (const r of tabFiltered) {
+      const action = r.action || 'unknown';
+      counts.set(action, (counts.get(action) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_ACTIONS_IN_GRAPH)
+      .map(([a]) => a);
+  }, [tabFiltered]);
+
+  // Action filter applied after the legend is computed, so the legend keeps showing
+  // the full palette of available events while the chart focuses on the picked ones.
+  const actionFiltered = useMemo(
+    () => (selectedActions.size === 0 ? tabFiltered : tabFiltered.filter((r) => selectedActions.has(r.action || 'unknown'))),
+    [tabFiltered, selectedActions],
+  );
+
+  const dailyData = useMemo(() => {
+    const byDay = new Map<string, { total: number; byAction: Map<string, number> }>();
+    for (const r of actionFiltered) {
+      const day = (r.ts || '').slice(0, 10);
+      if (!day) continue;
+      const action = r.action || 'unknown';
+      let agg = byDay.get(day);
+      if (!agg) { agg = { total: 0, byAction: new Map() }; byDay.set(day, agg); }
+      agg.total++;
+      agg.byAction.set(action, (agg.byAction.get(action) ?? 0) + 1);
+    }
+    return Array.from(byDay.entries())
+      .map(([day, a]) => ({ day, total: a.total, byAction: a.byAction }))
+      .sort((a, b) => a.day.localeCompare(b.day));
+  }, [actionFiltered]);
+
+  const maxTotal = dailyData.reduce((m, d) => Math.max(m, d.total), 0) || 1;
+  const colorFor = (action: string): string => {
+    const idx = topActions.indexOf(action);
+    return idx === -1 ? 'bg-slate-300' : ACTION_PALETTE[idx];
+  };
+
+  const hasFilter = selectedTabs.size > 0 || selectedActions.size > 0;
+  const tabsAllActive = selectedTabs.size === 0;
+  const actionsAllActive = selectedActions.size === 0;
+
+  return (
+    <div className="p-4 space-y-3">
+      {/* Tab filter (multi-select pills) */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-slate-500 uppercase font-bold text-[10px] mr-1 w-12">Tab</span>
+        <button
+          type="button"
+          onClick={() => setSelectedTabs(new Set())}
+          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+            tabsAllActive
+              ? 'bg-slate-900 text-white'
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          All
+        </button>
+        {TAB_OPTIONS.map((t) => {
+          const active = selectedTabs.has(t);
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => toggleTab(t)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                active
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {t}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Event filter (clickable legend). When nothing is selected, every item is
+          at full strength; once something is picked, the unpicked ones dim. */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-slate-500 uppercase font-bold text-[10px] mr-1 w-12">Events</span>
+        <button
+          type="button"
+          onClick={() => setSelectedActions(new Set())}
+          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+            actionsAllActive
+              ? 'bg-slate-900 text-white'
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          All
+        </button>
+        {topActions.map((a) => {
+          const isSelected = selectedActions.has(a);
+          const active = actionsAllActive || isSelected;
+          return (
+            <button
+              key={a}
+              type="button"
+              onClick={() => toggleAction(a)}
+              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 border transition-all ${
+                isSelected
+                  ? 'border-slate-900 bg-white shadow-sm'
+                  : 'border-slate-200 bg-white hover:border-slate-400'
+              } ${active ? 'opacity-100' : 'opacity-40'}`}
+            >
+              <span className={`inline-block w-3 h-3 rounded ${colorFor(a)}`} />
+              <span className="font-mono text-slate-700">{a}</span>
+            </button>
+          );
+        })}
+        <span className="flex items-center gap-1.5 px-2.5 py-1 opacity-60">
+          <span className="inline-block w-3 h-3 rounded bg-slate-300" />
+          <span className="text-slate-500">others</span>
+        </span>
+      </div>
+
+      {dailyData.length === 0 ? (
+        <div className="p-6 text-gray-400 italic">
+          {hasFilter ? 'No events match the selected filters.' : 'No events in range.'}
+        </div>
+      ) : (
+        <table className="w-full text-sm border-collapse">
+          <thead className="sticky top-0 bg-slate-100 z-10">
+            <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+              <th className="py-2 px-3 w-28">Day</th>
+              <th className="py-2 px-3 w-16">Total</th>
+              <th className="py-2 px-3">By event</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dailyData.map((d) => {
+              const knownSegments = topActions
+                .map((a) => ({ action: a, count: d.byAction.get(a) ?? 0, color: colorFor(a) }))
+                .filter((s) => s.count > 0);
+              const othersCount = d.total - knownSegments.reduce((s, x) => s + x.count, 0);
+              const segments = othersCount > 0
+                ? [...knownSegments, { action: 'others', count: othersCount, color: 'bg-slate-300' }]
+                : knownSegments;
+              const widthPct = (d.total / maxTotal) * 100;
+              return (
+                <tr key={d.day} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="py-1.5 px-3 font-mono text-xs whitespace-nowrap">{d.day}</td>
+                  <td className="py-1.5 px-3 font-mono">{d.total}</td>
+                  <td className="py-1.5 px-3">
+                    <div className="relative h-4 bg-slate-50 rounded overflow-hidden">
+                      <div
+                        className="absolute inset-y-0 left-0 flex"
+                        style={{ width: `${widthPct}%`, minWidth: '4px' }}
+                      >
+                        {segments.map((s, i) => (
+                          <div
+                            key={`${s.action}-${i}`}
+                            className={s.color}
+                            style={{ flex: s.count }}
+                            title={`${s.action}: ${s.count}`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Top-level page.
 // ---------------------------------------------------------------------------
@@ -298,10 +511,10 @@ export const DashboardPage = () => {
         email: String(r.email ?? ''),
         tab: String(r.tab ?? ''),
         action: String(r.action ?? ''),
-        status: String(r.status ?? ''),
-        duration_ms: typeof r.duration_ms === 'number' ? r.duration_ms : null,
         meta: typeof r.meta === 'string' ? r.meta : (r.meta ? JSON.stringify(r.meta) : ''),
+        meta_out: typeof r.meta_out === 'string' ? r.meta_out : (r.meta_out ? JSON.stringify(r.meta_out) : ''),
         error_message: String(r.error_message ?? ''),
+        execution_id: String(r.execution_id ?? ''),
       }));
       normalized.sort((a, b) => (a.ts < b.ts ? 1 : -1));
       setRows(normalized);
@@ -430,6 +643,7 @@ export const DashboardPage = () => {
             {activeTab === 'topUsers' && <TopUsersView  rows={filtered} />}
             {activeTab === 'actions'  && <CountView     rows={filtered} keyFn={(r) => r.action} label="Action" tint="bg-purple-200" />}
             {activeTab === 'tabs'     && <CountView     rows={filtered} keyFn={(r) => r.tab}    label="Tab"    tint="bg-emerald-200" />}
+            {activeTab === 'graph'    && <GraphView     rows={filtered} />}
           </>
         )}
       </div>
