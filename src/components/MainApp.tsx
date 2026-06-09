@@ -9,10 +9,11 @@ import { KeywordsPage } from './pages/KeywordsPage';
 import { ArticlePage } from './pages/ArticlePage';
 import { AnglesPage } from './pages/AnglesPage';
 import { DashboardPage } from './pages/DashboardPage';
+import { DocsPage } from './pages/DocsPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail } from '@/lib/identity';
 
-type Page = 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard';
+type Page = 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard' | 'docs';
 
 // Admin Google emails that get the Dashboard tab. Sourced from PUBLIC_ADMIN_EMAILS
 // (comma-separated) — value lives in local .env for dev and in Vercel's env vars
@@ -183,7 +184,13 @@ export default function MainApp() {
             <button
               type="button"
               aria-label="Docs"
-              className="rounded p-1.5 text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+              aria-current={page === 'docs' ? 'page' : undefined}
+              onClick={() => setPage('docs')}
+              className={`rounded p-1.5 transition-colors ${
+                page === 'docs'
+                  ? 'bg-white text-black'
+                  : 'text-white/80 hover:bg-white/10 hover:text-white'
+              }`}
             >
               <BookOpen size={20} weight="regular" />
             </button>
@@ -196,6 +203,7 @@ export default function MainApp() {
           {page === 'angles' && <AnglesPage />}
           {page === 'article' && <ArticlePage />}
           {page === 'dashboard' && isAdmin && <DashboardPage />}
+          {page === 'docs' && <DocsPage isAdmin={isAdmin} />}
         </main>
       </div>
     </TooltipProvider>
