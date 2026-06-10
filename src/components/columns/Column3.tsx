@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useAppStore, type CustomBlocks } from '@/store/useAppStore';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -127,15 +127,41 @@ export const Column3 = () => {
     setCustomPrompt,
     setCustomBlocks,
     toggleConceptTranslation,
+    savedPrompts,
+    savedPromptsStatus,
+    selectedSavedPromptIds,
+    setSelectedSavedPromptIds,
+    loadSavedPrompts,
   } = useAppStore();
+
+  // Pull the shared prompt library on mount — re-fetches each time so a
+  // freshly-saved prompt in Docs shows up here without a hard refresh.
+  useEffect(() => {
+    void loadSavedPrompts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // A preset is "effectively selected" when it's checked AND (if Custom) has text.
   // n8n's Filter Active Presets throws if zero presets reach it, so we mirror that
   // here to keep the Generate Creative Batch button disabled when invalid.
   const customActive = selectedPresets.includes('Custom') && customPrompt.trim().length > 0;
+  // Selected saved prompts that still exist in the loaded library — guards
+  // against stale ids that were deleted by an admin since last load.
+  const savedPromptIdSet = new Set(savedPrompts.map((p) => String(p.id)));
+  const activeSavedPromptIds = selectedSavedPromptIds.filter((id) => savedPromptIdSet.has(id));
   const effectivePresetCount =
-    selectedPresets.filter((p) => p !== 'Custom').length + (customActive ? 1 : 0);
+    selectedPresets.filter((p) => p !== 'Custom').length
+    + (customActive ? 1 : 0)
+    + activeSavedPromptIds.length;
   const presetsInvalid = effectivePresetCount === 0;
+
+  const toggleSavedPrompt = (id: string, checked: boolean) => {
+    setSelectedSavedPromptIds(
+      checked
+        ? Array.from(new Set([...selectedSavedPromptIds, id]))
+        : selectedSavedPromptIds.filter((x) => x !== id),
+    );
+  };
 
   const togglePreset = (id: string, checked: boolean) => {
     setSelectedPresets(
@@ -199,6 +225,92 @@ export const Column3 = () => {
             );
           })}
         </div>
+
+        {/* Saved prompts — pre-authored prompt bodies shared via Docs → Prompt
+            Bases. Each picked entry runs as its own image variant. The author
+            writes scene / background / colours by hand and uses {hook} /
+            {accent} / {cta} placeholders; n8n substitutes the chosen_creative
+            values at generation time.
+            UI: a dropdown to ADD a prompt (only unselected entries shown), then
+            the picked prompts appear below as the same checkbox row as the
+            built-in presets — unchecking removes the entry from selection. */}
+        {(() => {
+          const availableToAdd = savedPrompts.filter(
+            (p) => !selectedSavedPromptIds.includes(String(p.id)),
+          );
+          const pickedPrompts = savedPrompts.filter((p) =>
+            selectedSavedPromptIds.includes(String(p.id)),
+          );
+          return (
+            <div className="mt-3 pt-2 border-t border-slate-200">
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Saved prompts
+                {savedPromptsStatus === 'loading' && (
+                  <span className="ml-1 normal-case font-normal text-slate-400">— loading…</span>
+                )}
+                {savedPromptsStatus === 'error' && (
+                  <span className="ml-1 normal-case font-normal text-red-500">— load failed</span>
+                )}
+                {savedPromptsStatus === 'success' && savedPrompts.length === 0 && (
+                  <span className="ml-1 normal-case font-normal text-slate-400">
+                    — none yet (add via Docs → Prompt Bases)
+                  </span>
+                )}
+              </label>
+
+              {/* Dropdown — picking a prompt adds it to the list below. Value
+                  stays at "" so re-opening always shows the placeholder. */}
+              {savedPrompts.length > 0 && (
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (id) toggleSavedPrompt(id, true);
+                  }}
+                  disabled={availableToAdd.length === 0}
+                  className="w-full text-xs border rounded-md px-2 py-1 bg-white disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  <option value="">
+                    {availableToAdd.length === 0
+                      ? 'All saved prompts already added'
+                      : 'Add a saved prompt…'}
+                  </option>
+                  {availableToAdd.map((p) => (
+                    <option key={String(p.id)} value={String(p.id)}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {/* Picked prompts — same row layout as standard presets so the
+                  visual grouping reads as one continuous list. Clicking the
+                  checkbox removes the entry. */}
+              {pickedPrompts.length > 0 && (
+                <div className="mt-1.5 space-y-0.5">
+                  {pickedPrompts.map((p) => {
+                    const idStr = String(p.id);
+                    return (
+                      <div key={idStr} className="flex items-center gap-1.5 text-xs">
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none flex-1 min-w-0">
+                          <input
+                            type="checkbox"
+                            checked
+                            onChange={(e) => toggleSavedPrompt(idStr, e.target.checked)}
+                          />
+                          <span className="font-medium text-slate-800 truncate" title={p.name}>
+                            {p.name}
+                          </span>
+                        </label>
+                        <InfoTooltip text={p.prompt} iconSize={11} />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Custom-prompt block — visible only when Custom is checked. Chips
             toggle blocks on/off AND are draggable: dropping a chip into the

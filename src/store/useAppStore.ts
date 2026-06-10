@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import axios from 'axios';
 import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFilename';
 import { logEvent } from '@/lib/usage';
+import { listPrompts, type SavedPrompt } from '@/lib/prompts';
 
 interface FormData {
   articleUrl: string;
@@ -163,6 +164,15 @@ interface AppState {
    *  [Hook][Accent][CTA][UF] — each block included only if its flag is true. Default
    *  is all true so a fresh user gets the same building blocks as Presets A/B/C/D. */
   customBlocks: CustomBlocks;
+  /** Pre-authored prompts pulled from the shared `prompt_bases` library — one
+   *  per row in the Docs → Prompt Bases tab. Loaded on demand from Column3. */
+  savedPrompts: SavedPrompt[];
+  savedPromptsStatus: ArticleStatus;
+  /** IDs of saved prompts the operator picked in Column3's Image presets — each
+   *  selected entry produces its own image in the n8n batch, with {hook} /
+   *  {accent} / {cta} substituted from chosen_creative. Stored as strings even
+   *  when n8n's id is an integer, for stable Set semantics. */
+  selectedSavedPromptIds: string[];
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -210,6 +220,11 @@ interface AppState {
   setSelectedPresets: (value: string[]) => void;
   setCustomPrompt: (value: string) => void;
   setCustomBlocks: (value: CustomBlocks) => void;
+  setSelectedSavedPromptIds: (value: string[]) => void;
+  /** Fetch the shared prompt library and cache it on the store. Safe to call
+   *  multiple times — re-fetches on every call so a fresh save in Docs becomes
+   *  visible in Column3 without a hard refresh. */
+  loadSavedPrompts: () => Promise<void>;
 }
 
 export interface CustomBlocks {
@@ -366,12 +381,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   // they're guard rails; see Column3.tsx CUSTOM_BLOCK_DEFS). Scene defaults OFF
   // so the user's design direction isn't fighting the concept's scene.
   customBlocks: { textRules: true, scene: false, hook: true, accent: true, cta: true, forbidden: true },
+  savedPrompts: [],
+  savedPromptsStatus: 'idle',
+  selectedSavedPromptIds: [],
   setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
   setAdLanguage: (value) => set({ adLanguage: value }),
   setAspectRatio: (value) => set({ aspectRatio: value }),
   setSelectedPresets: (value) => set({ selectedPresets: value }),
   setCustomPrompt: (value) => set({ customPrompt: value }),
   setCustomBlocks: (value) => set({ customBlocks: value }),
+  setSelectedSavedPromptIds: (value) => set({ selectedSavedPromptIds: value }),
+  loadSavedPrompts: async () => {
+    set({ savedPromptsStatus: 'loading' });
+    try {
+      const list = await listPrompts();
+      set({ savedPrompts: list, savedPromptsStatus: 'success' });
+    } catch (e) {
+      console.warn('[loadSavedPrompts]', e);
+      // Fall back to whatever was previously cached instead of clearing — the
+      // operator can still pick from the last known list while we're offline.
+      set({ savedPromptsStatus: 'error' });
+    }
+  },
   errorBanner: null,
   noticeBanner: null,
 
@@ -968,6 +999,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       isLoadingCreatives: true,
     }));
 
+    // Resolve which shared prompts the operator picked. Filter by current store
+    // state in case admins deleted one between the load and the click.
+    const selectedSavedPromptIds = new Set(get().selectedSavedPromptIds);
+    const savedPromptsPayload = get().savedPrompts
+      .filter((p) => selectedSavedPromptIds.has(String(p.id)))
+      .map((p) => ({ id: p.id, name: p.name, prompt: p.prompt }));
+
     const payload = {
       agent1_output: get().agent1Output,
       article: get().article,
@@ -985,6 +1023,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       custom_prompt: get().customPrompt,
       // Toggleable scaffolding for Preset Custom — see Build Image Context / Preset Custom in n8n.
       custom_blocks: get().customBlocks,
+      // Pre-authored prompts from Docs → Prompt Bases. Each entry will run as
+      // its own image variant in the n8n workflow with {hook}/{accent}/{cta}
+      // substituted from chosen_creative.
+      saved_prompts: savedPromptsPayload,
     };
 
     const cleanupOnFailure = (errorMessage?: string, responseBody?: unknown) => {
