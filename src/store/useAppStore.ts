@@ -997,16 +997,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // Step 1: kick off the job. n8n returns:
     //   job_id        - the real n8n execution id, needed to poll the executions API
-    //   batch_number  - our own resettable workflow counter (1, 2, 3 …), used for file names
+    //   batch_number  - optional, legacy workflow counter (1, 2, 3 …).
     let jobId: string | null = null;
-    let batchNumber = 0;
+    let batchNumberRaw: number | string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { data } = await axios.post(WEBHOOKS.creative, payload);
         const startPayload = Array.isArray(data) ? data[0] : data;
         jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
         if (!jobId) throw new Error('Webhook did not return a job_id');
-        batchNumber = Number(startPayload?.batch_number) || 0;
+        // Take batch_number verbatim if the workflow returns it; otherwise we'll
+        // fall back to jobId below. Don't coerce — a non-numeric id (UUID,
+        // "exec-abc-…") would NaN out to 0 and collide with every other run.
+        batchNumberRaw = startPayload?.batch_number ?? null;
         break;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -1020,9 +1023,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     if (!jobId) { cleanupOnFailure('Webhook did not return a job_id'); return; }
 
-    // batch_number drives the file names + the Telegram "batch_<n>" label.
-    // Fall back to the raw execution id only if n8n didn't return batch_number (legacy).
-    fileMeta = { ...fileMeta, batchNumber: batchNumber || Number(jobId) || 0 };
+    // The execution id IS the batch number. Each Generate click produces a new
+    // run with a unique id, so the standardized file name carries it through
+    // and two batches never collide on the same "batch_<n>" — even when the
+    // operator re-downloads the same one twice (browser appends "(copy)",
+    // which is correct: same content, same id).
+    const batchNumber: number | string = batchNumberRaw ?? jobId;
+    fileMeta = { ...fileMeta, batchNumber };
     set((state) => ({
       creatives: state.creatives.map(c => c.id === creativeId ? { ...c, fileMeta } : c),
     }));
