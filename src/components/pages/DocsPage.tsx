@@ -104,6 +104,10 @@ const PromptBasesView = () => {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const [draftBody, setDraftBody] = useState('');
+  // Free-form Ukrainian summary that ends up in Column3's (i) tooltip. Optional
+  // — empty drafts still save fine, the tooltip just falls back to the prompt
+  // body when ua_description is missing.
+  const [draftUaDescription, setDraftUaDescription] = useState('');
   // id can be a string or a number — n8n's Data Table auto-id is integer, but
   // the API surface accepts both. Track whichever we got back from the server.
   const [editingId, setEditingId] = useState<string | number | null>(null);
@@ -133,6 +137,7 @@ const PromptBasesView = () => {
   const resetForm = () => {
     setDraftName('');
     setDraftBody('');
+    setDraftUaDescription('');
     setEditingId(null);
     setOpError(null);
   };
@@ -144,7 +149,12 @@ const PromptBasesView = () => {
     setBusy('saving');
     setOpError(null);
     try {
-      const saved = await savePrompt({ id: editingId ?? undefined, name, prompt: body });
+      const saved = await savePrompt({
+        id: editingId ?? undefined,
+        name,
+        prompt: body,
+        ua_description: draftUaDescription,
+      });
       setPrompts((cur) => {
         const idx = cur.findIndex((p) => p.id === saved.id);
         if (idx === -1) return [saved, ...cur];
@@ -164,6 +174,7 @@ const PromptBasesView = () => {
     setEditingId(p.id);
     setDraftName(p.name);
     setDraftBody(p.prompt);
+    setDraftUaDescription(p.ua_description ?? '');
     setOpError(null);
   };
 
@@ -277,6 +288,21 @@ const PromptBasesView = () => {
           placeholder="Write the full prompt body here…"
           rows={14}
           className="font-mono text-sm flex-1 min-h-[260px] mb-4"
+          disabled={busy !== null}
+        />
+
+        <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
+          UA description{' '}
+          <span className="ml-1 normal-case font-normal text-slate-400">
+            — optional, shown in the (i) tooltip in Concepts → Image presets
+          </span>
+        </label>
+        <Textarea
+          value={draftUaDescription}
+          onChange={(e) => setDraftUaDescription(e.target.value)}
+          placeholder="Короткий опис українською — що цей промт робить, коли його обирати…"
+          rows={4}
+          className="text-sm min-h-[80px] mb-4"
           disabled={busy !== null}
         />
 

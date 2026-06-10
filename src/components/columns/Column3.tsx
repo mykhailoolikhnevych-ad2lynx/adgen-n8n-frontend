@@ -302,7 +302,7 @@ export const Column3 = () => {
                             {p.name}
                           </span>
                         </label>
-                        <InfoTooltip text={p.prompt} iconSize={11} />
+                        <InfoTooltip text={(p.ua_description && p.ua_description.trim()) || p.prompt} iconSize={11} />
                       </div>
                     );
                   })}

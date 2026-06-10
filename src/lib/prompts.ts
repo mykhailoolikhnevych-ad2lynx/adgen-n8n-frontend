@@ -15,6 +15,10 @@ export interface SavedPrompt {
   id: string | number;
   name: string;
   prompt: string;
+  /** Free-form Ukrainian summary the admin writes by hand. Surfaced as the
+   *  InfoTooltip text next to each saved prompt in Column3 so operators see
+   *  what the prompt does at a glance, without having to read the body. */
+  ua_description?: string;
   updated_at?: string;
   updated_by?: string;
 }
@@ -52,6 +56,7 @@ export const listPrompts = async (): Promise<SavedPrompt[]> => {
       id: typeof r.id === 'number' ? r.id : String(r.id),
       name: String(r.name ?? ''),
       prompt: String(r.prompt ?? ''),
+      ua_description: r.ua_description ? String(r.ua_description) : undefined,
       updated_at: r.updated_at ? String(r.updated_at) : undefined,
       updated_by: r.updated_by ? String(r.updated_by) : undefined,
     }));
@@ -60,7 +65,12 @@ export const listPrompts = async (): Promise<SavedPrompt[]> => {
 /** Save (insert or update) a prompt. If `id` is omitted, the workflow lets the
  *  Data Table auto-assign the next integer. Returns the row the server stored
  *  (incl. the assigned id) so the caller can drop it straight into state. */
-export const savePrompt = async (input: { id?: string | number; name: string; prompt: string }): Promise<SavedPrompt> => {
+export const savePrompt = async (input: {
+  id?: string | number;
+  name: string;
+  prompt: string;
+  ua_description?: string;
+}): Promise<SavedPrompt> => {
   if (!SAVE_URL) missingUrl('PUBLIC_WEBHOOK_SAVE_PROMPT_URL');
   const ident = await getAuthEmail();
   // Send `id` ONLY when editing — for new prompts we omit it so n8n's auto-id
@@ -69,6 +79,7 @@ export const savePrompt = async (input: { id?: string | number; name: string; pr
   const body: Record<string, unknown> = {
     name: input.name,
     prompt: input.prompt,
+    ua_description: input.ua_description ?? '',
     email: ident?.email ?? 'unknown@unknown',
   };
   if (input.id != null && String(input.id).trim() !== '') {
@@ -84,6 +95,9 @@ export const savePrompt = async (input: { id?: string | number; name: string; pr
     id: saved.id ?? input.id ?? '',
     name: String(saved.name ?? input.name),
     prompt: String(saved.prompt ?? input.prompt),
+    ua_description: saved.ua_description != null
+      ? String(saved.ua_description)
+      : input.ua_description,
     updated_at: saved.updated_at ? String(saved.updated_at) : undefined,
     updated_by: saved.updated_by ? String(saved.updated_by) : undefined,
   };
