@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import axios from 'axios';
 import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFilename';
 import { logEvent } from '@/lib/usage';
+import { listPrompts, type SavedPrompt } from '@/lib/prompts';
 
 interface FormData {
   articleUrl: string;
@@ -68,6 +69,18 @@ export interface ImageVariant {
   metaCopy: string;
   cta: string;
   fileName?: string;
+  /** Per-image compliance verdict from the Compliance Agent (Image) — n8n only
+   *  runs this for Preset Custom / Saved variants. Standard presets (A/B/C/D)
+   *  default to compliant: true with empty reason fields. */
+  compliant?: boolean;
+  complianceType?: string;
+  complianceDescription?: string;
+  policyReference?: string;
+  /** True if this variant was actually audited (Custom / Saved). False when
+   *  the variant bypassed the check (A/B/C/D). Lets the UI distinguish
+   *  'checked & passed' from 'never checked' so we don't claim every standard
+   *  preset is compliant when no audit happened. */
+  complianceChecked?: boolean;
 }
 interface CreativeTranslation {
   metaTitle: string;
@@ -153,6 +166,25 @@ interface AppState {
   imageGenerationModel: string;
   adLanguage: string;
   aspectRatio: string;
+  /** Which image presets to generate. n8n filters by these IDs:
+   *  'A' YT Thumbnail · 'B' Organic Social · 'C' Highlight Block · 'D' Illustrated · 'Custom' */
+  selectedPresets: string[];
+  /** Optional user-authored prompt; only used when 'Custom' is in selectedPresets. */
+  customPrompt: string;
+  /** Which scaffolding blocks to include in the Custom preset prompt. n8n's Preset
+   *  Custom node assembles the final prompt as: [TR][Scene][user design direction]
+   *  [Hook][Accent][CTA][UF] — each block included only if its flag is true. Default
+   *  is all true so a fresh user gets the same building blocks as Presets A/B/C/D. */
+  customBlocks: CustomBlocks;
+  /** Pre-authored prompts pulled from the shared `prompt_bases` library — one
+   *  per row in the Docs → Prompt Bases tab. Loaded on demand from Column3. */
+  savedPrompts: SavedPrompt[];
+  savedPromptsStatus: ArticleStatus;
+  /** IDs of saved prompts the operator picked in Column3's Image presets — each
+   *  selected entry produces its own image in the n8n batch, with {hook} /
+   *  {accent} / {cta} substituted from chosen_creative. Stored as strings even
+   *  when n8n's id is an integer, for stable Set semantics. */
+  selectedSavedPromptIds: string[];
   concepts: Concept[];
   creatives: Creative[];
   isLoadingAngles: boolean;
@@ -197,6 +229,23 @@ interface AppState {
   setImageGenerationModel: (value: string) => void;
   setAdLanguage: (value: string) => void;
   setAspectRatio: (value: string) => void;
+  setSelectedPresets: (value: string[]) => void;
+  setCustomPrompt: (value: string) => void;
+  setCustomBlocks: (value: CustomBlocks) => void;
+  setSelectedSavedPromptIds: (value: string[]) => void;
+  /** Fetch the shared prompt library and cache it on the store. Safe to call
+   *  multiple times — re-fetches on every call so a fresh save in Docs becomes
+   *  visible in Column3 without a hard refresh. */
+  loadSavedPrompts: () => Promise<void>;
+}
+
+export interface CustomBlocks {
+  textRules: boolean;
+  scene: boolean;
+  hook: boolean;
+  accent: boolean;
+  cta: boolean;
+  forbidden: boolean;
 }
 
 let _noticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -337,9 +386,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
+  // Default: generate all 4 standard presets; Custom off, no custom text.
+  selectedPresets: ['A', 'B', 'C', 'D'],
+  customPrompt: '',
+  // Default Custom blocks. textRules + forbidden are forced ON (no UI toggle —
+  // they're guard rails; see Column3.tsx CUSTOM_BLOCK_DEFS). Scene defaults OFF
+  // so the user's design direction isn't fighting the concept's scene.
+  customBlocks: { textRules: true, scene: false, hook: true, accent: true, cta: true, forbidden: true },
+  savedPrompts: [],
+  savedPromptsStatus: 'idle',
+  selectedSavedPromptIds: [],
   setImageGenerationModel: (value) => set({ imageGenerationModel: value }),
   setAdLanguage: (value) => set({ adLanguage: value }),
   setAspectRatio: (value) => set({ aspectRatio: value }),
+  setSelectedPresets: (value) => set({ selectedPresets: value }),
+  setCustomPrompt: (value) => set({ customPrompt: value }),
+  setCustomBlocks: (value) => set({ customBlocks: value }),
+  setSelectedSavedPromptIds: (value) => set({ selectedSavedPromptIds: value }),
+  loadSavedPrompts: async () => {
+    set({ savedPromptsStatus: 'loading' });
+    try {
+      const list = await listPrompts();
+      set({ savedPrompts: list, savedPromptsStatus: 'success' });
+    } catch (e) {
+      console.warn('[loadSavedPrompts]', e);
+      // Fall back to whatever was previously cached instead of clearing — the
+      // operator can still pick from the last known list while we're offline.
+      set({ savedPromptsStatus: 'error' });
+    }
+  },
   errorBanner: null,
   noticeBanner: null,
 
@@ -376,7 +451,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearConcepts: () => set({ concepts: [] }),
 
   generateAngles: async () => {
-    logEvent({ tab: 'creatives', action: 'generateAngles', status: 'start', meta: { geo: get().formData.geo, buyer: get().formData.buyer } });
+    // Capture every field of the "1. Input Data" panel — same shape as formData
+    // so the dashboard can show the full kickoff context, not just geo + buyer.
+    const meta = { ...get().formData };
     set({ isLoadingAngles: true });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
@@ -408,6 +485,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           raw: item,
         }));
         set({ angles: anglesWithIds, agent1Output, operatorNote, article, concepts: [], creatives: [], isLoadingAngles: false });
+        logEvent({ tab: 'creatives', action: 'generateAngles', meta, metaOut: data });
         return;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -416,17 +494,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         console.error(e);
         set({ isLoadingAngles: false });
+        logEvent({ tab: 'creatives', action: 'generateAngles', meta, metaOut: (e as any)?.response?.data, errorMessage: humanizeError(e) });
         return;
       }
     }
   },
 
   generateArticle: async ({ topic, geo, language, mode }) => {
-    logEvent({ tab: 'article', action: 'generateArticle', status: 'start', meta: { topic, geo, language, mode } });
+    const meta = { topic, geo, language, mode };
     if (!WEBHOOKS.article) {
       const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
       set({ articleStatus: 'error', articleError: msg, articleHtml: null });
       get().showError(msg);
+      logEvent({ tab: 'article', action: 'generateArticle', meta, errorMessage: msg });
       return;
     }
     set({ articleStatus: 'loading', articleError: null, articleHtml: null });
@@ -445,6 +525,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const html = typeof data === 'string' ? data : String(data ?? '');
         if (!html.trim()) throw new Error('Webhook returned empty response');
         set({ articleHtml: html, articleStatus: 'success', articleError: null });
+        logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: html });
         return;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -455,6 +536,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const msg = humanizeError(e);
         set({ articleStatus: 'error', articleError: msg, articleHtml: null });
         get().showError(`Article generation failed: ${msg}`);
+        logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: (e as any)?.response?.data, errorMessage: msg });
         return;
       }
     }
@@ -465,17 +547,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     // the webhook returns a job_id immediately, then we poll the n8n executions API
     // until the run finishes and pull the final HTML out of the last node. Mirrors
     // generateCreative — same executions-API plumbing.
-    logEvent({ tab: 'keywords', action: 'generateKeywords', status: 'start', meta: { country: input.country, language: input.language, anchor: input.anchor } });
+    const logMeta = { country: input.country, language: input.language, anchor: input.anchor };
     if (!WEBHOOKS.keywords) {
       const msg = 'PUBLIC_WEBHOOK_KEYWORDS_URL is not set in .env';
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
       get().showError(msg);
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, errorMessage: msg });
       return;
     }
     if (!N8N_EXECUTIONS_URL) {
       const msg = 'PUBLIC_N8N_EXECUTIONS_URL is not set in .env';
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
       get().showError(msg);
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, errorMessage: msg });
       return;
     }
     set({ keywordStatus: 'loading', keywordError: null, keywordHtml: null });
@@ -483,9 +567,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const t0 = Date.now();
     const elapsed = () => ((Date.now() - t0) / 1000).toFixed(1);
 
-    const fail = (msg: string) => {
+    const fail = (msg: string, responseBody?: unknown) => {
       set({ keywordStatus: 'error', keywordError: msg, keywordHtml: null });
       get().showError(`Keyword research failed: ${msg}`);
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, metaOut: responseBody, errorMessage: msg });
     };
 
     // Step 1: kick off the run and grab the execution id (job_id) returned immediately.
@@ -504,7 +589,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           continue;
         }
         console.error(e);
-        fail(humanizeError(e));
+        fail(humanizeError(e), (e as any)?.response?.data);
         return;
       }
     }
@@ -541,14 +626,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         full = (await axios.get(fullUrl, { headers: apiHeaders })).data;
       } catch (e) {
         console.error(e);
-        fail(humanizeError(e));
+        fail(humanizeError(e), (e as any)?.response?.data);
         return;
       }
 
       const errMessage = extractExecutionError(full);
       if (errMessage) {
         console.error('[generateKeywords] execution failed:', errMessage, full?.data?.resultData?.error);
-        fail(errMessage);
+        fail(errMessage, full?.data?.resultData?.error);
         return;
       }
 
@@ -580,10 +665,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         : typeof result === 'string' ? result
         : '';
       if (!html.trim()) {
-        fail('Run finished but returned no HTML');
+        fail('Run finished but returned no HTML', result);
         return;
       }
       set({ keywordHtml: html, keywordStatus: 'success', keywordError: null });
+      logEvent({ tab: 'keywords', action: 'generateKeywords', meta: logMeta, metaOut: html });
       return;
     }
 
@@ -593,11 +679,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   // Angles tab — step 1: anchor/geo/language/translation -> SERP research -> audience segments.
   // Synchronous webhook (responseMode=lastNode), returns the full bundle we feed back in step 2.
   generateRsocAudiences: async (input) => {
-    logEvent({ tab: 'angles', action: 'generateRsocAudiences', status: 'start', meta: { geo: (input as any)?.geo, language: (input as any)?.language, anchor: (input as any)?.anchor } });
+    const logMeta = { geo: (input as any)?.geo, language: (input as any)?.language, anchor: (input as any)?.anchor };
     if (!WEBHOOKS.rsocAudiences) {
       const msg = 'PUBLIC_WEBHOOK_RSOC_AUDIENCES_URL is not set in .env';
       set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
       get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocAudiences', meta: logMeta, errorMessage: msg });
       return;
     }
     set({
@@ -627,25 +714,38 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
         rsocAudiencesStatus: 'success', rsocAudiencesError: null,
       });
+      logEvent({ tab: 'angles', action: 'generateRsocAudiences', meta: logMeta, metaOut: bundle });
     } catch (e) {
       console.error(e);
       const msg = humanizeError(e);
       set({ rsocAudiencesStatus: 'error', rsocAudiencesError: msg });
       get().showError(`Audience generation failed: ${msg}`);
+      logEvent({ tab: 'angles', action: 'generateRsocAudiences', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
     }
   },
 
   // Angles tab — step 2: operator picks audience segment_ids, we send them back with the
   // step-1 bundle to get the curated top-3 headlines per audience.
   generateRsocHeadlines: async (pickedIds) => {
-    logEvent({ tab: 'angles', action: 'generateRsocHeadlines', status: 'start', meta: { picked: pickedIds.join(','), pickedCount: pickedIds.length } });
+    const logMeta = { picked: pickedIds.join(','), pickedCount: pickedIds.length };
     const bundle = get().rsocBundle;
-    if (!bundle) { get().showError('Generate audiences first'); return; }
-    if (!pickedIds.length) { get().showError('Pick at least one audience'); return; }
+    if (!bundle) {
+      const msg = 'Generate audiences first';
+      get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    if (!pickedIds.length) {
+      const msg = 'Pick at least one audience';
+      get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, errorMessage: msg });
+      return;
+    }
     if (!WEBHOOKS.rsocHeadlines) {
       const msg = 'PUBLIC_WEBHOOK_RSOC_HEADLINES_URL is not set in .env';
       set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
       get().showError(msg);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, errorMessage: msg });
       return;
     }
     set({ rsocHeadlinesStatus: 'loading', rsocHeadlinesError: null, rsocHeadlines: [] });
@@ -681,11 +781,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         headline_id: r.headline_id ?? '',
       }));
       set({ rsocHeadlines: headlines, rsocHeadlinesStatus: 'success', rsocHeadlinesError: null });
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, metaOut: result });
     } catch (e) {
       console.error(e);
       const msg = humanizeError(e);
       set({ rsocHeadlinesStatus: 'error', rsocHeadlinesError: msg });
       get().showError(`Headline generation failed: ${msg}`);
+      logEvent({ tab: 'angles', action: 'generateRsocHeadlines', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
     }
   },
 
@@ -746,9 +848,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   generateConcept: async (angleId) => {
-    logEvent({ tab: 'creatives', action: 'generateConcept', status: 'start', meta: { angleId, adLanguage: get().adLanguage } });
     set({ isLoadingConcepts: true });
     const angle = get().angles.find(a => a.id === angleId);
+    // Capture WHAT was picked, not just an opaque id — angle direction / code /
+    // hook seed + ad language + the GEO/buyer context that drives the concept run.
+    const logMeta = {
+      angleId,
+      angleSlot: angle?.slot,
+      angleDirection: angle?.direction,
+      angleCode: angle?.code,
+      angleHookSeed: angle?.hookSeed,
+      angleTrigger: angle?.trigger,
+      angleAwarenessLevel: angle?.awarenessLevel,
+      angleEmotionalAnchor: angle?.emotionalAnchor,
+      adLanguage: get().adLanguage,
+      geo: get().formData.geo,
+      buyer: get().formData.buyer,
+      campaignName: get().formData.campaignName,
+    };
     const angleForWebhook = angle ? {
       ...(angle.raw ?? {}),
       direction: angle.direction,
@@ -801,6 +918,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           };
         });
         set((state) => ({ concepts: [...state.concepts, ...newConcepts], isLoadingConcepts: false }));
+        logEvent({ tab: 'creatives', action: 'generateConcept', meta: logMeta, metaOut: data });
         return;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -809,15 +927,41 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         console.error(e);
         set({ isLoadingConcepts: false });
+        logEvent({ tab: 'creatives', action: 'generateConcept', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: humanizeError(e) });
         return;
       }
     }
   },
 
   generateCreative: async (conceptId) => {
-    logEvent({ tab: 'creatives', action: 'generateCreative', status: 'start', meta: { conceptId, adLanguage: get().adLanguage, aspectRatio: get().aspectRatio, imageModel: get().imageGenerationModel } });
     const concept = get().concepts.find(c => c.id === conceptId);
     if (!concept) return;
+    // Mirror the generateConcept treatment: capture the actual concept content
+    // (hook / accent / cta / meta copy / formula) + the source angle's identity
+    // + every generation setting that affects the output. That way the dashboard
+    // can answer "what did this run produce, and from what?" without an id lookup.
+    const logMeta = {
+      conceptId,
+      hook: concept.hook,
+      accent: concept.accent,
+      cta: concept.cta,
+      metaTitle: concept.metaTitle,
+      metaCopy: concept.metaCopy,
+      formula: concept.formula,
+      formulaName: concept.formulaName,
+      aspectTested: concept.aspectTested,
+      aspectCategory: concept.aspectCategory,
+      angleSlot: concept.sourceAngle?.slot,
+      angleDirection: concept.sourceAngle?.direction,
+      angleCode: concept.sourceAngle?.code,
+      adLanguage: get().adLanguage,
+      aspectRatio: get().aspectRatio,
+      imageModel: get().imageGenerationModel,
+      geo: get().formData.geo,
+      buyer: get().formData.buyer,
+      campaignName: get().formData.campaignName,
+      presets: get().selectedPresets,
+    };
 
     const chosen_angle = concept.sourceAngle
       ? {
@@ -867,6 +1011,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       isLoadingCreatives: true,
     }));
 
+    // Resolve which shared prompts the operator picked. Filter by current store
+    // state in case admins deleted one between the load and the click.
+    const selectedSavedPromptIds = new Set(get().selectedSavedPromptIds);
+    const savedPromptsPayload = get().savedPrompts
+      .filter((p) => selectedSavedPromptIds.has(String(p.id)))
+      .map((p) => ({ id: p.id, name: p.name, prompt: p.prompt }));
+
     const payload = {
       agent1_output: get().agent1Output,
       article: get().article,
@@ -875,27 +1026,44 @@ export const useAppStore = create<AppState>((set, get) => ({
       image_generation_model: get().imageGenerationModel,
       ad_language: get().adLanguage,
       aspect_ratio: get().aspectRatio,
+      // Target country — Agent 3 / Agent 3 Patch use this to pick the right currency,
+      // local programmes, and regional references. Currency follows GEO, not ad_language.
+      geo: get().formData.geo,
+      // n8n side filters its 5 preset branches by these IDs ('A','B','C','D','Custom').
+      // Custom only contributes if the user also typed a custom_prompt.
+      presets: get().selectedPresets,
+      custom_prompt: get().customPrompt,
+      // Toggleable scaffolding for Preset Custom — see Build Image Context / Preset Custom in n8n.
+      custom_blocks: get().customBlocks,
+      // Pre-authored prompts from Docs → Prompt Bases. Each entry will run as
+      // its own image variant in the n8n workflow with {hook}/{accent}/{cta}
+      // substituted from chosen_creative.
+      saved_prompts: savedPromptsPayload,
     };
 
-    const cleanupOnFailure = () => {
+    const cleanupOnFailure = (errorMessage?: string, responseBody?: unknown) => {
       set((state) => ({
         creatives: state.creatives.filter(c => c.id !== creativeId),
         isLoadingCreatives: false,
       }));
+      logEvent({ tab: 'creatives', action: 'generateCreative', meta: logMeta, metaOut: responseBody, errorMessage });
     };
 
     // Step 1: kick off the job. n8n returns:
     //   job_id        - the real n8n execution id, needed to poll the executions API
-    //   batch_number  - our own resettable workflow counter (1, 2, 3 …), used for file names
+    //   batch_number  - optional, legacy workflow counter (1, 2, 3 …).
     let jobId: string | null = null;
-    let batchNumber = 0;
+    let batchNumberRaw: number | string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { data } = await axios.post(WEBHOOKS.creative, payload);
         const startPayload = Array.isArray(data) ? data[0] : data;
         jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
         if (!jobId) throw new Error('Webhook did not return a job_id');
-        batchNumber = Number(startPayload?.batch_number) || 0;
+        // Take batch_number verbatim if the workflow returns it; otherwise we'll
+        // fall back to jobId below. Don't coerce — a non-numeric id (UUID,
+        // "exec-abc-…") would NaN out to 0 and collide with every other run.
+        batchNumberRaw = startPayload?.batch_number ?? null;
         break;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
@@ -903,15 +1071,19 @@ export const useAppStore = create<AppState>((set, get) => ({
           continue;
         }
         console.error(e);
-        cleanupOnFailure();
+        cleanupOnFailure(humanizeError(e), (e as any)?.response?.data);
         return;
       }
     }
-    if (!jobId) { cleanupOnFailure(); return; }
+    if (!jobId) { cleanupOnFailure('Webhook did not return a job_id'); return; }
 
-    // batch_number drives the file names + the Telegram "batch_<n>" label.
-    // Fall back to the raw execution id only if n8n didn't return batch_number (legacy).
-    fileMeta = { ...fileMeta, batchNumber: batchNumber || Number(jobId) || 0 };
+    // The execution id IS the batch number. Each Generate click produces a new
+    // run with a unique id, so the standardized file name carries it through
+    // and two batches never collide on the same "batch_<n>" — even when the
+    // operator re-downloads the same one twice (browser appends "(copy)",
+    // which is correct: same content, same id).
+    const batchNumber: number | string = batchNumberRaw ?? jobId;
+    fileMeta = { ...fileMeta, batchNumber };
     set((state) => ({
       creatives: state.creatives.map(c => c.id === creativeId ? { ...c, fileMeta } : c),
     }));
@@ -945,7 +1117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         full = res.data;
       } catch (e) {
         console.error(e);
-        cleanupOnFailure();
+        cleanupOnFailure(humanizeError(e), (e as any)?.response?.data);
         return;
       }
 
@@ -953,24 +1125,101 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (errMessage) {
         console.error('[generateCreative] execution failed:', errMessage, full?.data?.resultData?.error);
         get().showError(`Creative generation failed: ${errMessage}`);
-        cleanupOnFailure();
+        cleanupOnFailure(errMessage, full?.data?.resultData?.error);
         return;
       }
 
+      // Prefer Aggregate Images by name (terminal node of the creative graph).
+      // Fall back to whatever lastNodeExecuted reports if the workflow's been
+      // renamed or its terminal node moved. Walk every run of the chosen node
+      // and merge so per-item Code-node executions don't lose images.
+      const runData = full?.data?.resultData?.runData ?? {};
       const lastNode = full?.data?.resultData?.lastNodeExecuted;
-      const result = full?.data?.resultData?.runData?.[lastNode]?.[0]?.data?.main?.[0]?.[0]?.json;
-      if (!result) {
-        console.error('[generateCreative] no result data in execution:', full);
+      const pickResultsFor = (nodeName?: string): any[] => {
+        if (!nodeName) return [];
+        const runs = runData[nodeName] ?? [];
+        return runs.flatMap((r: any) => (r?.data?.main?.[0] ?? []).map((it: any) => it?.json).filter(Boolean));
+      };
+      const aggregateResults = pickResultsFor('Aggregate Images');
+      const lastNodeResults  = pickResultsFor(lastNode);
+      // Merge into one result. Aggregate Images is the authoritative source if it ran.
+      const sources = aggregateResults.length ? aggregateResults : lastNodeResults;
+      const result: any = sources.reduce((acc: any, j: any) => {
+        if (!j || typeof j !== 'object') return acc;
+        if (Array.isArray(j.images)) acc.images = [...(acc.images ?? []), ...j.images];
+        for (const [k, v] of Object.entries(j)) {
+          if (k === 'images') continue;
+          if (!(k in acc)) acc[k] = v;
+        }
+        return acc;
+      }, {});
+      if (!result || Object.keys(result).length === 0) {
+        console.error('[generateCreative] no result data in execution. lastNode=%s, runData keys=%o', lastNode, Object.keys(runData));
         get().showError('Creative generation finished but returned no result');
-        cleanupOnFailure();
+        cleanupOnFailure('Creative generation finished but returned no result', { lastNode, runDataKeys: Object.keys(runData) });
         return;
       }
       // Extract images + per-variant texts (style, meta_title, meta_copy, banner_cta)
       const fallbackConcept = get().concepts.find(c => c.id === conceptId);
       const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
 
+      // n8n's Aggregate Images keys every image by preset_id: image_a_url / image_b_url /
+      // image_c_url / image_d_url / image_custom_url. The same node also emits a flat
+      // `images: [...]` array in response order, but that order loses which preset each
+      // image came from — so a partial run like {A, D} would otherwise get filenamed _1, _2
+      // instead of _1, _4. Prefer the keyed entries so the trailing slot matches the preset.
+      const PRESET_ORDER = ['a', 'b', 'c', 'd', 'custom'] as const;
+      const PRESET_SLOT: Record<string, number | string> = {
+        a: 1, b: 2, c: 3, d: 4, custom: 'custom',
+      };
+
+      // Per-key compliance reader. Defaults to compliant=true when the field
+      // is missing (A/B/C/D bypass the Compliance Agent (Image), legacy
+      // responses don't carry these fields at all).
+      const readCompliance = (suffix: string) => {
+        const compliantField = result[`compliant_${suffix}`];
+        const checkedField = result[`compliance_checked_${suffix}`];
+        const compliant = typeof compliantField === 'boolean' ? compliantField : true;
+        const complianceChecked = checkedField === true;
+        return {
+          compliant,
+          complianceType: readString(`compliance_type_${suffix}`),
+          complianceDescription: readString(`compliance_description_${suffix}`),
+          policyReference: readString(`compliance_policy_${suffix}`),
+          complianceChecked,
+        };
+      };
+
       let images: ImageVariant[] = [];
-      if (Array.isArray(result.images)) {
+      const keyed = Object.entries(result)
+        .filter(([k, v]) => /^image_[a-z0-9]+_url$/i.test(k) && typeof v === 'string')
+        .map(([k, v]) => {
+          const suffix = (k.match(/^image_([a-z0-9]+)_url$/i)?.[1] ?? '').toLowerCase();
+          const styleFromResponse = readString(`style_${suffix}`);
+          const style = styleFromResponse.trim() || suffix.toUpperCase();
+          const metaTitle = readString(`meta_title_${suffix}`) || readString('meta_ad_title');
+          const metaCopy  = readString(`meta_copy_${suffix}`)  || readString('meta_ad_copy');
+          const cta       = readString(`banner_cta_${suffix}`);
+          const compliance = readCompliance(suffix);
+          return { suffix, url: v as string, style, metaTitle, metaCopy, cta, ...compliance };
+        });
+
+      if (keyed.length > 0) {
+        // Display order: A -> B -> C -> D -> Custom, anything unknown at the end.
+        keyed.sort((a, b) => {
+          const ai = PRESET_ORDER.indexOf(a.suffix as typeof PRESET_ORDER[number]);
+          const bi = PRESET_ORDER.indexOf(b.suffix as typeof PRESET_ORDER[number]);
+          return (ai === -1 ? PRESET_ORDER.length : ai) - (bi === -1 ? PRESET_ORDER.length : bi);
+        });
+        images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta, compliant, complianceType, complianceDescription, policyReference, complianceChecked }) => ({
+          url, style, metaTitle, metaCopy, cta,
+          fileName: buildCreativeFilename(fileMeta, PRESET_SLOT[suffix] ?? suffix),
+          compliant, complianceType, complianceDescription, policyReference, complianceChecked,
+        }));
+      } else if (Array.isArray(result.images)) {
+        // Legacy fallback — older n8n versions only returned the flat array. Numbers
+        // 1..N stay in response order; partial selections will be misnumbered, which is
+        // the original behaviour we accept only when keyed entries are unavailable.
         images = result.images
           .filter((s: any) => typeof s === 'string')
           .map((url: string, i: number) => ({
@@ -979,41 +1228,18 @@ export const useAppStore = create<AppState>((set, get) => ({
             metaTitle: '',
             metaCopy: '',
             cta: '',
+            fileName: buildCreativeFilename(fileMeta, i + 1),
           }));
-      } else {
-        images = Object.entries(result)
-          .filter(([k, v]) => /^image[_a-z0-9]*url$/i.test(k) && typeof v === 'string')
-          .map(([k, v]) => {
-            const match = k.match(/^image_?([a-z0-9]+)?_?url$/i);
-            const suffix = (match?.[1] ?? '').toLowerCase();
-
-            const styleFromResponse = readString(suffix ? `style_${suffix}` : 'style');
-            const style = styleFromResponse.trim() || suffix.toUpperCase();
-
-            const metaTitle = readString(suffix ? `meta_title_${suffix}` : 'meta_title')
-              || readString('meta_ad_title');
-            const metaCopy = readString(suffix ? `meta_copy_${suffix}` : 'meta_copy')
-              || readString('meta_ad_copy');
-            const cta = readString(suffix ? `banner_cta_${suffix}` : 'banner_cta');
-
-            return { url: v as string, style, metaTitle, metaCopy, cta };
-          });
-        if (images.length === 0 && typeof result.image_url === 'string') {
-          images = [{
-            url: result.image_url,
-            style: readString('style'),
-            metaTitle: readString('meta_title') || readString('meta_ad_title'),
-            metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
-            cta: readString('banner_cta'),
-          }];
-        }
+      } else if (typeof result.image_url === 'string') {
+        images = [{
+          url: result.image_url,
+          style: readString('style'),
+          metaTitle: readString('meta_title') || readString('meta_ad_title'),
+          metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
+          cta: readString('banner_cta'),
+          fileName: buildCreativeFilename(fileMeta, 1),
+        }];
       }
-
-      // Stamp the standardized file name on every variant (A/B/C/D -> _1/_2/_3/_4).
-      images = images.map((img, i) => ({
-        ...img,
-        fileName: buildCreativeFilename(fileMeta, i),
-      }));
 
       // Card-level fields take values from the first variant; if it has none, fall back to the concept.
       const firstVariant = images[0];
@@ -1046,17 +1272,19 @@ export const useAppStore = create<AppState>((set, get) => ({
           : c),
         isLoadingCreatives: false,
       }));
+      logEvent({ tab: 'creatives', action: 'generateCreative', meta: logMeta, metaOut: result });
       return;
     }
 
     // Polling exhausted without success
     console.error('[generateCreative] polling timed out after', POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000, 'seconds');
-    get().showError(`Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`);
-    cleanupOnFailure();
+    const timeoutMsg = `Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`;
+    get().showError(timeoutMsg);
+    cleanupOnFailure(timeoutMsg);
   },
 
   sendToTelegram: async (creativeId) => {
-    logEvent({ tab: 'creatives', action: 'sendToTelegram', status: 'start', meta: { creativeId } });
+    const logMeta = { creativeId };
     const creative = get().creatives.find(c => c.id === creativeId);
     if (!creative) return;
 
@@ -1073,12 +1301,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       chosen_creative: chosenCreative ?? null,
     };
     try {
-      await axios.post(WEBHOOKS.telegram, payload);
+      const { data } = await axios.post(WEBHOOKS.telegram, payload);
       set((state) => ({
         creatives: state.creatives.map(c => c.id === creativeId
           ? { ...c, isSending: false, isSent: true }
           : c),
       }));
+      logEvent({ tab: 'creatives', action: 'sendToTelegram', meta: logMeta, metaOut: data });
     } catch (e) {
       console.error('Ошибка отправки', e);
       set((state) => ({
@@ -1086,6 +1315,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { ...c, isSending: false, isSent: false }
           : c),
       }));
+      logEvent({ tab: 'creatives', action: 'sendToTelegram', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: humanizeError(e) });
     }
   },
 

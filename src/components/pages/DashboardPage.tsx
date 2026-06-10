@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { fetchEventMetaOut } from '@/lib/events';
 
 // Admin-only usage analytics. Polls PUBLIC_WEBHOOK_LIST_EVENTS_URL every 30s
 // for the last 30 days of usage events and renders them as sub-tabs:
@@ -9,6 +10,7 @@ import { Button } from '@/components/ui/button';
 //   - Top Users         (leaderboard by event count)
 //   - Action Popularity (each action ranked by count)
 //   - Tab Breakdown     (per-tab event share)
+//   - Graph             (per-day activity, segmented by user)
 // All aggregations happen client-side from the single fetched payload.
 
 interface UsageRow {
@@ -16,19 +18,27 @@ interface UsageRow {
   email: string;
   tab: string;
   action: string;
-  status: string;
-  duration_ms: number | null;
   meta: string;
+  /** May be empty for rows that contain base64 images — those are stripped
+   *  from the list response. The full bytes are fetched on demand via
+   *  fetchEventMetaOut() when the operator clicks "See N images". */
+  meta_out: string;
   error_message: string;
+  execution_id: string;
+  /** Number of unique base64 images stored in meta_out on the server. Driven
+   *  by the dev-list-events response. Old rows (logged before the column was
+   *  added) report 0 — for those the FE falls back to scanning meta_out. */
+  image_count: number;
 }
 
-type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs';
+type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph';
 
 const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'events',   label: 'Events' },
   { value: 'topUsers', label: 'Top Users' },
   { value: 'actions',  label: 'Action Popularity' },
   { value: 'tabs',     label: 'Tab Breakdown' },
+  { value: 'graph',    label: 'Graph' },
 ];
 
 const LIST_URL = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
@@ -95,15 +105,6 @@ const detectPreset = (fromDate: string): PresetKey => {
 // Sub-tab views — each takes the already-filtered rows.
 // ---------------------------------------------------------------------------
 
-const StatusPill = ({ value }: { value: string }) => (
-  <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
-    value === 'success' ? 'bg-green-100 text-green-700'
-    : value === 'error' ? 'bg-red-100 text-red-700'
-    : value === 'start' ? 'bg-blue-100 text-blue-700'
-    : 'bg-slate-100 text-slate-700'
-  }`}>{value || '—'}</span>
-);
-
 // Inline CSS bar that fills (count / max) of its row. Pure CSS, no library.
 const Bar = ({ value, max, tint = 'bg-blue-100' }: { value: number; max: number; tint?: string }) => {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
@@ -117,11 +118,289 @@ const Bar = ({ value, max, tint = 'bg-blue-100' }: { value: number; max: number;
   );
 };
 
+// Pull every "data:image/...;base64,..." substring out of a meta_out blob. The
+// base64 alphabet is [A-Za-z0-9+/=] — none of which collide with JSON's quote
+// or backslash, so the run terminates cleanly at the closing quote of the JSON
+// string value. Returns [] for any value that doesn't contain "data:image/" at
+// all (cheap early-out for the common no-image case).
+//
+// Dedupe via Set: n8n's Aggregate Images node writes each image twice in the
+// response — once in `images: [...]` and once in `image_a_url` / `image_b_url`
+// keyed entries. Without dedupe a 1-image batch would render as 2 thumbnails.
+const BASE64_IMG_RE = /data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+/g;
+const MAX_IMAGES_PER_CELL = 5;
+const extractBase64Images = (s: string): string[] => {
+  if (!s || !s.includes('data:image/')) return [];
+  const matches = s.match(BASE64_IMG_RE) ?? [];
+  return Array.from(new Set(matches));
+};
+
+// Lightbox state — when set, an inline overlay shows the picked image full-size
+// with prev/next + ESC handling. Mirrors Column4's "Generated Images" pattern so
+// the experience is consistent: clicking a dashboard thumb feels the same as
+// clicking a creative card in tab 4.
+type LightboxState = { images: string[]; index: number } | null;
+
+const Lightbox = ({ state, onClose, onPrev, onNext }: {
+  state: LightboxState;
+  onClose: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+}) => {
+  // Keyboard nav: ESC closes, ←/→ moves through the current row's images.
+  useEffect(() => {
+    if (!state) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft') onPrev();
+      else if (e.key === 'ArrowRight') onNext();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [state, onClose, onPrev, onNext]);
+
+  if (!state) return null;
+  const { images, index } = state;
+  const src = images[index];
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
+        className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
+        aria-label="Close"
+      >
+        ×
+      </button>
+      {images.length > 1 && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+          className="absolute left-4 top-1/2 -translate-y-1/2 text-white text-4xl w-12 h-12 flex items-center justify-center hover:bg-white/10 rounded-full"
+          aria-label="Previous image"
+        >
+          ‹
+        </button>
+      )}
+      <div
+        className="flex items-center justify-center max-w-[92vw] max-h-[92vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <img
+          src={src}
+          alt={`Image ${index + 1}`}
+          className="max-w-full max-h-[88vh] object-contain rounded-md"
+        />
+      </div>
+      {images.length > 1 && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onNext(); }}
+          className="absolute right-4 top-1/2 -translate-y-1/2 text-white text-4xl w-12 h-12 flex items-center justify-center hover:bg-white/10 rounded-full"
+          aria-label="Next image"
+        >
+          ›
+        </button>
+      )}
+      {images.length > 1 && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white text-sm bg-black/50 px-3 py-1 rounded-full">
+          {index + 1} / {images.length}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// A single base64 thumb. Falls back to a clear "truncated" badge when the
+// browser can't decode the image — almost always means the row was written
+// before n8n's Normalize trim limit was bumped, so the base64 is cut mid-stream.
+// We also check the byte length up front: a real 1024×1024 JPEG is ~50-500 KB
+// base64, so anything under ~5 KB is almost certainly a truncated remnant.
+const MIN_VIABLE_BASE64 = 5000;
+const ImageThumb = ({ src, index, total, onClick }: {
+  src: string;
+  index: number;
+  total: number;
+  onClick: () => void;
+}) => {
+  const [broken, setBroken] = useState(src.length < MIN_VIABLE_BASE64);
+  if (broken) {
+    return (
+      <div
+        className="h-12 w-12 flex items-center justify-center rounded border border-amber-300 bg-amber-50 text-amber-700 text-[8px] font-mono leading-tight text-center px-0.5"
+        title={`Base64 truncated at ${src.length} chars — re-import the n8n Usage Log workflow so the Normalize node stops capping meta_out at 2000.`}
+      >
+        truncated
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Open image ${index + 1} of ${total}`}
+      className="cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-slate-500 rounded"
+    >
+      <img
+        src={src}
+        alt={`generated image ${index + 1}`}
+        loading="lazy"
+        onError={() => setBroken(true)}
+        className="h-12 w-12 object-cover rounded border border-slate-200 hover:border-slate-400 transition-colors"
+      />
+    </button>
+  );
+};
+
+// Render a meta_out cell. Three modes:
+//   - Plain-text row (errors, small JSON) → truncated mono text, no <img> work.
+//   - Image row, default → "See N images" button. NO base64 is decoded, and the
+//     bytes haven't even been downloaded yet (the list response strips them).
+//   - Image row, after first click → lazy-fetch the full meta_out from
+//     dev-get-event, cache it in this row's state, then render thumbnails with
+//     the existing lightbox/truncated-badge pipeline. "hide" folds the
+//     thumbnails away without dropping the cached bytes, so re-opening is free.
+//
+// The image count comes from `row.image_count` (server-side; cheap, no
+// decoding). For pre-existing rows that pre-date that column the FE falls back
+// to scanning whatever meta_out it received — which for old data still
+// contains the full base64 inline, so the scan works.
+const MetaOutCell = ({ row, onOpen }: {
+  row: UsageRow;
+  onOpen: (images: string[], index: number) => void;
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  const [fetchedValue, setFetchedValue] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Use the on-demand bytes once we have them; otherwise whatever the list
+  // endpoint returned (full base64 for legacy rows, empty for new rows).
+  const effectiveValue = fetchedValue ?? row.meta_out;
+  const images = useMemo(() => extractBase64Images(effectiveValue), [effectiveValue]);
+
+  // Server-reported count beats client-scanned count — image_count comes from
+  // the n8n side which sees the row before bytes are stripped.
+  const declaredCount = row.image_count > 0
+    ? row.image_count
+    : images.length;
+  const hasImages = declaredCount > 0;
+
+  if (!hasImages) {
+    return (
+      <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={row.meta_out}>
+        {row.meta_out}
+      </td>
+    );
+  }
+
+  const plural = declaredCount === 1 ? '' : 's';
+
+  if (!expanded) {
+    const onClick = async () => {
+      // If meta_out already has the bytes (legacy row OR previous expansion),
+      // skip the network call entirely.
+      const bytesAlreadyHere = effectiveValue.includes('data:image/');
+      if (!bytesAlreadyHere && row.execution_id) {
+        setFetching(true);
+        setFetchError(null);
+        try {
+          const full = await fetchEventMetaOut({
+            execution_id: row.execution_id,
+            ts: row.ts,
+            email: row.email,
+            action: row.action,
+          });
+          setFetchedValue(full);
+        } catch (e: any) {
+          setFetchError(e?.message ?? String(e));
+          setFetching(false);
+          return;
+        }
+        setFetching(false);
+      }
+      setExpanded(true);
+    };
+    return (
+      <td className="py-1.5 px-3 max-w-md">
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={fetching}
+          className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 disabled:opacity-60 disabled:cursor-progress transition-colors px-2.5 py-1 text-[11px] font-medium text-slate-700"
+          title="Lazy-load the row's base64 bytes and render thumbnails. The list endpoint omits these to keep its payload small."
+        >
+          <span aria-hidden="true">▸</span>
+          <span>
+            {fetching
+              ? `Loading ${declaredCount} image${plural}…`
+              : `See ${declaredCount} image${plural}`}
+          </span>
+        </button>
+        {fetchError && (
+          <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{fetchError}</div>
+        )}
+      </td>
+    );
+  }
+
+  const shown = images.slice(0, MAX_IMAGES_PER_CELL);
+  const extra = images.length - shown.length;
+  return (
+    <td className="py-1.5 px-3 max-w-md">
+      <div className="flex flex-wrap items-center gap-1">
+        {shown.map((src, i) => (
+          <ImageThumb key={i} src={src} index={i} total={images.length} onClick={() => onOpen(images, i)} />
+        ))}
+        {extra > 0 && (
+          <span className="font-mono text-[10px] text-slate-400">+{extra}</span>
+        )}
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="ml-1 text-[10px] text-slate-400 hover:text-slate-600 underline"
+        >
+          hide
+        </button>
+      </div>
+    </td>
+  );
+};
+
 const EventsView = ({ rows }: { rows: UsageRow[] }) => {
+  // One lightbox per Events view — its state holds the row's image list + the
+  // currently-shown index. Lifted here (instead of per-cell) so only one
+  // overlay can be open at a time and keyboard nav is unambiguous.
+  const [lightbox, setLightbox] = useState<LightboxState>(null);
+  const closeLightbox = useCallback(() => setLightbox(null), []);
+  const showPrev = useCallback(() => {
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index - 1 + len) % len };
+    });
+  }, []);
+  const showNext = useCallback(() => {
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index + 1) % len };
+    });
+  }, []);
+  const openLightbox = useCallback((images: string[], index: number) => {
+    setLightbox({ images, index });
+  }, []);
+
   if (rows.length === 0) {
     return <div className="p-6 text-gray-400 italic">No events match the current filters.</div>;
   }
   return (
+    <>
     <table className="w-full text-sm border-collapse">
       <thead className="sticky top-0 bg-slate-100 z-10">
         <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
@@ -129,9 +408,9 @@ const EventsView = ({ rows }: { rows: UsageRow[] }) => {
           <th className="py-2 px-3">Email</th>
           <th className="py-2 px-3">Tab</th>
           <th className="py-2 px-3">Action</th>
-          <th className="py-2 px-3">Status</th>
-          <th className="py-2 px-3 w-24">Duration</th>
+          <th className="py-2 px-3 w-24">Exec</th>
           <th className="py-2 px-3">Meta</th>
+          <th className="py-2 px-3">Meta out</th>
         </tr>
       </thead>
       <tbody>
@@ -141,13 +420,17 @@ const EventsView = ({ rows }: { rows: UsageRow[] }) => {
             <td className="py-1.5 px-3">{r.email}</td>
             <td className="py-1.5 px-3 text-slate-600">{r.tab}</td>
             <td className="py-1.5 px-3 font-semibold">{r.action}</td>
-            <td className="py-1.5 px-3"><StatusPill value={r.status} /></td>
-            <td className="py-1.5 px-3 font-mono text-xs text-slate-500">{r.duration_ms != null ? `${r.duration_ms}ms` : '—'}</td>
+            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-[110px] truncate" title={r.execution_id}>
+              {r.execution_id ? (r.execution_id.length > 10 ? `${r.execution_id.slice(0, 8)}…` : r.execution_id) : '—'}
+            </td>
             <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={r.meta}>{r.meta}</td>
+            <MetaOutCell row={r} onOpen={openLightbox} />
           </tr>
         ))}
       </tbody>
     </table>
+    <Lightbox state={lightbox} onClose={closeLightbox} onPrev={showPrev} onNext={showNext} />
+    </>
   );
 };
 
@@ -257,6 +540,226 @@ const CountView = ({
   );
 };
 
+// Graph view — daily activity, segmented per action (event type). Two
+// interactive filters narrow the data on top of the page-level filters:
+//   - Tab pills: multi-select. Empty = all tabs.
+//   - Clickable legend: multi-select. Empty = all events.
+// Each day shows one horizontal bar whose length is proportional to the day's
+// max in the (filtered) range, split into colored segments per action with
+// rare actions folded into a grey "others" segment.
+// Curated 8-hue palette — 500-shade Tailwind colors picked for maximum
+// distinguishability when stacked as small segments. Hues are spaced around the
+// wheel: indigo / sky for cool blues, emerald / teal for greens, amber / orange
+// for warm yellows, rose / pink for warm reds — avoiding any two that read as
+// the same color at glance.
+const ACTION_PALETTE = [
+  'bg-indigo-500', 'bg-emerald-500', 'bg-amber-500', 'bg-rose-500',
+  'bg-violet-500', 'bg-sky-500',     'bg-orange-500', 'bg-pink-500',
+];
+const TOP_ACTIONS_IN_GRAPH = ACTION_PALETTE.length;
+const TAB_OPTIONS = ['creatives', 'keywords', 'angles', 'article'] as const;
+
+const GraphView = ({ rows }: { rows: UsageRow[] }) => {
+  const [selectedTabs, setSelectedTabs] = useState<Set<string>>(new Set());
+  const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());
+
+  const toggleTab = (tab: string) => {
+    setSelectedTabs((prev) => {
+      const next = new Set(prev);
+      if (next.has(tab)) next.delete(tab); else next.add(tab);
+      return next;
+    });
+  };
+  const toggleAction = (action: string) => {
+    setSelectedActions((prev) => {
+      const next = new Set(prev);
+      if (next.has(action)) next.delete(action); else next.add(action);
+      return next;
+    });
+  };
+
+  // Tab filter narrows the input set first; legend & aggregations all flow from this.
+  const tabFiltered = useMemo(
+    () => (selectedTabs.size === 0 ? rows : rows.filter((r) => selectedTabs.has(r.tab))),
+    [rows, selectedTabs],
+  );
+
+  // Legend reflects whatever survived the tab filter — selecting an action that no
+  // longer exists in the data is a non-issue because the legend won't list it.
+  const topActions = useMemo<string[]>(() => {
+    const counts = new Map<string, number>();
+    for (const r of tabFiltered) {
+      const action = r.action || 'unknown';
+      counts.set(action, (counts.get(action) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, TOP_ACTIONS_IN_GRAPH)
+      .map(([a]) => a);
+  }, [tabFiltered]);
+
+  // Action filter applied after the legend is computed, so the legend keeps showing
+  // the full palette of available events while the chart focuses on the picked ones.
+  const actionFiltered = useMemo(
+    () => (selectedActions.size === 0 ? tabFiltered : tabFiltered.filter((r) => selectedActions.has(r.action || 'unknown'))),
+    [tabFiltered, selectedActions],
+  );
+
+  const dailyData = useMemo(() => {
+    const byDay = new Map<string, { total: number; byAction: Map<string, number> }>();
+    for (const r of actionFiltered) {
+      const day = (r.ts || '').slice(0, 10);
+      if (!day) continue;
+      const action = r.action || 'unknown';
+      let agg = byDay.get(day);
+      if (!agg) { agg = { total: 0, byAction: new Map() }; byDay.set(day, agg); }
+      agg.total++;
+      agg.byAction.set(action, (agg.byAction.get(action) ?? 0) + 1);
+    }
+    return Array.from(byDay.entries())
+      .map(([day, a]) => ({ day, total: a.total, byAction: a.byAction }))
+      .sort((a, b) => a.day.localeCompare(b.day));
+  }, [actionFiltered]);
+
+  const maxTotal = dailyData.reduce((m, d) => Math.max(m, d.total), 0) || 1;
+  const colorFor = (action: string): string => {
+    const idx = topActions.indexOf(action);
+    return idx === -1 ? 'bg-slate-300' : ACTION_PALETTE[idx];
+  };
+
+  const hasFilter = selectedTabs.size > 0 || selectedActions.size > 0;
+  const tabsAllActive = selectedTabs.size === 0;
+  const actionsAllActive = selectedActions.size === 0;
+
+  return (
+    <div className="p-4 space-y-3">
+      {/* Tab filter (multi-select pills) */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-slate-500 uppercase font-bold text-[10px] mr-1 w-12">Tab</span>
+        <button
+          type="button"
+          onClick={() => setSelectedTabs(new Set())}
+          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+            tabsAllActive
+              ? 'bg-slate-900 text-white'
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          All
+        </button>
+        {TAB_OPTIONS.map((t) => {
+          const active = selectedTabs.has(t);
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => toggleTab(t)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                active
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {t}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Event filter (clickable legend). When nothing is selected, every item is
+          at full strength; once something is picked, the unpicked ones dim. */}
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-slate-500 uppercase font-bold text-[10px] mr-1 w-12">Events</span>
+        <button
+          type="button"
+          onClick={() => setSelectedActions(new Set())}
+          className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+            actionsAllActive
+              ? 'bg-slate-900 text-white'
+              : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          All
+        </button>
+        {topActions.map((a) => {
+          const isSelected = selectedActions.has(a);
+          const active = actionsAllActive || isSelected;
+          return (
+            <button
+              key={a}
+              type="button"
+              onClick={() => toggleAction(a)}
+              className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 border transition-all ${
+                isSelected
+                  ? 'border-slate-900 bg-white shadow-sm'
+                  : 'border-slate-200 bg-white hover:border-slate-400'
+              } ${active ? 'opacity-100' : 'opacity-40'}`}
+            >
+              <span className={`inline-block w-3 h-3 rounded ${colorFor(a)}`} />
+              <span className="font-mono text-slate-700">{a}</span>
+            </button>
+          );
+        })}
+        <span className="flex items-center gap-1.5 px-2.5 py-1 opacity-60">
+          <span className="inline-block w-3 h-3 rounded bg-slate-300" />
+          <span className="text-slate-500">others</span>
+        </span>
+      </div>
+
+      {dailyData.length === 0 ? (
+        <div className="p-6 text-gray-400 italic">
+          {hasFilter ? 'No events match the selected filters.' : 'No events in range.'}
+        </div>
+      ) : (
+        <table className="w-full text-sm border-collapse">
+          <thead className="sticky top-0 bg-slate-100 z-10">
+            <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+              <th className="py-2 px-3 w-28">Day</th>
+              <th className="py-2 px-3 w-16">Total</th>
+              <th className="py-2 px-3">By event</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dailyData.map((d) => {
+              const knownSegments = topActions
+                .map((a) => ({ action: a, count: d.byAction.get(a) ?? 0, color: colorFor(a) }))
+                .filter((s) => s.count > 0);
+              const othersCount = d.total - knownSegments.reduce((s, x) => s + x.count, 0);
+              const segments = othersCount > 0
+                ? [...knownSegments, { action: 'others', count: othersCount, color: 'bg-slate-300' }]
+                : knownSegments;
+              const widthPct = (d.total / maxTotal) * 100;
+              return (
+                <tr key={d.day} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="py-1.5 px-3 font-mono text-xs whitespace-nowrap">{d.day}</td>
+                  <td className="py-1.5 px-3 font-mono">{d.total}</td>
+                  <td className="py-1.5 px-3">
+                    <div className="relative h-4 bg-slate-50 rounded overflow-hidden">
+                      <div
+                        className="absolute inset-y-0 left-0 flex"
+                        style={{ width: `${widthPct}%`, minWidth: '4px' }}
+                      >
+                        {segments.map((s, i) => (
+                          <div
+                            key={`${s.action}-${i}`}
+                            className={s.color}
+                            style={{ flex: s.count }}
+                            title={`${s.action}: ${s.count}`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Top-level page.
 // ---------------------------------------------------------------------------
@@ -298,10 +801,11 @@ export const DashboardPage = () => {
         email: String(r.email ?? ''),
         tab: String(r.tab ?? ''),
         action: String(r.action ?? ''),
-        status: String(r.status ?? ''),
-        duration_ms: typeof r.duration_ms === 'number' ? r.duration_ms : null,
         meta: typeof r.meta === 'string' ? r.meta : (r.meta ? JSON.stringify(r.meta) : ''),
+        meta_out: typeof r.meta_out === 'string' ? r.meta_out : (r.meta_out ? JSON.stringify(r.meta_out) : ''),
         error_message: String(r.error_message ?? ''),
+        execution_id: String(r.execution_id ?? ''),
+        image_count: typeof r.image_count === 'number' ? r.image_count : 0,
       }));
       normalized.sort((a, b) => (a.ts < b.ts ? 1 : -1));
       setRows(normalized);
@@ -430,6 +934,7 @@ export const DashboardPage = () => {
             {activeTab === 'topUsers' && <TopUsersView  rows={filtered} />}
             {activeTab === 'actions'  && <CountView     rows={filtered} keyFn={(r) => r.action} label="Action" tint="bg-purple-200" />}
             {activeTab === 'tabs'     && <CountView     rows={filtered} keyFn={(r) => r.tab}    label="Tab"    tint="bg-emerald-200" />}
+            {activeTab === 'graph'    && <GraphView     rows={filtered} />}
           </>
         )}
       </div>

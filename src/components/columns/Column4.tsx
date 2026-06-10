@@ -16,6 +16,20 @@ const CREATIVES_BATCHES_HELP =
 const FILE_NAME_REMINDER_UA =
   "Обов'язково! Ad name в Facebook маєш брати з назви файлу креатива!";
 
+const IMAGE_COMPLIANCE_HELP =
+  "Автоматична перевірка згенерованого зображення проти внутрішніх політик банерів (verbatim-рендер хука/акценту/CTA, заборонені UI-елементи, контент дорослої тематики, медичні гарантії, прямі продажі, локаційний таргетинг, бренди). " +
+  "Виконується ТІЛЬКИ для варіантів Custom і Saved — стандартні пресети A/B/C/D написані тобою заздалегідь і не передаються до Compliance Agent. " +
+  "Зелений = пройшов перевірку. Жовтий = знайдено можливе порушення; нижче в Type / Description / Policy Reference буде вказано, що саме не так. Без ретраю — рішення лишається за оператором.";
+
+const IMAGE_COMPLIANCE_TYPE_HELP =
+  "Категорія знайденого порушення в зображенні — наприклад: Verbatim mismatch, Fake UI, Adult content, Medical guarantee, Loan guarantee, Direct sales, Brand violation. Підказує, що саме vision-агент вважає проблемою.";
+
+const IMAGE_COMPLIANCE_DESCRIPTION_HELP =
+  "Короткий опис порушення на 5–15 слів — конкретно, що не так у зображенні або в тексті, що на ньому рендериться.";
+
+const IMAGE_POLICY_REFERENCE_HELP =
+  "Категорія політики, проти якої знайдено порушення: 1 Text rendering / 2 Fake UI / 3 Visual content / 4 Text content / 5 Brand.";
+
 type LightboxState = { creative: Creative; index: number } | null;
 
 const sanitizeForFilename = (s: string): string =>
@@ -233,24 +247,113 @@ export const Column4 = () => {
                   <Skeleton key={`skeleton-${i}`} className="aspect-square rounded-md" />
                 ))
               )}
-              {creative.images.map((img, i) => (
-                <button
-                  type="button"
-                  key={i}
-                  onClick={() => openLightbox(creative, i)}
-                  className="relative aspect-square bg-slate-100 rounded-md overflow-hidden border cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-green-500"
-                  aria-label={`Open image ${img.style || i + 1}`}
-                >
-                  <img src={img.url} alt={`Creative ${img.style || i + 1}`} className="w-full h-full object-cover" />
-                  {img.style && (
-                    <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
-                      {img.style}
-                    </span>
-                  )}
-                </button>
-              ))}
+              {creative.images.map((img, i) => {
+                // Compliance Agent (Image) only runs for Custom / Saved
+                // variants. For everyone else `compliant` defaults to true and
+                // we draw no badge — only the failing case needs an indicator.
+                const failedCompliance = img.compliant === false;
+                return (
+                  <button
+                    type="button"
+                    key={i}
+                    onClick={() => openLightbox(creative, i)}
+                    className={`relative aspect-square bg-slate-100 rounded-md overflow-hidden border cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                      failedCompliance ? 'border-amber-400 ring-1 ring-amber-300' : ''
+                    }`}
+                    aria-label={`Open image ${img.style || i + 1}`}
+                    title={failedCompliance
+                      ? `Not compliant — ${img.complianceType || 'flagged'}${img.complianceDescription ? `: ${img.complianceDescription}` : ''}`
+                      : undefined}
+                  >
+                    <img src={img.url} alt={`Creative ${img.style || i + 1}`} className="w-full h-full object-cover" />
+                    {img.style && (
+                      <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+                        {img.style}
+                      </span>
+                    )}
+                    {failedCompliance && (
+                      <span
+                        className="absolute top-1 right-1 inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 border border-yellow-600 shadow"
+                        aria-label="Not compliant"
+                      >
+                        <span className="text-[9px] font-bold text-yellow-900 leading-none">!</span>
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
+
+          {(() => {
+            // Compliance Agent (Image) runs ONLY for Custom / Saved variants.
+            // Only render this block when at least one variant was actually
+            // audited — otherwise the operator would see "All variants compliant"
+            // for an A/B/C/D batch where no audit took place, which is misleading.
+            const checked = creative.images.filter((img) => img.complianceChecked);
+            if (checked.length === 0) return null;
+            const failed = checked.filter((img) => img.compliant === false);
+            const allCompliant = failed.length === 0;
+            return (
+              <div className="space-y-2 pt-2 border-t border-slate-200">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="text-[10px] font-bold uppercase text-gray-400">Compliance check:</span>
+                  <InfoTooltip text={IMAGE_COMPLIANCE_HELP} iconSize={11} />
+                  <span
+                    className={`inline-block w-3 h-3 rounded-full ${allCompliant ? 'bg-green-500' : 'bg-yellow-500'}`}
+                    title={allCompliant ? 'All audited variants compliant' : `${failed.length} of ${checked.length} flagged`}
+                    aria-label={allCompliant ? 'All audited variants compliant' : 'Variants flagged'}
+                  />
+                  <span className={`text-xs ${allCompliant ? 'text-slate-600' : 'text-yellow-800'}`}>
+                    {allCompliant
+                      ? `${checked.length} variant${checked.length === 1 ? '' : 's'} audited, all compliant`
+                      : `${failed.length} of ${checked.length} variant${checked.length === 1 ? '' : 's'} flagged`}
+                  </span>
+                </div>
+
+                {failed.map((img) => {
+                  // Pull the variant's display position so the operator can map
+                  // the warning to the thumbnail above.
+                  const variantIdx = creative.images.indexOf(img);
+                  const variantLetter = variantIdx >= 0 ? String.fromCharCode(65 + variantIdx) : '?';
+                  return (
+                    <div key={variantIdx} className="ml-1 pl-3 border-l-2 border-yellow-300 space-y-1">
+                      <div className="text-xs font-bold text-slate-700">
+                        Variant {variantLetter}{img.style ? ` — ${img.style}` : ''}
+                      </div>
+                      {img.complianceType && (
+                        <div className="text-xs">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                            Type:
+                            <InfoTooltip text={IMAGE_COMPLIANCE_TYPE_HELP} iconSize={11} />
+                          </span>{' '}
+                          <span className="text-slate-700 whitespace-pre-wrap">{img.complianceType}</span>
+                        </div>
+                      )}
+                      {img.complianceDescription && (
+                        <div className="text-xs">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                            Description:
+                            <InfoTooltip text={IMAGE_COMPLIANCE_DESCRIPTION_HELP} iconSize={11} />
+                          </span>{' '}
+                          <span className="text-slate-700 whitespace-pre-wrap">{img.complianceDescription}</span>
+                        </div>
+                      )}
+                      {img.policyReference && (
+                        <div className="text-xs">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                            Policy Reference:
+                            <InfoTooltip text={IMAGE_POLICY_REFERENCE_HELP} iconSize={11} />
+                          </span>{' '}
+                          <span className="text-slate-700 whitespace-pre-wrap">{img.policyReference}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
 
           <div className="space-y-2">
             <Button
@@ -343,6 +446,40 @@ export const Column4 = () => {
                 <span className="font-bold">CTA:</span>{' '}
                 <span className="text-gray-200">{currentImage.cta || lightbox.creative.cta}</span>
               </div>
+
+              {/* Compliance verdict — same shape as Concepts column. Only
+                  shown when the Compliance Agent (Image) actually flagged
+                  this variant (Custom / Saved). A/B/C/D bypass and stay
+                  silent (compliant defaults to true, no badge, no row). */}
+              {currentImage.compliant === false && (
+                <div className="pt-2 mt-2 border-t border-white/15 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-3 h-3 rounded-full bg-yellow-400 border border-yellow-600"
+                      aria-label="Not compliant"
+                    />
+                    <span className="font-bold text-yellow-300">Not compliant</span>
+                  </div>
+                  {currentImage.complianceType && (
+                    <div>
+                      <span className="font-bold">Type:</span>{' '}
+                      <span className="text-gray-200">{currentImage.complianceType}</span>
+                    </div>
+                  )}
+                  {currentImage.complianceDescription && (
+                    <div>
+                      <span className="font-bold">Description:</span>{' '}
+                      <span className="text-gray-200 whitespace-pre-wrap">{currentImage.complianceDescription}</span>
+                    </div>
+                  )}
+                  {currentImage.policyReference && (
+                    <div>
+                      <span className="font-bold">Policy Reference:</span>{' '}
+                      <span className="text-gray-200">{currentImage.policyReference}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 

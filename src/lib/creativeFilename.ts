@@ -11,18 +11,21 @@
 //   en           - creative language code
 //   11           - aspect ratio (1:1 -> 11, 16:9 -> 169, 9:16 -> 916, 4:5 -> 45)
 //   nbp          - image model code (nbp / nb2 / gi2 / sd45)
-//   1            - variant number (A/B/C/D -> 1/2/3/4)
+//   1            - preset slot: A/B/C/D -> 1/2/3/4, Custom preset -> 'custom'
 
 export interface CreativeFileMeta {
-  campaignName: string; // "Housing Help"
-  geo: string;          // "United States (US)"
-  batchNumber: number;  // 25
-  angleSlot: number;    // 1
-  angleCode: string;    // "CG"
-  formula: string;      // "F2"
-  adLanguage: string;   // "English (US)"
-  aspectRatio: string;  // "1:1"
-  imageModel: string;   // "google/gemini-3-pro-image-preview"
+  campaignName: string;            // "Housing Help"
+  geo: string;                     // "United States (US)"
+  /** The n8n execution id of this creative run. Usually an integer (e.g. 25),
+   *  but kept as `number | string` so non-numeric ids (UUIDs, "exec-…") are
+   *  preserved verbatim instead of collapsing to 0 via NaN coercion. */
+  batchNumber: number | string;
+  angleSlot: number;               // 1
+  angleCode: string;               // "CG"
+  formula: string;                 // "F2"
+  adLanguage: string;              // "English (US)"
+  aspectRatio: string;             // "1:1"
+  imageModel: string;              // "google/gemini-3-pro-image-preview"
 }
 
 // Display label -> ISO-ish 2-letter language code.
@@ -110,6 +113,9 @@ export const buildBatchFilename = (meta: CreativeFileMeta): string =>
     modelCode(meta.imageModel),
   ].join('_');
 
-// Full per-variant name. variantIndex 0..3 -> trailing 1..4.
-export const buildCreativeFilename = (meta: CreativeFileMeta, variantIndex: number): string =>
-  `${buildBatchFilename(meta)}_${variantIndex + 1}`;
+// Full per-variant name. `variant` is the preset slot — pass 1..4 for A/B/C/D
+// or the literal 'custom' for the Custom preset. The trailing token is appended
+// verbatim, so the caller is responsible for picking the right slot (not the
+// array index — that breaks when the user runs a partial selection like A+D).
+export const buildCreativeFilename = (meta: CreativeFileMeta, variant: number | string): string =>
+  `${buildBatchFilename(meta)}_${variant}`;
