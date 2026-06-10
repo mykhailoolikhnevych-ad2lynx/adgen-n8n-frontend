@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { fetchEventMetaOut } from '@/lib/events';
 
 // Admin-only usage analytics. Polls PUBLIC_WEBHOOK_LIST_EVENTS_URL every 30s
 // for the last 30 days of usage events and renders them as sub-tabs:
@@ -18,9 +19,16 @@ interface UsageRow {
   tab: string;
   action: string;
   meta: string;
+  /** May be empty for rows that contain base64 images — those are stripped
+   *  from the list response. The full bytes are fetched on demand via
+   *  fetchEventMetaOut() when the operator clicks "See N images". */
   meta_out: string;
   error_message: string;
   execution_id: string;
+  /** Number of unique base64 images stored in meta_out on the server. Driven
+   *  by the dev-list-events response. Old rows (logged before the column was
+   *  added) report 0 — for those the FE falls back to scanning meta_out. */
+  image_count: number;
 }
 
 type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph';
@@ -247,22 +255,98 @@ const ImageThumb = ({ src, index, total, onClick }: {
   );
 };
 
-// Render a meta_out cell. If the value contains base64 image URLs (i.e. it's a
-// generateCreative response), show small lazy-loaded thumbnails — the raw bytes
-// would be hundreds of KB of unreadable garbage. Otherwise fall back to the
-// usual truncated mono text. The DB still stores the full base64 either way.
-const MetaOutCell = ({ value, onOpen }: {
-  value: string;
+// Render a meta_out cell. Three modes:
+//   - Plain-text row (errors, small JSON) → truncated mono text, no <img> work.
+//   - Image row, default → "See N images" button. NO base64 is decoded, and the
+//     bytes haven't even been downloaded yet (the list response strips them).
+//   - Image row, after first click → lazy-fetch the full meta_out from
+//     dev-get-event, cache it in this row's state, then render thumbnails with
+//     the existing lightbox/truncated-badge pipeline. "hide" folds the
+//     thumbnails away without dropping the cached bytes, so re-opening is free.
+//
+// The image count comes from `row.image_count` (server-side; cheap, no
+// decoding). For pre-existing rows that pre-date that column the FE falls back
+// to scanning whatever meta_out it received — which for old data still
+// contains the full base64 inline, so the scan works.
+const MetaOutCell = ({ row, onOpen }: {
+  row: UsageRow;
   onOpen: (images: string[], index: number) => void;
 }) => {
-  const images = useMemo(() => extractBase64Images(value), [value]);
-  if (images.length === 0) {
+  const [expanded, setExpanded] = useState(false);
+  const [fetchedValue, setFetchedValue] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  // Use the on-demand bytes once we have them; otherwise whatever the list
+  // endpoint returned (full base64 for legacy rows, empty for new rows).
+  const effectiveValue = fetchedValue ?? row.meta_out;
+  const images = useMemo(() => extractBase64Images(effectiveValue), [effectiveValue]);
+
+  // Server-reported count beats client-scanned count — image_count comes from
+  // the n8n side which sees the row before bytes are stripped.
+  const declaredCount = row.image_count > 0
+    ? row.image_count
+    : images.length;
+  const hasImages = declaredCount > 0;
+
+  if (!hasImages) {
     return (
-      <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={value}>
-        {value}
+      <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={row.meta_out}>
+        {row.meta_out}
       </td>
     );
   }
+
+  const plural = declaredCount === 1 ? '' : 's';
+
+  if (!expanded) {
+    const onClick = async () => {
+      // If meta_out already has the bytes (legacy row OR previous expansion),
+      // skip the network call entirely.
+      const bytesAlreadyHere = effectiveValue.includes('data:image/');
+      if (!bytesAlreadyHere && row.execution_id) {
+        setFetching(true);
+        setFetchError(null);
+        try {
+          const full = await fetchEventMetaOut({
+            execution_id: row.execution_id,
+            ts: row.ts,
+            email: row.email,
+            action: row.action,
+          });
+          setFetchedValue(full);
+        } catch (e: any) {
+          setFetchError(e?.message ?? String(e));
+          setFetching(false);
+          return;
+        }
+        setFetching(false);
+      }
+      setExpanded(true);
+    };
+    return (
+      <td className="py-1.5 px-3 max-w-md">
+        <button
+          type="button"
+          onClick={onClick}
+          disabled={fetching}
+          className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 disabled:opacity-60 disabled:cursor-progress transition-colors px-2.5 py-1 text-[11px] font-medium text-slate-700"
+          title="Lazy-load the row's base64 bytes and render thumbnails. The list endpoint omits these to keep its payload small."
+        >
+          <span aria-hidden="true">▸</span>
+          <span>
+            {fetching
+              ? `Loading ${declaredCount} image${plural}…`
+              : `See ${declaredCount} image${plural}`}
+          </span>
+        </button>
+        {fetchError && (
+          <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{fetchError}</div>
+        )}
+      </td>
+    );
+  }
+
   const shown = images.slice(0, MAX_IMAGES_PER_CELL);
   const extra = images.length - shown.length;
   return (
@@ -274,6 +358,13 @@ const MetaOutCell = ({ value, onOpen }: {
         {extra > 0 && (
           <span className="font-mono text-[10px] text-slate-400">+{extra}</span>
         )}
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="ml-1 text-[10px] text-slate-400 hover:text-slate-600 underline"
+        >
+          hide
+        </button>
       </div>
     </td>
   );
@@ -329,9 +420,11 @@ const EventsView = ({ rows }: { rows: UsageRow[] }) => {
             <td className="py-1.5 px-3">{r.email}</td>
             <td className="py-1.5 px-3 text-slate-600">{r.tab}</td>
             <td className="py-1.5 px-3 font-semibold">{r.action}</td>
-            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500" title={r.execution_id}>{r.execution_id || '—'}</td>
+            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-[110px] truncate" title={r.execution_id}>
+              {r.execution_id ? (r.execution_id.length > 10 ? `${r.execution_id.slice(0, 8)}…` : r.execution_id) : '—'}
+            </td>
             <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={r.meta}>{r.meta}</td>
-            <MetaOutCell value={r.meta_out} onOpen={openLightbox} />
+            <MetaOutCell row={r} onOpen={openLightbox} />
           </tr>
         ))}
       </tbody>
@@ -712,6 +805,7 @@ export const DashboardPage = () => {
         meta_out: typeof r.meta_out === 'string' ? r.meta_out : (r.meta_out ? JSON.stringify(r.meta_out) : ''),
         error_message: String(r.error_message ?? ''),
         execution_id: String(r.execution_id ?? ''),
+        image_count: typeof r.image_count === 'number' ? r.image_count : 0,
       }));
       normalized.sort((a, b) => (a.ts < b.ts ? 1 : -1));
       setRows(normalized);
