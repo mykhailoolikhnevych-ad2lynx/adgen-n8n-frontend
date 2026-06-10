@@ -69,6 +69,13 @@ export interface ImageVariant {
   metaCopy: string;
   cta: string;
   fileName?: string;
+  /** Per-image compliance verdict from the Compliance Agent (Image) — n8n only
+   *  runs this for Preset Custom / Saved variants. Standard presets (A/B/C/D)
+   *  default to compliant: true with empty reason fields. */
+  compliant?: boolean;
+  complianceType?: string;
+  complianceDescription?: string;
+  policyReference?: string;
 }
 interface CreativeTranslation {
   metaTitle: string;
@@ -1161,6 +1168,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         a: 1, b: 2, c: 3, d: 4, custom: 'custom',
       };
 
+      // Per-key compliance reader. Defaults to compliant=true when the field
+      // is missing (A/B/C/D bypass the Compliance Agent (Image), legacy
+      // responses don't carry these fields at all).
+      const readCompliance = (suffix: string) => {
+        const compliantField = result[`compliant_${suffix}`];
+        const compliant = typeof compliantField === 'boolean' ? compliantField : true;
+        return {
+          compliant,
+          complianceType: readString(`compliance_type_${suffix}`),
+          complianceDescription: readString(`compliance_description_${suffix}`),
+          policyReference: readString(`compliance_policy_${suffix}`),
+        };
+      };
+
       let images: ImageVariant[] = [];
       const keyed = Object.entries(result)
         .filter(([k, v]) => /^image_[a-z0-9]+_url$/i.test(k) && typeof v === 'string')
@@ -1171,7 +1192,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           const metaTitle = readString(`meta_title_${suffix}`) || readString('meta_ad_title');
           const metaCopy  = readString(`meta_copy_${suffix}`)  || readString('meta_ad_copy');
           const cta       = readString(`banner_cta_${suffix}`);
-          return { suffix, url: v as string, style, metaTitle, metaCopy, cta };
+          const compliance = readCompliance(suffix);
+          return { suffix, url: v as string, style, metaTitle, metaCopy, cta, ...compliance };
         });
 
       if (keyed.length > 0) {
@@ -1181,9 +1203,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           const bi = PRESET_ORDER.indexOf(b.suffix as typeof PRESET_ORDER[number]);
           return (ai === -1 ? PRESET_ORDER.length : ai) - (bi === -1 ? PRESET_ORDER.length : bi);
         });
-        images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta }) => ({
+        images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta, compliant, complianceType, complianceDescription, policyReference }) => ({
           url, style, metaTitle, metaCopy, cta,
           fileName: buildCreativeFilename(fileMeta, PRESET_SLOT[suffix] ?? suffix),
+          compliant, complianceType, complianceDescription, policyReference,
         }));
       } else if (Array.isArray(result.images)) {
         // Legacy fallback — older n8n versions only returned the flat array. Numbers
