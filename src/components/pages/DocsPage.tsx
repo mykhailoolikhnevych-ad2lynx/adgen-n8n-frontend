@@ -113,6 +113,9 @@ const PromptBasesView = () => {
   const [editingId, setEditingId] = useState<string | number | null>(null);
   const [busy, setBusy] = useState<'saving' | 'deleting' | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
+  // Sidebar search — case-insensitive substring on the name. Empty query shows
+  // everything. UX matches the GEO / Language comboboxes in Creatives.
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Initial load.
   useEffect(() => {
@@ -196,15 +199,40 @@ const PromptBasesView = () => {
 
   return (
     <div className="flex h-full w-full gap-4 overflow-hidden">
+      {(() => {
+        // Filtered view of the library. Empty query is the full list. Match is
+        // case-insensitive substring on the name (same shape as the GEO /
+        // Language comboboxes elsewhere in the app).
+        const trimmedQuery = searchQuery.trim().toLowerCase();
+        const filteredPrompts = trimmedQuery
+          ? prompts.filter((p) => p.name.toLowerCase().includes(trimmedQuery))
+          : prompts;
+        return (
+          <>
       {/* Sidebar list */}
       <aside className="w-72 shrink-0 bg-white rounded-xl border shadow-sm overflow-y-auto flex flex-col">
-        <div className="p-3 border-b sticky top-0 bg-white z-10">
-          <h3 className="font-bold text-sm">Saved prompts</h3>
-          <p className="text-[11px] text-slate-500 mt-0.5">
-            {fetchStatus === 'loading' && 'loading…'}
-            {fetchStatus === 'error' && <span className="text-red-600">load failed</span>}
-            {fetchStatus === 'success' && `${prompts.length} shared with the team`}
-          </p>
+        <div className="p-3 border-b sticky top-0 bg-white z-10 space-y-2">
+          <div>
+            <h3 className="font-bold text-sm">Saved prompts</h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              {fetchStatus === 'loading' && 'loading…'}
+              {fetchStatus === 'error' && <span className="text-red-600">load failed</span>}
+              {fetchStatus === 'success' && (
+                trimmedQuery
+                  ? `${filteredPrompts.length} of ${prompts.length} match`
+                  : `${prompts.length} shared with the team`
+              )}
+            </p>
+          </div>
+          {prompts.length > 0 && (
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by name…"
+              className="w-full text-xs border rounded-md px-2 py-1.5 bg-white"
+            />
+          )}
         </div>
         {fetchStatus === 'error' && fetchError && (
           <div className="p-3 text-xs text-red-600 whitespace-pre-wrap">{fetchError}</div>
@@ -214,9 +242,14 @@ const PromptBasesView = () => {
             No prompts yet. Use the form to add the first one.
           </div>
         )}
-        {prompts.length > 0 && (
+        {prompts.length > 0 && filteredPrompts.length === 0 && (
+          <div className="p-3 text-xs text-slate-400 italic">
+            No prompts match “{searchQuery.trim()}”.
+          </div>
+        )}
+        {filteredPrompts.length > 0 && (
           <ul className="divide-y">
-            {prompts.map((p) => {
+            {filteredPrompts.map((p) => {
               const isEditing = p.id === editingId;
               return (
                 <li
@@ -325,6 +358,9 @@ const PromptBasesView = () => {
           </Button>
         </div>
       </div>
+          </>
+        );
+      })()}
     </div>
   );
 };
