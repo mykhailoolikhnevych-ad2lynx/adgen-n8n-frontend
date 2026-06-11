@@ -900,7 +900,7 @@ const KnowledgeBaseView = () => {
             {/* Module header */}
             <header>
               <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                База знань
+                Knowledge Base
               </div>
               <h1 className="text-2xl font-bold text-slate-900 mt-1">{mod.label}</h1>
               <p className="text-[15px] text-slate-600 mt-1.5 leading-relaxed">{mod.tagline}</p>
@@ -1239,7 +1239,7 @@ export const DocsPage = ({ isAdmin }: DocsPageProps) => {
           }`}
           aria-current={section === 'kb' ? 'page' : undefined}
         >
-          База знань
+          Knowledge Base
         </button>
         {isAdmin && (
           <button
@@ -1252,7 +1252,7 @@ export const DocsPage = ({ isAdmin }: DocsPageProps) => {
             }`}
             aria-current={section === 'prompts' ? 'page' : undefined}
           >
-            База промтів
+            Prompts Base
           </button>
         )}
       </div>
