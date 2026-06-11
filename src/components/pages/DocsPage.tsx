@@ -615,40 +615,987 @@ HARD RULES:
   ],
 };
 
-// ---------- Article + Creatives — short placeholders for now ----------
+// ---------- ARTICLE module ----------
 
 const ARTICLE_MODULE: KBModule = {
   id: 'article',
   label: 'Article',
-  tagline: 'Переписування статті з прив\'язкою до SERP — у тому стилі і довжині, які ти обираєш.',
+  tagline: 'Лендінг-стаття під RSOC — топ-10 Google переписується у твоєму режимі (Teaser / Balanced / Detailed) і повертається готовою HTML-сторінкою.',
   sections: [
     {
-      id: 'ar-soon',
-      label: 'Незабаром',
+      id: 'ar-overview',
+      label: 'Огляд',
       blocks: [
         {
+          kind: 'p',
+          text: 'Article — інструмент під RSOC-арбітраж (Related Search on Content). Ти даєш тему, GEO і мову. Бекенд паралельно парсить топ-10 видачі Google, чистить кожну сторінку у фактологічний дайджест, а потім переписує все в нову статтю — у тому режимі, який ти обрав. На виході — готова HTML-сторінка, яку можна одразу віддати під лендінг із Related Searches.',
+        },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'SERP-збір', text: 'SearchAPI.io тягне топ-10 органіки під твій GEO.' },
+            { title: 'Jina-парсинг', text: 'Кожна стаття з топ-10 пропускається через r.jina.ai — отримуємо чистий текст без меню, реклами і футерів.' },
+            { title: 'Research digest', text: 'GPT-5.1 у ролі дослідницького аналітика стискає кожну сторінку у ~250–350 слів фактів, цифр, діапазонів, термінології. Сміття викидається.' },
+            { title: 'Aggregate', text: 'Усі дайджести зливаються в один research-блок — це сировина для письма.' },
+            { title: 'Генерація статті', text: 'GPT-5.1 пише статтю в одному з трьох режимів: Teaser, Balanced або Detailed. Формат жорсткий: 16 рядків (h1, p1, h2, p2, …, h8, p8).' },
+            { title: 'Convert to HTML', text: 'Код розбирає 16 рядків у HTML-сторінку зі стилями (карточний layout, типографіка, breakpoints).' },
+          ],
+        },
+        {
           kind: 'note',
-          title: 'У роботі',
-          text: 'Повна документація по Article вийде наступним проходом. Коротко: ти обираєш тему, GEO, мову і режим письма. Воркфлоу парсить топ-10 SERP і переписує його у статтю обраного стилю.',
+          title: 'RSOC — як це монетизується',
+          text: 'Стаття — це лендінг під платний трафік. Прямо після вступу (між p1 і першими секціями) сидить блок Related Searches. Гроші капають, коли користувач клікає по одному з ключів у цьому блоці. Завдання статті — підтвердити, що тема реальна, дати достатньо субстанції, але не закрити персональне питання читача — інакше клікати немає сенсу.',
+        },
+      ],
+    },
+    {
+      id: 'ar-inputs',
+      label: 'Поля, які ти заповнюєш',
+      blocks: [
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Article topic', v: 'Тема статті. Може бути ключем (anchor) або повним заголовком. Жорстке правило: якщо тема має 5+ слів, вона стає h1 ДОСЛІВНО (символ у символ). Менше 5 слів — модель легенько розширює, не викидаючи жодного слова.' },
+            { k: 'GEO', v: 'Ринок, під який пишемо. GEO впливає одразу на дві речі: gl-параметр у SearchAPI (видача, специфічна для країни) і регіональні норми у самій статті (валюта, термінологія, регулятори, ідіоми).' },
+            { k: 'Language', v: 'Мова статті. Жорстко контролюється: жодних домішок з інших варіантів локалі (наприклад, кастильські форми в латиноамериканській іспанській — заборонені).' },
+            { k: 'Mode (1 / 2 / 3)', v: '1 = Balanced, 2 = Teaser, 3 = Detailed. Це різні промти з різними стратегіями утримування читача. Деталі — нижче.' },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'ar-serp',
+      label: 'Етап 1 — SERP top-10',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Тема відправляється у SearchAPI.io з engine = google і кодом країни, витягнутим з GEO. Беремо перші 10 органічних результатів — це і є наша сировина для аналізу.',
+        },
+        {
+          kind: 'tip',
+          text: 'Чим точніше тема відповідає інтенту RSOC-ключа, тим релевантніший топ-10 — і тим краща стаття на виході. Розмиті теми (на кшталт «фінанси») дають загальний топ і слабкий research digest.',
+        },
+      ],
+    },
+    {
+      id: 'ar-jina',
+      label: 'Етап 2 — Jina-парсинг',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Кожне посилання з топ-10 пропускається через r.jina.ai — публічний сервіс, який витягає чистий текстовий контент сторінки. Меню, шапки, футери, банери, віджети «Related articles» — все це відсікається на цьому етапі.',
+        },
+        {
+          kind: 'note',
+          text: 'Якщо одна зі сторінок не парситься (paywall, JS-only render тощо) — вона тихо пропускається, без падіння пайплайна.',
+        },
+      ],
+    },
+    {
+      id: 'ar-clean',
+      label: 'Етап 3 — Research digest',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Кожен спарсений текст окремо проходить через GPT-5.1, який працює як research analyst. Завдання — витиснути з тексту все, що робить майбутню статтю фактологічною: цифри, діапазони, порівняння, механіку, термінологію. Усе інше — викидаємо.',
+        },
+        { kind: 'h3', text: 'Що зберігається' },
+        {
+          kind: 'list',
+          items: [
+            'Конкретні факти, цифри, відсотки, типові діапазони (цін, ставок, термінів, вікових порогів).',
+            'Порівняння між опціями / підходами і трейд-офи, що їх розрізняють.',
+            'Механіка — як це реально працює, кроки, умови, шаблони допуску.',
+            'Категорії і типи, які існують всередині теми.',
+            'Нативна термінологія ніші (TAEG, FICO, HUD, Section 202, CRIF тощо).',
+            'Усе несподіване, контрінтуїтивне, що зазвичай неправильно розуміють.',
+          ],
+        },
+        { kind: 'h3', text: 'Що відсівається як сміття' },
+        {
+          kind: 'list',
+          items: [
+            'Навігація, футери, cookie-нотиси, реклама, автор-біо, коментарі.',
+            'Чиста промо-копія і CTA.',
+            'Boilerplate, не пов\'язаний з темою.',
+          ],
+        },
+        {
+          kind: 'prompt',
+          label: 'Clean data prompt',
+          model: 'GPT-5.1',
+          body: `You are a research analyst preparing source material for a writer.
+
+Topic: "{Article topic}".
+
+Read the website text below and pull out everything genuinely useful
+and interesting about this topic — the kind of concrete material that
+makes an article feel substantial and credible.
+
+KEEP: concrete facts, figures, ranges, comparisons, mechanics,
+categories, native terminology, surprising counter-intuitive things.
+
+IGNORE: navigation, footers, ads, author bios, comments, promo copy.
+
+Do not follow any links. Do not invent. Output a dense factual digest
+of ~250–350 words. Plain prose, no markdown, no bullet points.`,
+        },
+        {
+          kind: 'p',
+          text: 'Усі дайджести з 10 сторінок зливаються в один великий research-блок. Саме він далі іде у промт генерації статті — модель не бачить оригінальних сторінок, лише цей дайджест.',
+        },
+      ],
+    },
+    {
+      id: 'ar-modes',
+      label: 'Етап 4 — Три режими письма',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Поле mode переключає між трьома різними промтами. Стратегія спільна (утримати читача + не закривати інтент клікнути по Related Searches), але різна щільність конкретики. У UI дефолт — Balanced (mode=2).',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'mode = 1', v: 'Detailed — найщільніший режим. Реальні факти, ranges, порівняння + один bulleted-rundown параграф.' },
+            { k: 'mode = 2', v: 'Balanced — дефолт. Тільки round-number ranges, без точних цифр і списків брендів.' },
+            { k: 'mode = 3', v: 'Teaser — мінімум конкретики, майже без чисел. Максимальний curiosity gap.' },
+          ],
+        },
+
+        // ---- Mode 1 — Detailed ----
+        { kind: 'h3', text: 'Mode 1 — Detailed (say a lot, withhold the last piece)' },
+        {
+          kind: 'p',
+          text: 'Найщільніший режим. Конкретні факти, типові ranges, порівняння — але без персонального вердикту: яка опція саме для читача, скільки саме він заплатить, кого саме обрати. У Detailed обов\'язково є один параграф (зазвичай p5) з трьома буллетами «• »: перші два — конкретика, третій — той самий фактор, що ВИРІШУЄ для читача, але навмисно залишений відкритим.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Detailed — system message (abridged)',
+          model: 'GPT-5.1',
+          body: `You are a senior content writer for RSOC (Related Search on
+Content) landing pages. Your article runs as a paid-traffic landing
+page with a Google AFS Related Searches keyword box embedded right
+after the introduction. The business earns when a reader clicks one
+of those keywords.
+
+LANGUAGE: {language} only — match regional spelling and idioms.
+GEO: {GEO} — write for that geographic market.
+
+THE STRATEGY — SAY A LOT, WITHHOLD THE LAST PIECE
+A bland article that says nothing makes the reader bounce. A complete
+article that answers everything leaves no reason to click. Write the
+one that does both: rich, specific, concrete so the reader trusts it
+and stays — while withholding the one personalized answer (which
+option is right for THEM, the exact figure for THEIR case).
+
+USE NUMBERS AND COMPARISONS
+- Typical ranges ("monthly costs commonly fall within a wide band")
+- Comparisons between options with their trade-offs
+- Concrete mechanics, eligibility patterns, timeframes from the
+  research digest
+
+WHAT TO HOLD BACK (the reader's decisive personal answer only):
+- The single "best" choice for their exact situation
+- The precise figure that would apply to THEM
+- The one named provider/program/product to pick
+
+FIRST PARAGRAPH (p1, 50-65 words) MUST:
+1. Confirm the topic is real in the first 1-2 sentences
+2. Use the exact keyword terminology from the topic
+3. Be concrete and interesting right away (no "in today's world")
+4. Signal that the right answer is situational
+
+THE BULLET RUNDOWN (REQUIRED — exactly one body paragraph, e.g. p5):
+One short lead sentence introducing the points.
+• First point — concrete, with a number, range, or comparison
+• Second point — concrete
+• Third — the factor that actually decides it, named but left open
+
+WORD COUNTS (strict):
+- p1: 50-65 words
+- p2-p8: 85-110 words each
+- Total body: 750-850 words`,
+        },
+
+        // ---- Mode 2 — Balanced ----
+        { kind: 'h3', text: 'Mode 2 — Balanced (за замовчанням)' },
+        {
+          kind: 'p',
+          text: 'Використовує круглі діапазони, не точні цифри. «Ставки зазвичай у межах 5–9 % залежно від профілю» — так. «Ставка 5.44 % APR» — заборонено. У кожному body-абзаці p2–p8 має бути щонайменше один round-number діапазон. Цільова щільність: 7–10 діапазонів на статтю.',
+        },
+        {
+          kind: 'example',
+          label: 'Що таке round-number range',
+          body: `❌ ЗАНАДТО РОЗМИТО: "Rates depend on your profile"
+❌ ЗАНАДТО ТОЧНО:  "Rates start at 5.44% APR"
+✅ ПРАВИЛЬНО:      "Rates generally start in the mid single digits,
+                    around 5 to 7 percent for strong credit profiles"`,
+        },
+        {
+          kind: 'prompt',
+          label: 'Balanced — system message (abridged)',
+          model: 'GPT-5.1',
+          body: `You are a writer for RSOC landing pages. The business gets paid when
+readers click the Related Searches block.
+
+LANGUAGE: {language} only.  GEO: {GEO}.
+
+The sweet spot is CALIBRATED CREDIBILITY: round-number ranges that
+signal scale and feel substantive, while withholding exact figures
+that would close the reader's intent.
+
+CORE DISTINCTION:
+- Exact figures CLOSE intent ("5.44% APR" — no need to click)
+- Round-number ranges OPEN intent ("around 5 to 9 percent depending
+  on profile" — reader has scale but needs to drill into their case)
+
+REQUIRED (round-number ranges):
+- "around 5 to 9 percent", "in the low double digits, often 10 to 14"
+- "typically 3 to 6 years", "anywhere from a few years up to 7 or 8"
+- "commonly 1 to 3 percentage points higher"
+- "a few thousand dollars in interest over the loan's life"
+- "around 30 days", "about half a percentage point"
+- The number that appears IN THE TOPIC ITSELF
+- Category terminology (TAEG, FICO, APR, HUD, CRIF, NHS, ...)
+
+FORBIDDEN (exact figures presented as facts):
+- "5.44% APR", "$25,000 loan", "48 months", "FICO 720+"
+- Specific dates ("January 15"), exact stats ("87% of applicants")
+- Brand-specific rate quotes
+- Enumerated comparison tables (no listing 5 providers with rates)
+
+p1 STRICTEST RULES:
+- ZERO numbers in p1 except the number in the topic itself
+- Confirm topic real, match keyword terminology, indicate variability
+- 50-60 words, strict
+
+DENSITY CHECK before output: count round-number ranges in p2-p8.
+Need 7-10 with at least ONE per paragraph. Below target = rewrite.
+
+p2-p8: 75-110 words each, hard ceiling 800 total. Shorter often better.`,
+        },
+
+        // ---- Mode 3 — Teaser ----
+        { kind: 'h3', text: 'Mode 3 — Teaser (агресивне утримання)' },
+        {
+          kind: 'p',
+          text: 'Ніяких точних цифр (крім тих, що в самій темі). Ніяких списків брендів. Ніяких case studies. Підтверджує, що тема реальна, натякає на варіативність — і йде далі. Підходить для холодного Meta-трафіку на L1-Unaware / L2-Problem-Aware аудиторії, де щільна стаття «закриє» інтерес.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Teaser — system message (abridged)',
+          model: 'GPT-5.1',
+          body: `You are a writer for RSOC landing pages. Articles run as paid-traffic
+landing pages with a Google AFS Related Searches block embedded
+mid-article. The business gets paid when readers click that block.
+
+LANGUAGE: {language} only.  GEO: {GEO}.
+
+YOUR REAL JOB: write articles that confirm the topic is real and
+indicate the answers are nuanced, while WITHHOLDING the concrete
+specifics. Readers must finish curious enough to click the related
+searches box to get the details you intentionally did not give them.
+
+A "comprehensive guide" that fully answers everything KILLS revenue.
+An article that establishes credibility and opens curiosity loops
+MAXIMIZES revenue. Confirmed by A/B testing across hundreds of
+campaigns.
+
+HARD RULES (NEVER VIOLATE):
+1. NO SPECIFIC NUMBERS unless the number is part of the topic itself.
+   FORBIDDEN: exact APRs (3.59%), prices ($300), terms (84 months),
+   percentages (30% of income), dates, statistics ("87% of...").
+   Replace with category language: "rates vary by provider and
+   profile", "long contract durations", "fees depend on the program".
+2. NO LIST OF SPECIFIC BRAND NAMES. Use "several major banks",
+   "specialized lenders", "various established providers".
+3. NO CASE STUDIES, ANECDOTES, OR TESTIMONIALS.
+4. NO ACADEMIC PHRASING. Never "Studies have shown", "Research
+   indicates", "Data suggests", "According to experts".
+5. NO EXHAUSTIVE LISTS that close exploration intent.
+6. NO GENERIC AI-STYLE OPENERS ("In today's [adjective] world...").
+7. NO PROMOTIONAL LANGUAGE OR FAKE URGENCY.
+8. NO REFERENCES TO ON-PAGE WIDGETS, SOURCES, LINKS, OR LISTS.
+
+INTENT CLASSIFICATION (internal):
+A. STRATEGIC EXPLORATION → aggressive withholding
+B. UTILITY / LOOKUP      → soft withholding (keep the core utility)
+C. GEO-SPECIFIC          → stay narrow to the keyword's geography
+D. TRUST-HEAVY COMMERCIAL → calm informational tone, withhold rates
+
+WORD COUNTS:
+- p1: 50-60 words
+- p2-p8: 75-100 words each
+- Total body: 650-800 words. 800 is the MAX, not the goal.`,
+        },
+
+        // ---- Choosing a mode ----
+        { kind: 'h3', text: 'Який режим обирати' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Detailed (1)', v: 'Цінні нішеві теми, де читач очікує субстанції (фінансові продукти, програми, юридика). Bulleted rundown додає структурного скану.' },
+            { k: 'Balanced (2)', v: 'Дефолт. Дає достатньо щільності, щоб читач довірився, але без точних цифр, які закрили б питання.' },
+            { k: 'Teaser (3)', v: 'Стратегічна exploration інтенту, холодна Meta-аудиторія, тема, де занадто конкретна стаття уб\'є RSOC-економіку.' },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'ar-structure',
+      label: 'Жорстка структура виводу',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Усі три режими повертають той самий формат: рівно 16 рядків з префіксами h1: … p8:. Парсер далі бере ці рядки і збирає HTML. Будь-який інший вивід ламає парсер.',
+        },
+        {
+          kind: 'example',
+          label: 'Структура виводу',
+          body: `h1: [заголовок — рівний темі, якщо ≥5 слів]
+p1: [вступ 50–60 слів — без жодної цифри, крім тієї, що в темі]
+h2: [3–8 слів]
+p2: [75–110 слів]
+h3:
+p3:
+...
+h8:
+p8: [фінальний параграф — НЕ підписка, НЕ "see below", НЕ "the box"]`,
+        },
+        {
+          kind: 'warn',
+          title: 'Правило h1',
+          text: 'Якщо твоя тема має 5 або більше слів — h1 буде нею ДОСЛІВНО (той же порядок слів, та сама пунктуація, той же регістр, без перефразовування). Це жорсткий override на рівні коду — навіть якщо модель спробує «креативно покращити», скрипт після генерації замінить h1 на оригінальний topic.',
+        },
+        {
+          kind: 'warn',
+          title: 'Що заборонено в самій статті',
+          text: 'Жодних посилань на «related searches», «the box», «links below/above», «sources», «on this page». Стаття рендериться без видимого блоку джерел і без візуальних посилань — будь-яка згадка ламає враження. p8 має закриватися як звичайний інфо-абзац, не як sign-off у віджет.',
+        },
+      ],
+    },
+    {
+      id: 'ar-html',
+      label: 'Етап 5 — Convert to HTML',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Останній код-крок розбирає 16 рядків (h1:/p1:/…) у HTML-сторінку зі вшитими стилями. Карточний layout, типографіка, медіа-запити для мобілки — все включено. Сторінка повертається у webhook як text/html. Її можна одразу відкрити в браузері або вшити в лендінг.',
+        },
+        {
+          kind: 'note',
+          text: 'Параграфи з буллетами (Detailed mode) розпізнаються автоматично: рядки з префіксом «• » збираються у <ul><li>, решта — у <p>.',
         },
       ],
     },
   ],
 };
 
+// ---------- CREATIVES module ----------
+
 const CREATIVES_MODULE: KBModule = {
   id: 'creatives',
   label: 'Creatives',
-  tagline: 'Angles → концепти → батчі банерних варіантів.',
+  tagline: 'Чотири колонки зліва направо: 1. Input Data → 2. Angles → 3. Concepts → 4. Creatives batches. Кожна колонка — окремий етап пайплайна і окремий HITL-чекпойнт.',
   sections: [
     {
-      id: 'cr-soon',
-      label: 'Незабаром',
+      id: 'cr-overview',
+      label: 'Огляд',
       blocks: [
         {
+          kind: 'p',
+          text: 'Сторінка Creatives розбита на 4 колонки. Кожна — окремий етап пайплайна: ти заповнюєш одну, тиснеш кнопку, отримуєш вивід у наступній, обираєш потрібне і йдеш далі. Між колонками 2 → 3 і 3 → 4 — точки, де вирішує оператор, не AI.',
+        },
+        {
+          kind: 'steps',
+          items: [
+            { title: '1. Input Data', text: 'URL статті + 1–3 ключі + GEO + мова реклами + buyer + campaign name. Тиснеш Generate.' },
+            { title: '2. Angles', text: 'AI повертає 3 стратегічні підходи на 3 різних когнітивних тригерах. Обираєш один → Select & Next.' },
+            { title: '3. Concepts', text: 'З обраного angle AI робить 3 тактичні варіанти банера. Кожен — Hook + Accent + CTA + Meta-копія + compliance verdict. Обираєш один → Generate creatives.' },
+            { title: '4. Creatives batches', text: 'Той самий концепт рендериться у 4 візуальних стилях (A / B / C / D), плюс можна додати Custom і Saved. Завантажуєш ZIP або шлеш у Telegram.' },
+          ],
+        },
+        {
           kind: 'note',
-          title: 'У роботі',
-          text: 'Повна документація по Creatives вийде наступним проходом. Коротко: чотири колонки — input, angles, concepts, batches. Заповнюєш форму, генеруєш angles, обираєш одну, щоб розгорнути її в концепти, потім кожен концепт перетворюється в батч банерних варіантів.',
+          title: 'Чому під капотом саме так',
+          text: 'Між колонками стоять 3 AI-агенти: Marketing Analyst (бачить input → готує фундамент), Strategist (будує angles), Copywriter (будує concepts). Візуал — це окрема image-генерація з vision-перевіркою. Деталі того, що саме робить кожен агент, — у відповідній колонці нижче.',
+        },
+      ],
+    },
+
+    // -------- 1. Input Data --------
+    {
+      id: 'cr-col1',
+      label: '1. Input Data',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Стартова точка всього пайплайну. Поля визначають, ЩО продаємо (стаття), КОМУ (GEO + ключі), КИМ (buyer) і в межах якої кампанії. ШІ використовує URL статті + ключі, щоб зрозуміти аудиторію — далі все будується довкола цього.',
+        },
+        { kind: 'h3', text: 'Поля колонки' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Article URL *', v: 'Лендінг, на який поведе банер. Jina.ai парсить його — далі AI бачить лише title + перший абзац як primary context.' },
+            { k: 'Keyword 1 *', v: 'Головний RSOC-ключ. Це PRIMARY-сигнал: усе подальше будується довкола інтенту саме цього ключа, не довкола статті.' },
+            { k: 'Keyword 2 / 3', v: 'Опціональні додаткові ключі — розширюють розуміння аудиторного сегмента.' },
+            { k: 'GEO *', v: 'Ринок під Meta-таргет. Впливає на регіональні референси у текстах і на §7 compliance (заборона «Near Me» / «in your area»).' },
+            { k: 'Ad language', v: 'Мова фінальних рекламних текстів. Застосовується вже на колонці 3 (Concepts) — хуки, акценти, CTA, Meta-копія повертаються цією мовою. Список залежить від GEO.' },
+            { k: 'Buyer *', v: 'Ім\'я медіабайєра. Йде в назви файлів і метаданих батча — для трекінгу хто запустив.' },
+            { k: 'Campaign Name *', v: 'Ім\'я кампанії. Теж зашивається у file naming, щоб батч можна було впізнати в Telegram і в Ads Manager.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'Чому стаття — primary, але другорядна за вагою',
+          text: 'Користувач у feed Meta ще не бачить статті — він бачить банер. Банер має продати ПЕРЕХІД, а не повністю переказати статтю. Тому AI свідомо бачить лише teaser статті (title + перший абзац). Це не баг, це фіча.',
+        },
+        {
+          kind: 'p',
+          text: 'Тиснеш Generate → запускається перший AI-агент (Marketing Analyst, Claude Opus). Він аналізує ключі + статтю і повертає фундамент: keyword_intent, content_promise, bridge_point, 3 audience clusters, content_anchors, compliance_note. Цей фундамент ти безпосередньо не бачиш — він іде у наступного агента.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Agent 1 — Marketing Analyst (abridged)',
+          model: 'Claude Opus 4.7',
+          body: `You are Agent Marketing Analyst for an RSOC creative pipeline.
+
+CONTEXT: RSOC arbitrage. We buy Meta impressions → user clicks
+creative → lands on article → sees RSOC keyword block → clicks
+keyword → we get paid. Creative must bridge Meta feed to article.
+
+PRIMACY RULE: the KEYWORDS are the leading input, not the article.
+Keywords tell us what the user searched for and will see as
+clickable on the landing page. The article headline + first
+paragraph only provide tone/voice context.
+
+═══════ METHOD (6 deterministic steps) ═══════
+
+STEP 1 — KEYWORD INTENT:
+  core_need, qualifier, intent_modifier, reasoning
+
+STEP 2 — CONTENT PROMISE (from title + p1 only):
+  main_promise, curiosity_angle, emotional_payoff
+
+STEP 3 — BRIDGE POINT:
+  Single sentence, 15-25 words. core_need + main_promise.
+
+STEP 4 — 3 HOT AUDIENCE CLUSTERS (keyword-grounded):
+  Goal: 3 HOTTEST clusters. Not 5, not 4 — exactly 3. Top-of-mind.
+  HARD RULE: every cluster must be someone who would plausibly type
+  ONE OF THE INPUT KEYWORDS into Google themselves.
+  ❌ proxy personas (adult children searching for parents) — reject
+  ❌ supply-side segments (real-estate agents) — reject
+  ❌ generic filler ("people curious about X") — reject
+
+STEP 5 — CONTENT ANCHORS:
+  3-5 concrete nouns from the article (title + p1):
+  - named or directly referenced
+  - photographable / concrete (things, places, documents, actions)
+  - not generic
+
+STEP 6 — COMPLIANCE NOTE:
+  Scan keywords + article for §7/§10/§2/§3/§11/§14 risks.`,
+        },
+      ],
+    },
+
+    // -------- 2. Angles --------
+    {
+      id: 'cr-col2',
+      label: '2. Angles',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Тут AI повертає 3 СТРАТЕГІЧНІ підходи до банера — не самі заголовки. Кожен побудований на одному з 5 когнітивних тригерів. Це НЕ три варіанти заголовка, а три різні преміси, навколо яких міг би стояти банер. Обираєш один → Select & Next.',
+        },
+        { kind: 'h3', text: '5 когнітивних тригерів' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'CG  Curiosity Gap', v: 'Loewenstein 1994 — створює інформаційну прірву між тим, що читач знає, і тим, що міг би знати. Найкраще під L1-Unaware аудиторію.' },
+            { k: 'SR  Self-Reference', v: 'Rogers 1977 — активує «це про мене» через ШИРОКІ маркери ідентичності (вік, стадія життя, статус). Жодної вузької персоналізації типу «Раян Гослінг, ти?».' },
+            { k: 'LA  Loss Aversion', v: 'Kahneman & Tversky — фокус на пропущеній вигоді / неклаймнутому бенефіті. ВИСОКИЙ §11 ризик: має звучати інформаційно, не як urgency-CTA.' },
+            { k: 'PI  Pattern Interrupt', v: 'Зриває скрол нерекламним тоном. Звучить як новина / звіт / документ, не як промо.' },
+            { k: 'BS  Belief Shift', v: 'Schwartz — суперечить домінантному припущенню аудиторії. Вимагає, щоб у angle був явно зазначений belief_being_shifted.' },
+          ],
+        },
+        { kind: 'h3', text: 'Що показує картка angle\'а' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Code · Trigger', v: 'Кольорова мітка зверху (CG / SR / LA / PI / BS) і повна назва тригера.' },
+            { k: 'Direction', v: '15–25 слів стратегічного підходу — що стверджує банер, але ще НЕ сам заголовок. Можеш редагувати, якщо хочеш скоригувати кут перед хуками — копірайтер читає саме цей текст.' },
+            { k: 'Hook seed', v: 'Чорнова ідея заголовка на 8–12 слів. Навмисно неповна. Копірайтер з неї робить готовий хук по формулі (F2/F3/F4/F6).' },
+            { k: 'Awareness level', v: 'L1 Unaware (взагалі не шукає тему) або L2 Problem-Aware (знає про проблему, але не про рішення). RSOC-трафік на Meta зазвичай L1–L2.' },
+            { k: 'Emotional anchor', v: 'Одна емоція кута: Discovery / Hope / Relief / Concern / Pride / Indignation / Confidence / Curiosity. Без міксів. Визначає тон хука і настрій візуалу.' },
+            { k: 'Why this works', v: 'Стратегічний guard rail для копірайтера: чому преміса працює і як саме вона лишає прірву, яку закриє Related Searches.' },
+          ],
+        },
+        {
+          kind: 'tip',
+          title: 'Що робити, якщо жоден angle не подобається',
+          text: 'У шапці колонки є кнопка Regenerate — перезапускає Strategist на тих самих даних з input. Виходить інша трійка тригерів. Можна крутити, поки не з\'явиться той самий «о, точно».',
+        },
+        {
+          kind: 'prompt',
+          label: 'Agent 2 — Strategist (abridged)',
+          model: 'Claude Opus 4.7',
+          body: `You are Strategist for an RSOC creative pipeline.
+
+YOUR TASK: receive Agent 1 output → produce 3 strategic angles from
+3 DIFFERENT cognitive triggers. Operator picks 1 → passed to Agent
+3 Copywriter.
+
+YOUR ROLE — STRATEGIC LAYER ONLY. You produce the PREMISE a banner
+will assert. You do NOT write headlines, hooks, or taglines.
+Agent 3 handles tactical realization.
+
+═══════ 5 COGNITIVE TRIGGERS ═══════
+
+CG — Curiosity Gap (Loewenstein 1994)
+SR — Self-Reference (Rogers 1977)        — broad identity, not narrow
+LA — Loss Aversion (Kahneman & Tversky)  — informational, not urgency
+PI — Pattern Interrupt                   — non-ad framing
+BS — Belief Shift (Schwartz)             — requires belief_being_shifted
+
+DEPRECATED: AU (Authority) — too institutional, reads like PSA on
+cold Meta broad. Substitute CG or BS.
+
+═══════ METHOD (5 steps) ═══════
+
+STEP 1 — AWARENESS LEVEL: L1 Unaware or L2 Problem-Aware
+STEP 2 — SELECT 3 DIFFERENT triggers from CG/SR/LA/PI/BS
+        L1 → prefer CG, PI, BS
+        L2 → prefer SR, LA, BS
+        Reject LA when no clear missed benefit (would force §14)
+        Reject BS when no identifiable belief (would invent myth)
+        Reject SR when audience too broad to mark identity
+        Reject PI when content demands explicit promise framing
+
+STEP 3 — DRAFT one angle per trigger (6 fields):
+  direction         — 15-25 words STRATEGIC approach (not a hook)
+  awareness_level   — L1 or L2
+  belief_being_shifted — REQUIRED for BS, null otherwise
+  emotional_anchor  — one of Discovery / Hope / Relief / Concern /
+                       Pride / Indignation / Confidence / Curiosity
+  why_works         — 10-20 words rationale
+  why_this_works    — 25-40 words strategic GUARD RAIL for Agent 3
+  hook_seed         — 8-12 words embryonic concept (intentionally
+                       unfinished — Agent 3 must add formula structure)
+
+STEP 4 — COMPLIANCE CHECK each angle against Agent 1's note
+        (§7 location, §10 personal, §11 aggression, §14 specifics).
+
+STEP 5 — OPERATOR SELECTION NOTE: 1-2 sentences on when each angle
+        is best for operator context.
+
+Return STRICT JSON only. The 3 codes MUST be different. AU forbidden.`,
+        },
+      ],
+    },
+
+    // -------- 3. Concepts --------
+    {
+      id: 'cr-col3',
+      label: '3. Concepts',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'З обраного angle AI робить 3 ТАКТИЧНІ варіанти банера. Кожен — окрема комбінація хук-формули + аспекту аудиторії + готових полів під Meta Ads Manager + compliance-вердикту. Обираєш один → пускаєш у візуальну генерацію.',
+        },
+        { kind: 'h3', text: '4 хук-формули' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'F2 Surprise', v: '«[Несподіваний факт]. [Конкретний контекст].» — несподіванка, потім якір.' },
+            { k: 'F3 Question', v: '«[Питання від третьої особи]. [Інформаційний поворот].» — питання, не у «do you», а у «who / what / how».' },
+            { k: 'F4 Number', v: '«[Число]. [Контекст]. [Поворот].» — свіже конкретне число. Не вікові пороги — це банально.' },
+            { k: 'F6 Contrast', v: '«[Поширена думка]. [Факт, що її перевертає].» — суперечність до загального уявлення.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'F1 Problem і F5 Story — deprecated',
+          text: 'F1 Problem звучить fear-mongery на холодному Meta-broad і валиться по §11 (агресія). F5 Story постійно провокує §14 (вигадані персонажі / цифри). У v15 живі тільки F2, F3, F4, F6.',
+        },
+        { kind: 'h3', text: 'Сумісність trigger ↔ formula' },
+        {
+          kind: 'example',
+          label: 'Whitelist',
+          body: `CG  Curiosity Gap     → F2, F3, F4, F6
+SR  Self-Reference    → F2, F3, F4
+LA  Loss Aversion     → F2, F3, F4
+PI  Pattern Interrupt → F2, F3, F4
+BS  Belief Shift      → F2, F4, F6`,
+        },
+        {
+          kind: 'p',
+          text: 'Формула, яка не у whitelist обраного тригера, відхиляється — навіть якщо хук «звучить добре». Це жорсткий стратегічний gate, не поетика.',
+        },
+        { kind: 'h3', text: 'Поля кожного концепту' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Category', v: 'Аудиторний аспект, який цей концепт тестує. Одна з 8 категорій (див. нижче). Усі 3 концепти тестують 3 РІЗНІ категорії — це жорсткий гейт.' },
+            { k: 'Hook', v: '40–55 символів (макс 60). Головна фраза банера — те, що читач бачить перш за все.' },
+            { k: 'Accent', v: '25–35 символів (макс 40). Другий, менший рядок під хуком. Додає конкретику або підсилює настрій, не дублює хук.' },
+            { k: 'CTA', v: '8–12 символів (макс 15). Тільки з whitelist: Learn More, Read More, Discover More, Read Guide, Find Out, See More, Know More, Read On, Explore. Жодних Apply Now / Buy Now.' },
+            { k: 'Meta ad title', v: '22–27 символів (макс 40). Заголовок оголошення в Ads Manager.' },
+            { k: 'Meta ad copy', v: '100–120 символів (макс 125). Body-копія. Обов\'язково закінчується tail-тегом «Read Guide» (якщо CTA містить «Guide») або «Read Article» — окремою фразою після крапки, без trailing крапки.' },
+            { k: 'Compliance', v: 'Зелений значок = пройшло перевірку, готове до запуску. Жовтий = знайдено можливе порушення; нижче Type / Description / Policy Reference кажуть, що саме.' },
+          ],
+        },
+        { kind: 'h3', text: '8 категорій аудиторного аспекту' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: '1 Demographic', v: 'Сегмент аудиторії — first-time / experienced / single / non-English-native тощо.' },
+            { k: '2 Process Stage', v: 'Етап шляху — research, document gathering, application, waitlist.' },
+            { k: '3 Emotional State', v: 'Що відчуває — overwhelm, relief, doubt, hope, anxiety, confidence.' },
+            { k: '4 Logistical', v: 'Практичний вимір — документи, timeline, cost, eligibility rules.' },
+            { k: '5 Outcome', v: 'Як виглядає «вирішено» — stable cost, independent living, security.' },
+            { k: '6 Comparison', v: 'Проти чого — vs private rental, vs waiting too long, vs «too complicated».' },
+            { k: '7 Identity Marker', v: 'Конкретний штрих ідентичності — pension income, life transition, work history.' },
+            { k: '8 Scope', v: 'Наскільки широка можливість — number of options, types of units, program variety.' },
+          ],
+        },
+        {
+          kind: 'warn',
+          text: 'Якщо всі 3 концепти лягають в одну категорію (наприклад, всі — про documents) — гейт відхиляє вивід і змушує копірайтера переробити. Це найчастіше падіння для свіжих юзерів.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Agent 3 — Copywriter (abridged)',
+          model: 'Claude Opus 4.7',
+          body: `You are Copywriter for an RSOC creative pipeline.
+
+YOUR TASK: given the chosen angle, write 3 creatives using 3 DIFFERENT
+hook formulas. Each formula must be COMPATIBLE with the angle's
+cognitive_trigger. Each creative tests a DIFFERENT aspect from a
+DIFFERENT category.
+
+GUARD RAIL: re-read chosen_angle.direction and why_this_works before
+drafting each hook. Every hook must realize that premise. Drift = fail.
+
+═══════ 4 HOOK FORMULAS ═══════
+F2 Surprise:  [Unexpected fact]. [Named context].
+F3 Question:  [Third-person question]. [Informational pivot].
+F4 Number:    [Number]. [Context]. [Pivot].
+F6 Contrast:  [Common belief]. [Fact that overturns it].
+
+F1 (Problem) and F5 (Story) DEPRECATED — F1 reads fear-mongery, F5
+triggers §14 (invented persons/scenes).
+
+═══════ COMPATIBILITY MATRIX (Step 1B) ═══════
+CG → F2, F3, F4, F6
+SR → F2, F3, F4
+LA → F2, F3, F4
+PI → F2, F3, F4
+BS → F2, F4, F6
+Formula not in whitelist for trigger → reject.
+
+═══════ CROSS-CATEGORY ASPECT PICK ═══════
+Brainstorm 8+ aspects across 8 categories. Pick EXACTLY 3 from 3
+DIFFERENT categories. Categories:
+  1 Demographic  2 Process Stage  3 Emotional  4 Logistical
+  5 Outcome      6 Comparison     7 Identity   8 Scope
+Default-to-2+4 (process + logistics) = lazy. Reject.
+
+═══════ CHARACTER LIMITS ═══════
+banner_hook    40-55  (hard cap 60)
+banner_accent  25-35  (hard cap 40)
+banner_cta      8-12  (hard cap 15) — whitelist only:
+  Learn More, Read More, Discover More, Read Guide, Find Out,
+  See More, Know More, Read On, Explore
+meta_ad_title  22-27  (hard cap 40)
+meta_ad_copy  100-120 (hard cap 125)
+
+META AD COPY TAIL TAG (mandatory):
+  ends with "Read Guide" if banner_cta contains "Guide",
+  otherwise ends with "Read Article".
+  Standalone phrase after a period. No trailing period.
+
+═══════ §12 SUBSTITUTION (mirroring trap) ═══════
+"Free"  → "no-cost" / "through nonprofits" / "covered by"
+"Cash"  → "financial help" / "monthly support"
+"Win"   → "qualify for" / "access" / "receive"
+The keyword may contain banned §12 words — echo the search INTENT,
+not the search VOCABULARY.
+
+ALL HOOKS must pass read-aloud / cold-audience test before output.
+ZERO-TOLERANCE on §7 / §10 / §11 / §12 / §14 violations.`,
+        },
+        { kind: 'h3', text: 'Compliance Agent' },
+        {
+          kind: 'p',
+          text: 'Кожен концепт автоматично перевіряється проти внутрішніх політик: медичні твердження, гарантії кредитів, транзакційна лексика, локаційний таргетинг, фейкові UI-елементи, відповідність статті. Без ретраю — рішення лишається за оператором.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Type', v: 'Категорія порушення — Misleading, False claim, Loan fraud, Location targeting, Article mismatch тощо.' },
+            { k: 'Description', v: 'Короткий опис на 5–10 слів — конкретно, що не так.' },
+            { k: 'Policy Reference', v: 'Внутрішній код політики. Достатньо подивитись на Type — категорія сама пояснює суть.' },
+          ],
+        },
+        {
+          kind: 'prompt',
+          label: 'Compliance Agent — concept text (abridged)',
+          model: 'Claude Opus 4.7',
+          body: `ROLE & SCOPE
+You are a content fact-checking analyst for an arbitrage company.
+Determine whether advertising text complies with internal policies.
+TRAINING analysis only.
+
+INPUT: array of creatives in AIO format:
+  formula, aspect_tested, aspect_category,
+  banner_hook, banner_accent, banner_cta,
+  meta_ad_title, meta_ad_copy
+Optionally: "article" string (Title + Markdown Content).
+
+EVALUATION PRINCIPLE
+Content is COMPLIANT by default. Only flag CLEAR, CONCRETE
+violations. Informational content about legal topics is OK.
+
+ALLOWED (do NOT flag):
+- Informational content that educates
+- Intriguing headlines if not misleading
+- "Learn more / Read more / Discover / Explore" CTAs
+- Brand/product names in informational context
+- References to "our article / guide / review"
+- Banknotes and coins in financial context
+- Capitalized text (capitalization alone is never a violation)
+
+═══════ AD COPY TOPIC COHERENCE ═══════
+meta_ad_title + meta_ad_copy must align thematically with
+banner_hook + banner_accent. Catch obvious mismatches only.
+
+═══════ PROHIBITED (14 policies) ═══════
+1.  Medical Misinformation — cure claims, fake treatments, miracle
+    drugs, close-up needles, before/after medical transformations
+2.  Loans & Credit — guaranteed approval, no credit check, instant
+    approval, fixed rate for everyone
+3.  Financial / Investment Fraud — guaranteed returns, risk-free,
+    "earn $X/week guaranteed", pyramid schemes
+4.  False Urgency / Scarcity — "only today", fake countdowns,
+    "limited offer" without real limit
+5.  Fake UI / Prohibited Symbols — arrows pointing to fake areas,
+    fake buttons, fake notifications, fake X/close, fake cursor
+6.  Adult / Exploitation — nudity, sexual content, gore, hate
+7.  Location Targeting — "Near me", "in your area", dynamic city
+8.  Direct Sales — "Buy now", "Order today", specific prices
+9.  Job / Employment Fraud — guaranteed hire, unrealistic salary
+10. Privacy — asking for name, age, phone, email, address, religion
+11. Aggressive Marketing — guilt, fear-mongering, manipulation
+12. Intellectual Property — counterfeits, false brand affiliation
+13. Government / Document Fraud — fake visas, guaranteed grants
+14. ARTICLE COMPLIANCE (only if "article" field present):
+    14.1-14.5  Cross-validation: title + hooks + accents + meta
+               must be in the same thematic context as article_body.
+               Specific numbers in any field MUST match article_body
+               count (claim "5 symptoms" → article must list 5).
+    14.6  First paragraph ≥ 45 words.
+    14.7  article_body ≥ 700 words total.
+    14.8  Last sentence of p1 must NOT contain "search below",
+          "click these links", or similar immediate-interaction CTAs.
+    14.9  PROHIBITED: claims absent from article_body, wording
+          creating expectations not supported by body, adult content.
+    14.10 PROHIBITED: fabricated facts, non-existent research,
+          fake stats, fake expert attributions.
+
+DECISION GUIDE
+Before flagging, verify:
+1. Does it appear in PROHIBITED above? If no → COMPLIANT.
+2. Check "NOT prohibited" exceptions.
+3. Informational content about a legal topic? Consider context.
+4. Actual deception or just provocative framing? Flag only deception.
+
+OUTPUT FORMAT (STRICT)
+Return ONLY a JSON object. Per creative:
+  compliant         boolean
+  type              one of (Misleading | False claim | Prohibited
+                    symbols | Fake UI | False urgency | Loan fraud |
+                    Financial fraud | Job fraud | Location targeting |
+                    Privacy violation | Aggressive marketing |
+                    Article mismatch | Article quality |
+                    Article content | Other)
+  description       5-10 words
+  policy_reference  which PROHIBITED section (1-14)`,
+        },
+        { kind: 'h3', text: 'Заборонена лексика — найгірші §-блоки' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: '❌ free, 100% free', v: '✅ no-cost, through nonprofits, at no charge, covered by [program]' },
+            { k: '❌ cash, cash assistance', v: '✅ financial help, monthly support, income supplement' },
+            { k: '❌ win, winner', v: '✅ qualify for, receive, access, apply for' },
+            { k: '❌ save big, cheap, discount', v: '✅ lower-cost, reduced rate, more affordable' },
+            { k: '❌ gift, freebie, bonus, reward', v: '✅ included benefit, supplementary resource' },
+            { k: '❌ earn money, make money', v: '✅ supplemental income source (обережно — часто все одно валиться)' },
+          ],
+        },
+        {
+          kind: 'warn',
+          title: 'Mirroring trap: ключ ≠ копія банера',
+          text: 'Якщо у RSOC-ключі є «Free Diapers» / «Cash for Seniors» / «Win a Grant» — це SEO-термін, який юзер вписує в Google. Але у банері ці слова заборонені. Передавай ІНТЕНТ, не VOCABULARY. «Free Diapers» → «Low-Cost Diapers» або «Diapers Covered For Tight Budgets».',
+        },
+        {
+          kind: 'list',
+          items: [
+            '§7 Location — «Near Me», «near you», «local», «in your area», «by zip code».',
+            '§10 Personal — «your X», «for you», «do you», «are you a» (друга особа в питаннях).',
+            '§8 Transactional CTA — «Apply Now», «Get Started», «Claim», «Buy», «Sign Up». Дозволено лише whitelist.',
+            '§11 Aggression — «don\'t miss out», «last chance», «act fast», «limited time».',
+            '§14 Invented specifics — цифри, програми, дати, статистика, ЯКИХ НЕМАЄ у статті.',
+          ],
+        },
+      ],
+    },
+
+    // -------- 4. Creatives batches --------
+    {
+      id: 'cr-col4',
+      label: '4. Creatives batches',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Готові пакети креативів. Один батч = той самий хук / акцент / CTA, відрендерений у 4 різних візуальних стилях (A / B / C / D). Усі 4 використовують один текст — ти тестуєш, як саме візуальний стиль впливає на CTR.',
+        },
+        { kind: 'h3', text: '4 базових візуальних пресети' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'A  YT Thumbnail', v: 'YouTube-thumbnail для віральної реклами — висока насиченість, сильний контраст, жирний хук + кнопка CTA. Кінематографічна подача. Стоп-скрол.' },
+            { k: 'B  Organic Social', v: 'Виглядає як UGC-пост у стрічці. Великий хук з товстою обводкою поверх затемненого фото, декоративні пастельні стікери, курсивний CTA без кнопки.' },
+            { k: 'C  Highlight Block', v: 'Повнокадрове фото + ОДИН однотонний блок зверху з хуком. Без акценту, без CTA. Найпростіший варіант.' },
+            { k: 'D  Illustrated', v: 'Преміум native-ad стиль (як Outbrain/Taboola): редакторська ілюстрація на фоні, жовтий курсивний хук + біла картка + яскравий pill-CTA.' },
+          ],
+        },
+        { kind: 'h3', text: 'Custom і Saved' },
+        {
+          kind: 'p',
+          text: 'Поруч з A/B/C/D є ще два слоти. Custom — твій власний пресет, у якому можна включати / виключати каркасні блоки (Scene, Hook, Accent, CTA) і драгати їх у позицію всередині свого опису. Saved — твої збережені пресети, що шеряться з командою (адмін-функція).',
+        },
+        {
+          kind: 'note',
+          title: 'Що завжди ON у Custom',
+          text: 'Text rules і Forbidden — це guard rails, які не можна вимкнути. Вони рендеряться на дефолтних позиціях: TR на початку, Forbidden у кінці. Чіпи для них не показуються навмисно — щоб байєр випадково не зняв.',
+        },
+        { kind: 'h3', text: 'Image-моделі і aspect ratio' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Nano banana 2 / pro', v: 'google/gemini-3.1-flash-image-preview / gemini-3-pro-image-preview. Дешеві, швидкі, добре тримають текст на банері.' },
+            { k: 'GPT-image2', v: 'openai/gpt-5.4-image-2. Кращий за фотореалістичні сцени, гірший за стилізовані ілюстрації.' },
+            { k: 'Seedream 4.5', v: 'bytedance-seed/seedream-4.5. Сильний у яскравій графіці й clickbait-композиції.' },
+            { k: 'Aspect ratio', v: '1:1 / 16:9 / 9:16 / 4:5. Під feed або stories.' },
+          ],
+        },
+        { kind: 'h3', text: 'Image Compliance (Custom + Saved)' },
+        {
+          kind: 'p',
+          text: 'Згенероване зображення додатково проганяється через vision-агента: перевіряє verbatim-рендер хука / акценту / CTA, заборонені UI-елементи, контент дорослої тематики, медичні гарантії, прямі продажі, локаційний таргетинг, бренди.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Type', v: 'Verbatim mismatch / Fake UI / Adult content / Medical guarantee / Loan guarantee / Direct sales / Brand violation.' },
+            { k: 'Description', v: '5–15 слів — що саме не так у зображенні або в тексті на ньому.' },
+            { k: 'Policy Reference', v: '1 Text rendering / 2 Fake UI / 3 Visual content / 4 Text content / 5 Brand.' },
+          ],
+        },
+        {
+          kind: 'note',
+          text: 'Image Compliance запускається ТІЛЬКИ для Custom і Saved. Базові пресети A/B/C/D написані заздалегідь і не проганяються — вони і так у whitelist.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Compliance Agent (Image) — vision check (abridged)',
+          model: 'google/gemini-3-pro (vision)',
+          body: `ROLE & SCOPE
+You are an image compliance auditor for an internal ad-banner
+training pipeline. You examine ONE banner image and return whether
+it complies with image-only policies.
+
+INPUT
+One image attached + the EXPECTED text overlays the banner is
+supposed to render (HOOK / ACCENT / CTA).
+
+EVALUATION PRINCIPLE
+COMPLIANT by default. Only flag CLEAR, CONCRETE violations.
+
+═══ 5 IMAGE-ONLY POLICIES ═══
+
+1. TEXT RENDERING (verbatim)
+   HOOK / ACCENT / CTA must appear EXACTLY as provided:
+   same words, same count, no duplication, no substitution,
+   no invented words. Capitalization changes are OK.
+   → Flag: Verbatim mismatch
+
+2. FAKE UI ELEMENTS
+   Prohibited: arrows pointing to fake clickable areas,
+   fake buttons/checkboxes/radios simulating interactivity,
+   simulated notifications, fake download/progress bars,
+   fake close/X, fake cursor.
+   The legitimate styled CTA pill is NOT a fake button.
+   → Flag: Fake UI
+
+3. PROHIBITED VISUAL CONTENT
+   Prohibited: nudity / sexual / suggestive, graphic violence
+   or gore, hate symbols, close-up medical (needles, injections,
+   rotten teeth, surgical wounds), before/after medical.
+   → Flag: Adult content / Violence / Medical visual
+
+4. PROHIBITED TEXT CONTENT rendered on the image
+   - Medical guarantees     → Medical guarantee
+   - Loan guarantees        → Loan guarantee
+   - Investment promises    → Investment promise
+   - False urgency          → False urgency
+   - Direct sales           → Direct sales
+   - Location targeting     → Location targeting
+   - Personal data fields   → Privacy violation
+
+5. INTELLECTUAL PROPERTY
+   Prohibited: real recognizable brand logos used without
+   authorization, counterfeit goods, unauthorized celebrity
+   faces / likenesses.
+   → Flag: Brand violation
+
+NOT PROHIBITED (do NOT flag):
+- Decorative stickers / icons (Preset B aesthetic)
+- Drop shadows, outlines, text strokes
+- Banknotes and coins in financial contexts
+- Hands holding everyday objects
+- Capitalized text
+- The legitimate styled CTA pill button
+
+═══ OUTPUT FORMAT (STRICT) ═══
+Return ONLY a JSON object:
+  compliant         boolean
+  type              one of the Type tokens above, or empty if compliant
+  description       5-15 words, or empty
+  policy_reference  one of: "1 Text rendering" | "2 Fake UI" |
+                    "3 Visual content" | "4 Text content" | "5 Brand"
+                    (empty when compliant)
+
+Examine ONLY the image and text rendered on it.`,
+        },
+        { kind: 'h3', text: 'Як вивантажити батч' },
+        {
+          kind: 'list',
+          items: [
+            'Кнопка Download — ZIP з 4 PNG/JPG і файлом info.txt, де продубльоване нагадування про Ad name.',
+            'Кнопка Send to Telegram — батч прилітає у робочий чат: спершу header (ID батча, angle, hook), потім 4 фото з підписами (Hook / Accent / CTA + Meta-поля), наприкінці — нагадування.',
+            'Ім\'я ZIP = batch_<execution_id> — той самий ID, що в Telegram. По ньому можна знайти будь-який старий батч.',
+            'Імена файлів стандартизовані: aiimg_<topic>_<geo>_<index>_<angleCode>_<formula>_<lang>_<seed>_<model>_<variant>.jpg.',
+          ],
+        },
+        {
+          kind: 'warn',
+          title: 'Обов\'язково: Ad name = ім\'я файлу',
+          text: 'У Facebook Ads Manager поле «Ad name» має ДОРІВНЮВАТИ імені файлу креативу. Це єдиний місточок, що дозволяє трекати performance по варіанту в постпродажі. Нагадування про це автоматично прилітає останнім повідомленням у батчі і дублюється в info.txt у ZIP.',
         },
       ],
     },
