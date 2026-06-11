@@ -386,8 +386,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
-  // Default: generate all 4 standard presets; Custom off, no custom text.
-  selectedPresets: ['A', 'B', 'C', 'D'],
+  // Default: nothing pre-selected. Operators explicitly opt into the standard
+  // presets (A/B/C/D), Custom, or any saved prompts they want — avoids
+  // silently spending image-gen calls on the four standard variants when the
+  // operator only meant to test, say, one saved prompt.
+  selectedPresets: [],
   customPrompt: '',
   // Default Custom blocks. textRules + forbidden are forced ON (no UI toggle —
   // they're guard rails; see Column3.tsx CUSTOM_BLOCK_DEFS). Scene defaults OFF
