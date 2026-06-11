@@ -29,7 +29,7 @@ const META_LIMIT = 2000;
 // payload here (5x base64-encoded JPEGs at ~300-500 KB each → ~3 MB serialized;
 // real batches with saved-prompt picks have been seen at ~8 MB). Bumped 5 MB
 // → 10 MB after rows started tripping the sentinel in production.
-const META_OUT_LIMIT = 10_000_000;
+const META_OUT_LIMIT = 20_000_000;
 const ERROR_LIMIT = 500;
 
 const truncate = (s: string, max: number): string =>
