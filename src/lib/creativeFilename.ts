@@ -26,6 +26,11 @@ export interface CreativeFileMeta {
   adLanguage: string;              // "English (US)"
   aspectRatio: string;             // "1:1"
   imageModel: string;              // "google/gemini-3-pro-image-preview"
+  /** Creative Gen tab — the batch was generated straight from a typed
+   *  Hook/Accent/CTA, with no campaign / angle / concept pipeline behind it.
+   *  The file name swaps the stage segments (campaign, geo, angle, formula,
+   *  language) for a single "creativeonly" marker right after the tool id. */
+  creativeOnly?: boolean;
 }
 
 // Display label -> ISO-ish 2-letter language code.
@@ -100,18 +105,29 @@ const ratioCode = (aspectRatio: string): string =>
   (aspectRatio || '').replace(/[^0-9]/g, '') || '11';
 
 // Batch-level name (no variant suffix). Used for the ZIP file name.
+// Creative Gen batches have no pipeline stages (campaign / angle / formula /
+// language), so those segments are omitted and a "creativeonly" marker takes
+// their place: aiimg_creativeonly_0042_11_nbp.
 export const buildBatchFilename = (meta: CreativeFileMeta): string =>
-  [
-    'aiimg',
-    slug(meta.campaignName) || 'untitled',
-    geoCode(meta.geo),
-    String(meta.batchNumber).padStart(4, '0'),
-    `a${meta.angleSlot}${(meta.angleCode || '').toLowerCase()}`,
-    (meta.formula || '').toLowerCase() || 'fx',
-    langCode(meta.adLanguage),
-    ratioCode(meta.aspectRatio),
-    modelCode(meta.imageModel),
-  ].join('_');
+  meta.creativeOnly
+    ? [
+        'aiimg',
+        'creativeonly',
+        String(meta.batchNumber).padStart(4, '0'),
+        ratioCode(meta.aspectRatio),
+        modelCode(meta.imageModel),
+      ].join('_')
+    : [
+        'aiimg',
+        slug(meta.campaignName) || 'untitled',
+        geoCode(meta.geo),
+        String(meta.batchNumber).padStart(4, '0'),
+        `a${meta.angleSlot}${(meta.angleCode || '').toLowerCase()}`,
+        (meta.formula || '').toLowerCase() || 'fx',
+        langCode(meta.adLanguage),
+        ratioCode(meta.aspectRatio),
+        modelCode(meta.imageModel),
+      ].join('_');
 
 // Full per-variant name. `variant` is the preset slot — pass 1..4 for A/B/C/D
 // or the literal 'custom' for the Custom preset. The trailing token is appended

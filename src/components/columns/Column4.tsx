@@ -39,9 +39,11 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
   const zip = new JSZip();
 
   // ZIP is named after the n8n execution id — same "batch_<id>" shown in Telegram.
+  // Creative Gen batches carry the same "creativeonly" marker as their image files.
   const batchNumber = creative.fileMeta?.batchNumber;
+  const batchPrefix = creative.fileMeta?.creativeOnly ? 'creativeonly_batch' : 'batch';
   const batchName = batchNumber
-    ? `batch_${batchNumber}`
+    ? `${batchPrefix}_${batchNumber}`
     : `creatives_batch_${batchIndex + 1}`;
 
   creative.images.forEach((img, i) => {
@@ -93,8 +95,20 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
   URL.revokeObjectURL(url);
 };
 
-export const Column4 = () => {
-  const { creatives, deleteCreative, sendToTelegram, toggleCreativeTranslation } = useAppStore();
+// `origin` decides which batches this instance shows: 'pipeline' (default) =
+// the classic Creatives tab (angles → concepts → batch), 'creativeOnly' = the
+// Creative Gen tab. The two tabs share the store array but never each other's cards.
+export const Column4 = ({
+  origin = 'pipeline',
+  title = '4. Creatives batches',
+}: {
+  origin?: 'pipeline' | 'creativeOnly';
+  title?: string;
+}) => {
+  const { creatives: allCreatives, deleteCreative, sendToTelegram, toggleCreativeTranslation } = useAppStore();
+  const creatives = allCreatives.filter(
+    (c) => (c.origin === 'creativeOnly') === (origin === 'creativeOnly'),
+  );
 
   const [lightbox, setLightbox] = useState<LightboxState>(null);
 
@@ -146,7 +160,7 @@ export const Column4 = () => {
   return (
     <div className="flex flex-col gap-4">
       <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2">
-        4. Creatives batches
+        {title}
         <InfoTooltip text={CREATIVES_BATCHES_HELP} />
       </h2>
 
@@ -173,59 +187,68 @@ export const Column4 = () => {
           <div className="flex justify-between items-center gap-2">
             <h3 className="font-bold text-sm text-green-700">Creatives batch {index + 1}</h3>
             <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="xs"
-                onClick={() => toggleCreativeTranslation(creative.id)}
-                disabled={creative.isTranslating || creative.isLoading}
-              >
-                {translateLabel}
-              </Button>
+              {/* Translate only affects the Meta/CTA texts — hidden on Creative Gen cards. */}
+              {origin !== 'creativeOnly' && (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => toggleCreativeTranslation(creative.id)}
+                  disabled={creative.isTranslating || creative.isLoading}
+                >
+                  {translateLabel}
+                </Button>
+              )}
               <Button variant="destructive" size="sm" onClick={() => deleteCreative(creative.id)}>
                 Delete
               </Button>
             </div>
           </div>
 
-          <div>
-            <label className="text-[10px] font-bold uppercase text-gray-400">Meta Ad Title</label>
-            {creative.isLoading ? (
-              <div className="bg-slate-50 rounded-md px-3 py-2 border">
-                <Skeleton className="h-4 w-3/4 rounded" />
+          {/* Meta Ad Title / Copy / CTA — pipeline batches only. Creative Gen
+              outputs just the images; its card goes straight to the grid. */}
+          {origin !== 'creativeOnly' && (
+            <>
+              <div>
+                <label className="text-[10px] font-bold uppercase text-gray-400">Meta Ad Title</label>
+                {creative.isLoading ? (
+                  <div className="bg-slate-50 rounded-md px-3 py-2 border">
+                    <Skeleton className="h-4 w-3/4 rounded" />
+                  </div>
+                ) : (
+                  <p className="text-sm font-semibold whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
+                    {metaTitleVal}
+                  </p>
+                )}
               </div>
-            ) : (
-              <p className="text-sm font-semibold whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
-                {metaTitleVal}
-              </p>
-            )}
-          </div>
-          <div>
-            <label className="text-[10px] font-bold uppercase text-gray-400">Meta Ad Copy</label>
-            {creative.isLoading ? (
-              <div className="bg-slate-50 rounded-md px-3 py-2 border min-h-[100px] space-y-2">
-                <Skeleton className="h-3 w-full rounded" />
-                <Skeleton className="h-3 w-11/12 rounded" />
-                <Skeleton className="h-3 w-4/5 rounded" />
-                <Skeleton className="h-3 w-2/3 rounded" />
+              <div>
+                <label className="text-[10px] font-bold uppercase text-gray-400">Meta Ad Copy</label>
+                {creative.isLoading ? (
+                  <div className="bg-slate-50 rounded-md px-3 py-2 border min-h-[100px] space-y-2">
+                    <Skeleton className="h-3 w-full rounded" />
+                    <Skeleton className="h-3 w-11/12 rounded" />
+                    <Skeleton className="h-3 w-4/5 rounded" />
+                    <Skeleton className="h-3 w-2/3 rounded" />
+                  </div>
+                ) : (
+                  <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border min-h-[100px]">
+                    {metaCopyVal}
+                  </p>
+                )}
               </div>
-            ) : (
-              <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border min-h-[100px]">
-                {metaCopyVal}
-              </p>
-            )}
-          </div>
-          <div>
-            <label className="text-[10px] font-bold uppercase text-gray-400">CTA</label>
-            {creative.isLoading ? (
-              <div className="bg-slate-50 rounded-md px-3 py-2 border">
-                <Skeleton className="h-4 w-1/3 rounded" />
+              <div>
+                <label className="text-[10px] font-bold uppercase text-gray-400">CTA</label>
+                {creative.isLoading ? (
+                  <div className="bg-slate-50 rounded-md px-3 py-2 border">
+                    <Skeleton className="h-4 w-1/3 rounded" />
+                  </div>
+                ) : (
+                  <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
+                    {ctaVal}
+                  </p>
+                )}
               </div>
-            ) : (
-              <p className="text-sm whitespace-pre-wrap bg-slate-50 rounded-md px-3 py-2 border">
-                {ctaVal}
-              </p>
-            )}
-          </div>
+            </>
+          )}
 
           {/* Hard rule — the Facebook Ad name MUST be the creative's file name. */}
           <div
@@ -434,18 +457,22 @@ export const Column4 = () => {
                 <span className="font-bold">STYLE:</span>{' '}
                 <span className="text-gray-200">{currentImage.style || '—'}</span>
               </div>
-              <div>
-                <span className="font-bold">Meta Ad Title:</span>{' '}
-                <span className="text-gray-200">{currentImage.metaTitle || lightbox.creative.metaTitle}</span>
-              </div>
-              <div>
-                <span className="font-bold">Meta Ad Copy:</span>{' '}
-                <span className="text-gray-200 whitespace-pre-wrap">{currentImage.metaCopy || lightbox.creative.metaCopy}</span>
-              </div>
-              <div>
-                <span className="font-bold">CTA:</span>{' '}
-                <span className="text-gray-200">{currentImage.cta || lightbox.creative.cta}</span>
-              </div>
+              {lightbox.creative.origin !== 'creativeOnly' && (
+                <>
+                  <div>
+                    <span className="font-bold">Meta Ad Title:</span>{' '}
+                    <span className="text-gray-200">{currentImage.metaTitle || lightbox.creative.metaTitle}</span>
+                  </div>
+                  <div>
+                    <span className="font-bold">Meta Ad Copy:</span>{' '}
+                    <span className="text-gray-200 whitespace-pre-wrap">{currentImage.metaCopy || lightbox.creative.metaCopy}</span>
+                  </div>
+                  <div>
+                    <span className="font-bold">CTA:</span>{' '}
+                    <span className="text-gray-200">{currentImage.cta || lightbox.creative.cta}</span>
+                  </div>
+                </>
+              )}
 
               {/* Compliance verdict — same shape as Concepts column. Only
                   shown when the Compliance Agent (Image) actually flagged
