@@ -11,10 +11,11 @@ import { AnglesPage } from './pages/AnglesPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DocsPage } from './pages/DocsPage';
 import { CreativeGenPage } from './pages/CreativeGenPage';
+import { CreativeEditPage } from './pages/CreativeEditPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail } from '@/lib/identity';
 
-type Page = 'creative-gen' | 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard' | 'docs';
+type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard' | 'docs';
 
 // Admin Google emails that get the Dashboard tab. Sourced from PUBLIC_ADMIN_EMAILS
 // (comma-separated) — value lives in local .env for dev and in Vercel's env vars
@@ -167,6 +168,18 @@ export default function MainApp() {
               >
                 Creative Gen
               </button>
+              <button
+                type="button"
+                onClick={() => setPage('creative-edit')}
+                className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                  page === 'creative-edit'
+                    ? 'bg-white text-black'
+                    : 'text-white/80 hover:bg-white/10 hover:text-white'
+                }`}
+                aria-current={page === 'creative-edit' ? 'page' : undefined}
+              >
+                Creative Edit
+              </button>
               <div className="mx-2 h-6 w-px bg-white/30" aria-hidden="true" />
               {NAV_ITEMS.map((item) => {
                 const isActive = page === item.value;
@@ -215,6 +228,7 @@ export default function MainApp() {
 
         <main className="flex-1 overflow-hidden">
           {page === 'creative-gen' && <CreativeGenPage />}
+          {page === 'creative-edit' && <CreativeEditPage />}
           {page === 'creatives' && <CreativesPage />}
           {page === 'keywords' && <KeywordsPage />}
           {page === 'angles' && <AnglesPage />}
