@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { HOOK_HELP, ACCENT_HELP, CTA_HELP } from '@/components/ImageGenSettings';
+import { Combobox } from '@/components/ui/Combobox';
+import { AD_LANGUAGES } from '@/lib/geos';
 
 const CREATIVE_EDIT_HELP =
   'Завантаж статичний банер (PNG / JPG / WebP), заповни Hook / Accent / CTA та (опційно) опиши, ' +
@@ -13,6 +15,11 @@ const CREATIVE_EDIT_HELP =
 const IMAGE_PROMPT_HELP =
   'Опційно: підказки для модифікації зображення — наприклад, "зміни фон на синій", ' +
   '"прибери логотип", "зроби CTA-кнопку червоною". Залиш порожнім, якщо хочеш лише оновити тексти.';
+
+const LANGUAGE_TOOLTIP =
+  'Якою мовою рендерити текст на банері. За замовчуванням мова не змінюється — модель залишає її такою ж, як на оригінальному зображенні. Вибери конкретну мову, якщо хочеш переклад.';
+
+const LANGUAGE_OPTIONS = ['Keep original language', ...AD_LANGUAGES];
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
@@ -43,6 +50,7 @@ export const CreativeEditPage = () => {
   const [accent, setAccent] = useState('');
   const [cta, setCta] = useState('');
   const [imagePrompt, setImagePrompt] = useState('');
+  const [language, setLanguage] = useState('Keep original language');
   const [isLoading, setIsLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -202,6 +210,7 @@ export const CreativeEditPage = () => {
         accent: accent.trim(),
         cta: cta.trim(),
         imagePrompt: imagePrompt.trim(),
+        language: language === 'Keep original language' ? '' : language,
       });
       const data = response.data;
 
@@ -302,8 +311,7 @@ export const CreativeEditPage = () => {
 
           <Button
             onClick={handleAnalyze}
-            variant="outline"
-            className="w-full"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white"
             disabled={noFile || isAnalyzing}
           >
             {isAnalyzing ? 'Analyzing image...' : 'Analyze image'}
@@ -320,6 +328,18 @@ export const CreativeEditPage = () => {
               {isAnalyzing && (
                 <div className="text-[10px] uppercase text-blue-600 animate-pulse">Reading…</div>
               )}
+            </div>
+            <div>
+              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                Language
+                <InfoTooltip text={LANGUAGE_TOOLTIP} iconSize={11} />
+              </label>
+              <Combobox
+                value={language}
+                onChange={setLanguage}
+                options={LANGUAGE_OPTIONS}
+                placeholder="Keep original language"
+              />
             </div>
             <div>
               <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
@@ -405,7 +425,8 @@ export const CreativeEditPage = () => {
         {results.length > 0 && (
           <div className="flex flex-col gap-6">
             {results.map((item, i) => {
-              const name = item.fileName ?? `creative-edit-${i + 1}.png`;
+              const rawName = item.fileName ?? `creative-edit-${i + 1}.png`;
+              const name = rawName.startsWith('aiimg_') ? rawName : `aiimg_${rawName}`;
               return (
                 <div key={i} className="flex flex-col gap-2">
                   <div className="text-[10px] font-bold uppercase text-gray-400">
