@@ -102,6 +102,10 @@ export interface Creative {
   isTranslating?: boolean;
   showTranslation?: boolean;
   fileMeta?: CreativeFileMeta;
+  /** Where the batch came from. 'creativeOnly' = the Creative Gen tab (typed
+   *  Hook/Accent/CTA, no pipeline); undefined = the classic Creatives tab.
+   *  Column4 filters on this so the two tabs never show each other's batches. */
+  origin?: 'creativeOnly';
 }
 
 // === Angles tab — RSOC Audiences & Top-Pick Headlines (two-step HITL flow) ===
@@ -190,6 +194,13 @@ interface AppState {
   isLoadingAngles: boolean;
   isLoadingConcepts: boolean;
   isLoadingCreatives: boolean;
+  /** Creative Gen tab — the three typed inputs that drive generateCreativeOnly. */
+  creativeOnlyHook: string;
+  creativeOnlyAccent: string;
+  creativeOnlyCta: string;
+  /** Loading flag for the Creative Gen tab — separate from isLoadingCreatives so
+   *  a run here never disables the classic Creatives tab's buttons (and vice versa). */
+  isLoadingCreativeOnly: boolean;
   articleHtml: string | null;
   articleStatus: ArticleStatus;
   articleError: string | null;
@@ -218,6 +229,12 @@ interface AppState {
   toggleRsocAudienceTranslation: (segmentId: string) => Promise<void>;
   generateConcept: (angleId: string) => Promise<void>;
   generateCreative: (conceptId: string) => Promise<void>;
+  setCreativeOnlyHook: (value: string) => void;
+  setCreativeOnlyAccent: (value: string) => void;
+  setCreativeOnlyCta: (value: string) => void;
+  /** Creative Gen tab — generate a batch straight from the typed Hook/Accent/CTA
+   *  + the shared image settings, via the dedicated creative-only n8n workflow. */
+  generateCreativeOnly: () => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
   toggleAngleTranslation: (angleId: string) => Promise<void>;
   toggleConceptTranslation: (conceptId: string) => Promise<void>;
@@ -268,6 +285,8 @@ const WEBHOOKS = {
   angles: import.meta.env.PUBLIC_WEBHOOK_ANGLES_URL,
   concept: import.meta.env.PUBLIC_WEBHOOK_CONCEPT_URL,
   creative: import.meta.env.PUBLIC_WEBHOOK_CREATIVE_URL,
+  // Creative Gen tab — separate n8n workflow (same image logic, no pipeline context).
+  creativeOnly: import.meta.env.PUBLIC_WEBHOOK_CREATIVE_ONLY_URL,
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
   translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
   article: import.meta.env.PUBLIC_WEBHOOK_ARTICLE_URL,
@@ -375,10 +394,175 @@ const pollExecutionResult = async (jobId: string, label: string): Promise<any> =
   );
 };
 
+// === Creative-batch helpers — shared by generateCreative (Creatives tab) and
+// === generateCreativeOnly (Creative Gen tab). Both workflows end in the same
+// === Aggregate Images node shape, so polling and image extraction are identical.
+
+// Poll one creative execution until it finishes, then merge the output of
+// "Aggregate Images" (or, failing that, lastNodeExecuted) into a single result
+// object. Walks every run of the chosen node so per-item Code-node executions
+// don't lose images. Returns null when shouldAbort() reports the owning card
+// was deleted mid-poll. Throws on execution error / missing result / timeout;
+// when n8n supplied a structured error body it's attached as `responseBody`
+// so the caller can forward it to the usage log.
+const pollCreativeExecution = async (
+  jobId: string,
+  shouldAbort: () => boolean,
+): Promise<any | null> => {
+  const apiHeaders = { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY };
+  const metaUrl = `${N8N_EXECUTIONS_URL}/${jobId}`;
+  const fullUrl = `${N8N_EXECUTIONS_URL}/${jobId}?includeData=true`;
+
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    if (shouldAbort()) return null;
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+    let meta: any;
+    try {
+      const res = await axios.get(metaUrl, { headers: apiHeaders });
+      meta = res.data;
+    } catch (e) {
+      // transient poll failure — log but keep polling, the next tick may succeed
+      console.warn('[pollCreativeExecution] poll error (will keep polling):', e);
+      continue;
+    }
+    if (!isExecutionDone(meta)) continue;
+
+    // Finished — fetch the full execution data once
+    const full = (await axios.get(fullUrl, { headers: apiHeaders })).data;
+
+    const errMessage = extractExecutionError(full);
+    if (errMessage) {
+      console.error('[pollCreativeExecution] execution failed:', errMessage, full?.data?.resultData?.error);
+      const err: any = new Error(errMessage);
+      err.responseBody = full?.data?.resultData?.error;
+      throw err;
+    }
+
+    const runData = full?.data?.resultData?.runData ?? {};
+    const lastNode = full?.data?.resultData?.lastNodeExecuted;
+    const pickResultsFor = (nodeName?: string): any[] => {
+      if (!nodeName) return [];
+      const runs = runData[nodeName] ?? [];
+      return runs.flatMap((r: any) => (r?.data?.main?.[0] ?? []).map((it: any) => it?.json).filter(Boolean));
+    };
+    const aggregateResults = pickResultsFor('Aggregate Images');
+    const lastNodeResults  = pickResultsFor(lastNode);
+    // Merge into one result. Aggregate Images is the authoritative source if it ran.
+    const sources = aggregateResults.length ? aggregateResults : lastNodeResults;
+    const result: any = sources.reduce((acc: any, j: any) => {
+      if (!j || typeof j !== 'object') return acc;
+      if (Array.isArray(j.images)) acc.images = [...(acc.images ?? []), ...j.images];
+      for (const [k, v] of Object.entries(j)) {
+        if (k === 'images') continue;
+        if (!(k in acc)) acc[k] = v;
+      }
+      return acc;
+    }, {});
+    if (!result || Object.keys(result).length === 0) {
+      console.error('[pollCreativeExecution] no result data in execution. lastNode=%s, runData keys=%o', lastNode, Object.keys(runData));
+      const err: any = new Error('Creative generation finished but returned no result');
+      err.responseBody = { lastNode, runDataKeys: Object.keys(runData) };
+      throw err;
+    }
+    return result;
+  }
+
+  console.error('[pollCreativeExecution] polling timed out after', POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000, 'seconds');
+  throw new Error(`Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`);
+};
+
+// Turn a merged execution result into the ImageVariant[] shown on a batch card,
+// with standardized file names derived from fileMeta.
+const parseCreativeImages = (result: any, fileMeta: CreativeFileMeta): ImageVariant[] => {
+  const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
+
+  // n8n's Aggregate Images keys every image by preset_id: image_a_url / image_b_url /
+  // image_c_url / image_d_url / image_custom_url. The same node also emits a flat
+  // `images: [...]` array in response order, but that order loses which preset each
+  // image came from — so a partial run like {A, D} would otherwise get filenamed _1, _2
+  // instead of _1, _4. Prefer the keyed entries so the trailing slot matches the preset.
+  const PRESET_ORDER = ['a', 'b', 'c', 'd', 'custom'] as const;
+  const PRESET_SLOT: Record<string, number | string> = {
+    a: 1, b: 2, c: 3, d: 4, custom: 'custom',
+  };
+
+  // Per-key compliance reader. Defaults to compliant=true when the field
+  // is missing (A/B/C/D bypass the Compliance Agent (Image), legacy
+  // responses don't carry these fields at all).
+  const readCompliance = (suffix: string) => {
+    const compliantField = result[`compliant_${suffix}`];
+    const checkedField = result[`compliance_checked_${suffix}`];
+    const compliant = typeof compliantField === 'boolean' ? compliantField : true;
+    const complianceChecked = checkedField === true;
+    return {
+      compliant,
+      complianceType: readString(`compliance_type_${suffix}`),
+      complianceDescription: readString(`compliance_description_${suffix}`),
+      policyReference: readString(`compliance_policy_${suffix}`),
+      complianceChecked,
+    };
+  };
+
+  let images: ImageVariant[] = [];
+  const keyed = Object.entries(result)
+    .filter(([k, v]) => /^image_[a-z0-9]+_url$/i.test(k) && typeof v === 'string')
+    .map(([k, v]) => {
+      const suffix = (k.match(/^image_([a-z0-9]+)_url$/i)?.[1] ?? '').toLowerCase();
+      const styleFromResponse = readString(`style_${suffix}`);
+      const style = styleFromResponse.trim() || suffix.toUpperCase();
+      const metaTitle = readString(`meta_title_${suffix}`) || readString('meta_ad_title');
+      const metaCopy  = readString(`meta_copy_${suffix}`)  || readString('meta_ad_copy');
+      const cta       = readString(`banner_cta_${suffix}`);
+      const compliance = readCompliance(suffix);
+      return { suffix, url: v as string, style, metaTitle, metaCopy, cta, ...compliance };
+    });
+
+  if (keyed.length > 0) {
+    // Display order: A -> B -> C -> D -> Custom, anything unknown at the end.
+    keyed.sort((a, b) => {
+      const ai = PRESET_ORDER.indexOf(a.suffix as typeof PRESET_ORDER[number]);
+      const bi = PRESET_ORDER.indexOf(b.suffix as typeof PRESET_ORDER[number]);
+      return (ai === -1 ? PRESET_ORDER.length : ai) - (bi === -1 ? PRESET_ORDER.length : bi);
+    });
+    images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta, compliant, complianceType, complianceDescription, policyReference, complianceChecked }) => ({
+      url, style, metaTitle, metaCopy, cta,
+      fileName: buildCreativeFilename(fileMeta, PRESET_SLOT[suffix] ?? suffix),
+      compliant, complianceType, complianceDescription, policyReference, complianceChecked,
+    }));
+  } else if (Array.isArray(result.images)) {
+    // Legacy fallback — older n8n versions only returned the flat array. Numbers
+    // 1..N stay in response order; partial selections will be misnumbered, which is
+    // the original behaviour we accept only when keyed entries are unavailable.
+    images = result.images
+      .filter((s: any) => typeof s === 'string')
+      .map((url: string, i: number) => ({
+        url,
+        style: String.fromCharCode(65 + i),
+        metaTitle: '',
+        metaCopy: '',
+        cta: '',
+        fileName: buildCreativeFilename(fileMeta, i + 1),
+      }));
+  } else if (typeof result.image_url === 'string') {
+    images = [{
+      url: result.image_url,
+      style: readString('style'),
+      metaTitle: readString('meta_title') || readString('meta_ad_title'),
+      metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
+      cta: readString('banner_cta'),
+      fileName: buildCreativeFilename(fileMeta, 1),
+    }];
+  }
+  return images;
+};
+
 export const useAppStore = create<AppState>((set, get) => ({
   formData: { articleUrl: '', keyword1: '', keyword2: '', keyword3: '', geo: 'United States (US)', buyer: '', campaignName: '' },
   angles: [], agent1Output: '', operatorNote: '', article: '', concepts: [], creatives: [],
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
+  creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
+  isLoadingCreativeOnly: false,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
@@ -406,6 +590,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCustomPrompt: (value) => set({ customPrompt: value }),
   setCustomBlocks: (value) => set({ customBlocks: value }),
   setSelectedSavedPromptIds: (value) => set({ selectedSavedPromptIds: value }),
+  setCreativeOnlyHook: (value) => set({ creativeOnlyHook: value }),
+  setCreativeOnlyAccent: (value) => set({ creativeOnlyAccent: value }),
+  setCreativeOnlyCta: (value) => set({ creativeOnlyCta: value }),
   loadSavedPrompts: async () => {
     set({ savedPromptsStatus: 'loading' });
     try {
@@ -1091,199 +1278,219 @@ export const useAppStore = create<AppState>((set, get) => ({
       creatives: state.creatives.map(c => c.id === creativeId ? { ...c, fileMeta } : c),
     }));
 
-    // Step 2: poll the executions API until the job finishes
-    const apiHeaders = { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY };
-    const metaUrl = `${N8N_EXECUTIONS_URL}/${jobId}`;
-    const fullUrl = `${N8N_EXECUTIONS_URL}/${jobId}?includeData=true`;
+    // Step 2: poll the executions API until the job finishes, then extract the images.
+    let result: any;
+    try {
+      result = await pollCreativeExecution(jobId, () => !get().creatives.some(c => c.id === creativeId));
+    } catch (e) {
+      const msg = humanizeError(e);
+      get().showError(msg.startsWith('Creative generation') ? msg : `Creative generation failed: ${msg}`);
+      cleanupOnFailure(msg, (e as any)?.responseBody ?? (e as any)?.response?.data);
+      return;
+    }
+    if (result === null) return; // the user deleted this creative card mid-poll
 
-    for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
-      // Stop polling if the user deleted this creative card.
-      if (!get().creatives.some(c => c.id === creativeId)) return;
-      await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    // Extract images + per-variant texts (style, meta_title, meta_copy, banner_cta)
+    const fallbackConcept = get().concepts.find(c => c.id === conceptId);
+    const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
+    const images = parseCreativeImages(result, fileMeta);
 
-      let meta: any;
-      try {
-        const res = await axios.get(metaUrl, { headers: apiHeaders });
-        meta = res.data;
-      } catch (e) {
-        // transient poll failure — log but keep polling, the next tick may succeed
-        console.warn('[generateCreative] poll error (will keep polling):', e);
-        continue;
-      }
+    // Card-level fields take values from the first variant; if it has none, fall back to the concept.
+    const firstVariant = images[0];
+    const cardMetaTitle = firstVariant?.metaTitle || readString('meta_ad_title') || fallbackConcept?.metaTitle || '';
+    const cardMetaCopy = firstVariant?.metaCopy || readString('meta_ad_copy') || fallbackConcept?.metaCopy || '';
+    const cardCta = firstVariant?.cta || fallbackConcept?.cta || '';
 
-      if (!isExecutionDone(meta)) continue;
+    // Final check: creative still in state (user might have deleted while we were fetching)
+    if (!get().creatives.some(c => c.id === creativeId)) return;
 
-      // Finished — fetch the full execution data once
-      let full: any;
-      try {
-        const res = await axios.get(fullUrl, { headers: apiHeaders });
-        full = res.data;
-      } catch (e) {
-        console.error(e);
-        cleanupOnFailure(humanizeError(e), (e as any)?.response?.data);
-        return;
-      }
+    set((state) => ({
+      creatives: state.creatives.map(c => c.id === creativeId
+        ? {
+            ...c,
+            metaTitle: cardMetaTitle,
+            metaCopy: cardMetaCopy,
+            cta: cardCta,
+            images,
+            isLoading: false,
+            // Refresh the snapshot that goes to send_to_tg: keep banner_hook/banner_accent
+            // and other concept-side fields, but overwrite meta_ad_title / meta_ad_copy /
+            // banner_cta with the actual webhook output (which may be translated to ad_language).
+            chosenCreative: {
+              ...(c.chosenCreative ?? {}),
+              meta_ad_title: cardMetaTitle,
+              meta_ad_copy: cardMetaCopy,
+              banner_cta: cardCta,
+            },
+          }
+        : c),
+      isLoadingCreatives: false,
+    }));
+    logEvent({ tab: 'creatives', action: 'generateCreative', meta: logMeta, metaOut: result });
+  },
 
-      const errMessage = extractExecutionError(full);
-      if (errMessage) {
-        console.error('[generateCreative] execution failed:', errMessage, full?.data?.resultData?.error);
-        get().showError(`Creative generation failed: ${errMessage}`);
-        cleanupOnFailure(errMessage, full?.data?.resultData?.error);
-        return;
-      }
-
-      // Prefer Aggregate Images by name (terminal node of the creative graph).
-      // Fall back to whatever lastNodeExecuted reports if the workflow's been
-      // renamed or its terminal node moved. Walk every run of the chosen node
-      // and merge so per-item Code-node executions don't lose images.
-      const runData = full?.data?.resultData?.runData ?? {};
-      const lastNode = full?.data?.resultData?.lastNodeExecuted;
-      const pickResultsFor = (nodeName?: string): any[] => {
-        if (!nodeName) return [];
-        const runs = runData[nodeName] ?? [];
-        return runs.flatMap((r: any) => (r?.data?.main?.[0] ?? []).map((it: any) => it?.json).filter(Boolean));
-      };
-      const aggregateResults = pickResultsFor('Aggregate Images');
-      const lastNodeResults  = pickResultsFor(lastNode);
-      // Merge into one result. Aggregate Images is the authoritative source if it ran.
-      const sources = aggregateResults.length ? aggregateResults : lastNodeResults;
-      const result: any = sources.reduce((acc: any, j: any) => {
-        if (!j || typeof j !== 'object') return acc;
-        if (Array.isArray(j.images)) acc.images = [...(acc.images ?? []), ...j.images];
-        for (const [k, v] of Object.entries(j)) {
-          if (k === 'images') continue;
-          if (!(k in acc)) acc[k] = v;
-        }
-        return acc;
-      }, {});
-      if (!result || Object.keys(result).length === 0) {
-        console.error('[generateCreative] no result data in execution. lastNode=%s, runData keys=%o', lastNode, Object.keys(runData));
-        get().showError('Creative generation finished but returned no result');
-        cleanupOnFailure('Creative generation finished but returned no result', { lastNode, runDataKeys: Object.keys(runData) });
-        return;
-      }
-      // Extract images + per-variant texts (style, meta_title, meta_copy, banner_cta)
-      const fallbackConcept = get().concepts.find(c => c.id === conceptId);
-      const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
-
-      // n8n's Aggregate Images keys every image by preset_id: image_a_url / image_b_url /
-      // image_c_url / image_d_url / image_custom_url. The same node also emits a flat
-      // `images: [...]` array in response order, but that order loses which preset each
-      // image came from — so a partial run like {A, D} would otherwise get filenamed _1, _2
-      // instead of _1, _4. Prefer the keyed entries so the trailing slot matches the preset.
-      const PRESET_ORDER = ['a', 'b', 'c', 'd', 'custom'] as const;
-      const PRESET_SLOT: Record<string, number | string> = {
-        a: 1, b: 2, c: 3, d: 4, custom: 'custom',
-      };
-
-      // Per-key compliance reader. Defaults to compliant=true when the field
-      // is missing (A/B/C/D bypass the Compliance Agent (Image), legacy
-      // responses don't carry these fields at all).
-      const readCompliance = (suffix: string) => {
-        const compliantField = result[`compliant_${suffix}`];
-        const checkedField = result[`compliance_checked_${suffix}`];
-        const compliant = typeof compliantField === 'boolean' ? compliantField : true;
-        const complianceChecked = checkedField === true;
-        return {
-          compliant,
-          complianceType: readString(`compliance_type_${suffix}`),
-          complianceDescription: readString(`compliance_description_${suffix}`),
-          policyReference: readString(`compliance_policy_${suffix}`),
-          complianceChecked,
-        };
-      };
-
-      let images: ImageVariant[] = [];
-      const keyed = Object.entries(result)
-        .filter(([k, v]) => /^image_[a-z0-9]+_url$/i.test(k) && typeof v === 'string')
-        .map(([k, v]) => {
-          const suffix = (k.match(/^image_([a-z0-9]+)_url$/i)?.[1] ?? '').toLowerCase();
-          const styleFromResponse = readString(`style_${suffix}`);
-          const style = styleFromResponse.trim() || suffix.toUpperCase();
-          const metaTitle = readString(`meta_title_${suffix}`) || readString('meta_ad_title');
-          const metaCopy  = readString(`meta_copy_${suffix}`)  || readString('meta_ad_copy');
-          const cta       = readString(`banner_cta_${suffix}`);
-          const compliance = readCompliance(suffix);
-          return { suffix, url: v as string, style, metaTitle, metaCopy, cta, ...compliance };
-        });
-
-      if (keyed.length > 0) {
-        // Display order: A -> B -> C -> D -> Custom, anything unknown at the end.
-        keyed.sort((a, b) => {
-          const ai = PRESET_ORDER.indexOf(a.suffix as typeof PRESET_ORDER[number]);
-          const bi = PRESET_ORDER.indexOf(b.suffix as typeof PRESET_ORDER[number]);
-          return (ai === -1 ? PRESET_ORDER.length : ai) - (bi === -1 ? PRESET_ORDER.length : bi);
-        });
-        images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta, compliant, complianceType, complianceDescription, policyReference, complianceChecked }) => ({
-          url, style, metaTitle, metaCopy, cta,
-          fileName: buildCreativeFilename(fileMeta, PRESET_SLOT[suffix] ?? suffix),
-          compliant, complianceType, complianceDescription, policyReference, complianceChecked,
-        }));
-      } else if (Array.isArray(result.images)) {
-        // Legacy fallback — older n8n versions only returned the flat array. Numbers
-        // 1..N stay in response order; partial selections will be misnumbered, which is
-        // the original behaviour we accept only when keyed entries are unavailable.
-        images = result.images
-          .filter((s: any) => typeof s === 'string')
-          .map((url: string, i: number) => ({
-            url,
-            style: String.fromCharCode(65 + i),
-            metaTitle: '',
-            metaCopy: '',
-            cta: '',
-            fileName: buildCreativeFilename(fileMeta, i + 1),
-          }));
-      } else if (typeof result.image_url === 'string') {
-        images = [{
-          url: result.image_url,
-          style: readString('style'),
-          metaTitle: readString('meta_title') || readString('meta_ad_title'),
-          metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
-          cta: readString('banner_cta'),
-          fileName: buildCreativeFilename(fileMeta, 1),
-        }];
-      }
-
-      // Card-level fields take values from the first variant; if it has none, fall back to the concept.
-      const firstVariant = images[0];
-      const cardMetaTitle = firstVariant?.metaTitle || readString('meta_ad_title') || fallbackConcept?.metaTitle || '';
-      const cardMetaCopy = firstVariant?.metaCopy || readString('meta_ad_copy') || fallbackConcept?.metaCopy || '';
-      const cardCta = firstVariant?.cta || fallbackConcept?.cta || '';
-
-      // Final check: creative still in state (user might have deleted while we were fetching)
-      if (!get().creatives.some(c => c.id === creativeId)) return;
-
-      set((state) => ({
-        creatives: state.creatives.map(c => c.id === creativeId
-          ? {
-              ...c,
-              metaTitle: cardMetaTitle,
-              metaCopy: cardMetaCopy,
-              cta: cardCta,
-              images,
-              isLoading: false,
-              // Refresh the snapshot that goes to send_to_tg: keep banner_hook/banner_accent
-              // and other concept-side fields, but overwrite meta_ad_title / meta_ad_copy /
-              // banner_cta with the actual webhook output (which may be translated to ad_language).
-              chosenCreative: {
-                ...(c.chosenCreative ?? {}),
-                meta_ad_title: cardMetaTitle,
-                meta_ad_copy: cardMetaCopy,
-                banner_cta: cardCta,
-              },
-            }
-          : c),
-        isLoadingCreatives: false,
-      }));
-      logEvent({ tab: 'creatives', action: 'generateCreative', meta: logMeta, metaOut: result });
+  // Creative Gen tab — generate a batch straight from the typed Hook / Accent /
+  // CTA. Same kickoff → poll → parse plumbing as generateCreative, but with no
+  // pipeline context (no angle, no concept, no article) and its own n8n workflow.
+  generateCreativeOnly: async () => {
+    const hook = get().creativeOnlyHook.trim();
+    const accent = get().creativeOnlyAccent.trim();
+    const cta = get().creativeOnlyCta.trim();
+    if (!hook) {
+      get().showError('Hook is required');
+      return;
+    }
+    if (!WEBHOOKS.creativeOnly) {
+      get().showError('PUBLIC_WEBHOOK_CREATIVE_ONLY_URL is not set in .env');
       return;
     }
 
-    // Polling exhausted without success
-    console.error('[generateCreative] polling timed out after', POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000, 'seconds');
-    const timeoutMsg = `Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`;
-    get().showError(timeoutMsg);
-    cleanupOnFailure(timeoutMsg);
+    const logMeta = {
+      hook,
+      accent,
+      cta,
+      aspectRatio: get().aspectRatio,
+      imageModel: get().imageGenerationModel,
+      presets: get().selectedPresets,
+    };
+
+    const chosen_creative = {
+      banner_hook: hook,
+      banner_accent: accent,
+      banner_cta: cta,
+    };
+
+    const creativeId = crypto.randomUUID();
+    // creativeOnly flags the standardized file name: the stage segments
+    // (campaign / geo / angle / formula / language) are replaced by a single
+    // "creativeonly" marker. batchNumber is filled in with the n8n execution
+    // id once the job is kicked off, same as generateCreative.
+    let fileMeta: CreativeFileMeta = {
+      campaignName: '',
+      geo: '',
+      batchNumber: 0,
+      angleSlot: 0,
+      angleCode: '',
+      formula: '',
+      adLanguage: '',
+      aspectRatio: get().aspectRatio,
+      imageModel: get().imageGenerationModel,
+      creativeOnly: true,
+    };
+    const placeholder: Creative = {
+      id: creativeId,
+      metaTitle: '',
+      metaCopy: '',
+      cta,
+      images: [],
+      isLoading: true,
+      chosenAngle: null,
+      chosenCreative: chosen_creative,
+      fileMeta,
+      origin: 'creativeOnly',
+    };
+    set((state) => ({
+      creatives: [...state.creatives, placeholder],
+      isLoadingCreativeOnly: true,
+    }));
+
+    const selectedSavedPromptIds = new Set(get().selectedSavedPromptIds);
+    const savedPromptsPayload = get().savedPrompts
+      .filter((p) => selectedSavedPromptIds.has(String(p.id)))
+      .map((p) => ({ id: p.id, name: p.name, prompt: p.prompt }));
+
+    const payload = {
+      mode: 'creative_only',
+      chosen_creative,
+      image_generation_model: get().imageGenerationModel,
+      aspect_ratio: get().aspectRatio,
+      presets: get().selectedPresets,
+      custom_prompt: get().customPrompt,
+      custom_blocks: get().customBlocks,
+      saved_prompts: savedPromptsPayload,
+    };
+
+    const cleanupOnFailure = (errorMessage?: string, responseBody?: unknown) => {
+      set((state) => ({
+        creatives: state.creatives.filter(c => c.id !== creativeId),
+        isLoadingCreativeOnly: false,
+      }));
+      logEvent({ tab: 'creative_gen', action: 'generateCreativeOnly', meta: logMeta, metaOut: responseBody, errorMessage });
+    };
+
+    // Step 1: kick off the job — n8n's Respond job_id node returns the execution id instantly.
+    let jobId: string | null = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        console.log('[generateCreativeOnly] request payload:', payload);
+        const { data } = await axios.post(WEBHOOKS.creativeOnly, payload);
+        const startPayload = Array.isArray(data) ? data[0] : data;
+        jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
+        if (!jobId) throw new Error('Webhook did not return a job_id');
+        break;
+      } catch (e) {
+        if (attempt === 0 && isRetryableError(e)) {
+          get().showWarning(`${humanizeError(e)}. Retrying...`);
+          continue;
+        }
+        console.error(e);
+        get().showError(`Creative generation failed: ${humanizeError(e)}`);
+        cleanupOnFailure(humanizeError(e), (e as any)?.response?.data);
+        return;
+      }
+    }
+    if (!jobId) { cleanupOnFailure('Webhook did not return a job_id'); return; }
+
+    // The execution id IS the batch number — carried into the file name.
+    fileMeta = { ...fileMeta, batchNumber: jobId };
+    set((state) => ({
+      creatives: state.creatives.map(c => c.id === creativeId ? { ...c, fileMeta } : c),
+    }));
+
+    // Step 2: poll until the run finishes, then extract the images.
+    let result: any;
+    try {
+      result = await pollCreativeExecution(jobId, () => !get().creatives.some(c => c.id === creativeId));
+    } catch (e) {
+      const msg = humanizeError(e);
+      get().showError(msg.startsWith('Creative generation') ? msg : `Creative generation failed: ${msg}`);
+      cleanupOnFailure(msg, (e as any)?.responseBody ?? (e as any)?.response?.data);
+      return;
+    }
+    if (result === null) return; // the user deleted this creative card mid-poll
+
+    const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
+    const images = parseCreativeImages(result, fileMeta);
+
+    // Card-level fields: there is no concept behind this run, so fall back to
+    // the typed CTA when the workflow returns none.
+    const firstVariant = images[0];
+    const cardMetaTitle = firstVariant?.metaTitle || readString('meta_ad_title') || '';
+    const cardMetaCopy = firstVariant?.metaCopy || readString('meta_ad_copy') || '';
+    const cardCta = firstVariant?.cta || cta;
+
+    if (!get().creatives.some(c => c.id === creativeId)) return;
+
+    set((state) => ({
+      creatives: state.creatives.map(c => c.id === creativeId
+        ? {
+            ...c,
+            metaTitle: cardMetaTitle,
+            metaCopy: cardMetaCopy,
+            cta: cardCta,
+            images,
+            isLoading: false,
+            chosenCreative: {
+              ...(c.chosenCreative ?? {}),
+              meta_ad_title: cardMetaTitle,
+              meta_ad_copy: cardMetaCopy,
+              banner_cta: cardCta,
+            },
+          }
+        : c),
+      isLoadingCreativeOnly: false,
+    }));
+    logEvent({ tab: 'creative_gen', action: 'generateCreativeOnly', meta: logMeta, metaOut: result });
   },
 
   sendToTelegram: async (creativeId) => {

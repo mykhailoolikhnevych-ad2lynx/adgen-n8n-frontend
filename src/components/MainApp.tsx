@@ -10,10 +10,11 @@ import { ArticlePage } from './pages/ArticlePage';
 import { AnglesPage } from './pages/AnglesPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DocsPage } from './pages/DocsPage';
+import { CreativeGenPage } from './pages/CreativeGenPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail } from '@/lib/identity';
 
-type Page = 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard' | 'docs';
+type Page = 'creative-gen' | 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard' | 'docs';
 
 // Admin Google emails that get the Dashboard tab. Sourced from PUBLIC_ADMIN_EMAILS
 // (comma-separated) — value lives in local .env for dev and in Vercel's env vars
@@ -152,6 +153,21 @@ export default function MainApp() {
           </div>
           <div className="flex items-center gap-2">
             <nav className="flex items-center gap-1">
+              {/* Creative Gen — standalone creative generation, set slightly apart
+                  from the pipeline tabs (Keywords → … → Creatives) by a divider. */}
+              <button
+                type="button"
+                onClick={() => setPage('creative-gen')}
+                className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                  page === 'creative-gen'
+                    ? 'bg-white text-black'
+                    : 'text-white/80 hover:bg-white/10 hover:text-white'
+                }`}
+                aria-current={page === 'creative-gen' ? 'page' : undefined}
+              >
+                Creative Gen
+              </button>
+              <div className="mx-2 h-6 w-px bg-white/30" aria-hidden="true" />
               {NAV_ITEMS.map((item) => {
                 const isActive = page === item.value;
                 return (
@@ -198,6 +214,7 @@ export default function MainApp() {
         </header>
 
         <main className="flex-1 overflow-hidden">
+          {page === 'creative-gen' && <CreativeGenPage />}
           {page === 'creatives' && <CreativesPage />}
           {page === 'keywords' && <KeywordsPage />}
           {page === 'angles' && <AnglesPage />}
