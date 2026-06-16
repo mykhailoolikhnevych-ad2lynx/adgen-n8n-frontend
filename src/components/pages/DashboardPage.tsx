@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { fetchEventMetaOut } from '@/lib/events';
+import { fetchEvent } from '@/lib/events';
 
 // Admin-only usage analytics. Fetches PUBLIC_WEBHOOK_LIST_EVENTS_URL on mount
 // for the last 30 days of usage events and renders them as sub-tabs:
@@ -33,6 +33,10 @@ interface UsageRow {
    *  stripped the bytes. 0 means there's nothing to expand. Drives the
    *  text-row "Expand" button. */
   meta_out_size: number;
+  /** Character length of meta on the server. The list endpoint returns meta:''
+   *  for large rows; this field lets MetaCell show an accurate "Expand (N chars)"
+   *  label and decide whether the cell is empty without fetching. */
+  meta_size: number;
 }
 
 type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph';
@@ -223,10 +227,14 @@ const Lightbox = ({ state, onClose, onPrev, onNext }: {
 
 // A single base64 thumb. Falls back to a clear "truncated" badge when the
 // browser can't decode the image — almost always means the row was written
-// before n8n's Normalize trim limit was bumped, so the base64 is cut mid-stream.
-// We also check the byte length up front: a real 1024×1024 JPEG is ~50-500 KB
-// base64, so anything under ~5 KB is almost certainly a truncated remnant.
-const MIN_VIABLE_BASE64 = 5000;
+// before the thumbnail pipeline existed and n8n re-stripped the bytes.
+// The upfront size guard catches obvious truncation remnants without loading
+// them into an <img> element. Threshold is 500 chars: a valid 128 px JPEG
+// thumbnail encodes to roughly 2-8 KB base64 (well above 500), whereas a
+// truncated mid-stream fragment is typically a few dozen to a few hundred
+// chars. The old 5000-char threshold wrongly flagged legitimate ~2-4 KB
+// thumbnails as truncated, so it has been lowered accordingly.
+const MIN_VIABLE_BASE64 = 500;
 const ImageThumb = ({ src, index, total, onClick }: {
   src: string;
   index: number;
@@ -262,58 +270,110 @@ const ImageThumb = ({ src, index, total, onClick }: {
   );
 };
 
-// Render a meta_out cell. list-events ALWAYS strips meta_out to keep its
-// payload light (every row arrives with meta_out=''); the bytes are fetched
-// on demand via dev-get-event when the operator clicks expand. Modes:
-//   - Empty row (no images, meta_out_size === 0) → "(empty)".
-//   - Image row, default → "See N images" button → fetch on click → thumbnails.
-//   - Text-only row (no images, meta_out_size > 0) → "Expand (N chars)" button
-//     → fetch on click → scrollable mono block with hide button.
-//   - Legacy rows that still carry full meta_out inline skip the network call
-//     (the cached effectiveValue already has the bytes).
-const MetaOutCell = ({ row, onOpen }: {
+// Render the meta cell. meta is text-only context (no images). The list
+// endpoint returns meta:'' for large rows; meta_size carries the true length so
+// we can label the Expand button accurately. Modes:
+//   - meta_size === 0 and no inline meta → "(empty)".
+//   - meta_size > 0 or inline meta present → "Expand (N chars)" button →
+//     ensureFull() resolves the shared per-row fetch → scrollable mono block.
+// Loading/error state is owned by EventRow and passed in via props so both
+// MetaCell and MetaOutCell share one in-flight network request.
+const MetaCell = ({ row, full, loading, error, onExpand }: {
   row: UsageRow;
+  full: { meta: string; meta_out: string } | null;
+  loading: boolean;
+  error: string | null;
+  onExpand: () => Promise<void>;
+}) => {
+  const [expanded, setExpanded] = useState(false);
+
+  // effectiveValue: prefer the fetched full payload, fall back to whatever the
+  // list gave us inline (legacy rows that still carry the real value).
+  const effectiveValue = full?.meta ?? row.meta;
+
+  // Empty when both the declared size and any inline value are absent.
+  const isEmpty = row.meta_size === 0 && !row.meta;
+  if (isEmpty) {
+    return <td className="py-1.5 px-3 font-mono text-[11px] text-slate-400">(empty)</td>;
+  }
+
+  if (!expanded) {
+    // Size label: prefer meta_size (accurate even when meta is stripped), fall
+    // back to the inline string length for legacy rows.
+    const charCount = row.meta_size > 0 ? row.meta_size : row.meta.length;
+    return (
+      <td className="py-1.5 px-3 max-w-md">
+        <button
+          type="button"
+          onClick={async () => {
+            await onExpand();
+            setExpanded(true);
+          }}
+          disabled={loading}
+          className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 disabled:opacity-60 disabled:cursor-progress transition-colors px-2.5 py-1 text-[11px] font-medium text-slate-700"
+          title="Lazy-load the row's meta from dev-get-event. The list endpoint omits large values to keep its payload small."
+        >
+          <span aria-hidden="true">▸</span>
+          <span>
+            {loading ? 'Loading…' : `Expand (${charCount.toLocaleString()} chars)`}
+          </span>
+        </button>
+        {error && (
+          <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{error}</div>
+        )}
+      </td>
+    );
+  }
+
+  return (
+    <td className="py-1.5 px-3 max-w-md">
+      <div className="font-mono text-[10px] text-slate-700 max-h-40 overflow-auto whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded p-1.5">
+        {effectiveValue}
+      </div>
+      <button
+        type="button"
+        onClick={() => setExpanded(false)}
+        className="mt-1 text-[10px] text-slate-400 hover:text-slate-600 underline"
+      >
+        hide
+      </button>
+    </td>
+  );
+};
+
+// Render a meta_out cell. list-events ALWAYS strips meta_out to keep its
+// payload light (every row arrives with meta_out=''); the bytes are resolved
+// via the shared per-row ensureFull() supplied by EventRow. Modes:
+//   - Empty row (no images, meta_out_size === 0) → "(empty)".
+//   - Image row, default → "See N images" button → ensureFull() → thumbnails.
+//   - Text-only row (no images, meta_out_size > 0) → "Expand (N chars)" button
+//     → ensureFull() → scrollable mono block with hide button.
+//   - Legacy rows that still carry full meta_out inline skip the network call
+//     (effectiveValue already has the bytes from the list response).
+// Loading/error state is owned by EventRow and passed in via props so MetaCell
+// and MetaOutCell share the same in-flight fetch result.
+const MetaOutCell = ({ row, full, loading, error, onExpand, onOpen }: {
+  row: UsageRow;
+  full: { meta: string; meta_out: string } | null;
+  loading: boolean;
+  error: string | null;
+  onExpand: () => Promise<void>;
   onOpen: (images: string[], index: number) => void;
 }) => {
   const [expanded, setExpanded] = useState(false);
-  const [fetchedValue, setFetchedValue] = useState<string | null>(null);
-  const [fetching, setFetching] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  const effectiveValue = fetchedValue ?? row.meta_out;
+  // effectiveValue: prefer the fetched payload, fall back to whatever the list
+  // gave us inline (legacy rows that still carry the full bytes).
+  const effectiveValue = full?.meta_out ?? row.meta_out;
   const images = useMemo(() => extractBase64Images(effectiveValue), [effectiveValue]);
 
-  const declaredCount = row.image_count > 0
-    ? row.image_count
-    : images.length;
+  const declaredCount = row.image_count > 0 ? row.image_count : images.length;
   const hasImages = declaredCount > 0;
   const hasText = !hasImages && (row.meta_out_size > 0 || row.meta_out.length > 0);
 
   if (!hasImages && !hasText) {
     return <td className="py-1.5 px-3 font-mono text-[11px] text-slate-400">(empty)</td>;
   }
-
-  const ensureFetched = async (): Promise<boolean> => {
-    const bytesAlreadyHere = effectiveValue.length > 0;
-    if (bytesAlreadyHere || !row.execution_id) return true;
-    setFetching(true);
-    setFetchError(null);
-    try {
-      const full = await fetchEventMetaOut({
-        execution_id: row.execution_id,
-        ts: row.ts,
-        email: row.email,
-        action: row.action,
-      });
-      setFetchedValue(full);
-      setFetching(false);
-      return true;
-    } catch (e: any) {
-      setFetchError(e?.message ?? String(e));
-      setFetching(false);
-      return false;
-    }
-  };
 
   if (hasImages) {
     const plural = declaredCount === 1 ? '' : 's';
@@ -323,20 +383,23 @@ const MetaOutCell = ({ row, onOpen }: {
         <td className="py-1.5 px-3 max-w-md">
           <button
             type="button"
-            onClick={async () => { if (await ensureFetched()) setExpanded(true); }}
-            disabled={fetching}
+            onClick={async () => {
+              await onExpand();
+              setExpanded(true);
+            }}
+            disabled={loading}
             className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 disabled:opacity-60 disabled:cursor-progress transition-colors px-2.5 py-1 text-[11px] font-medium text-slate-700"
             title="Lazy-load the row's base64 bytes and render thumbnails. The list endpoint omits these to keep its payload small."
           >
             <span aria-hidden="true">▸</span>
             <span>
-              {fetching
+              {loading
                 ? `Loading ${declaredCount} image${plural}…`
                 : `See ${declaredCount} image${plural}`}
             </span>
           </button>
-          {fetchError && (
-            <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{fetchError}</div>
+          {error && (
+            <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{error}</div>
           )}
         </td>
       );
@@ -370,18 +433,21 @@ const MetaOutCell = ({ row, onOpen }: {
       <td className="py-1.5 px-3 max-w-md">
         <button
           type="button"
-          onClick={async () => { if (await ensureFetched()) setExpanded(true); }}
-          disabled={fetching}
+          onClick={async () => {
+            await onExpand();
+            setExpanded(true);
+          }}
+          disabled={loading}
           className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 disabled:opacity-60 disabled:cursor-progress transition-colors px-2.5 py-1 text-[11px] font-medium text-slate-700"
           title="Lazy-load the row's meta_out from dev-get-event. The list endpoint omits these bytes to keep its payload small."
         >
           <span aria-hidden="true">▸</span>
           <span>
-            {fetching ? 'Loading…' : `Expand (${row.meta_out_size.toLocaleString()} chars)`}
+            {loading ? 'Loading…' : `Expand (${row.meta_out_size.toLocaleString()} chars)`}
           </span>
         </button>
-        {fetchError && (
-          <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{fetchError}</div>
+        {error && (
+          <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{error}</div>
         )}
       </td>
     );
@@ -400,6 +466,76 @@ const MetaOutCell = ({ row, onOpen }: {
         hide
       </button>
     </td>
+  );
+};
+
+// One table row in the Events view. Owns the shared lazy-fetch state so that
+// MetaCell and MetaOutCell for the SAME row share a single dev-get-event call.
+//
+// State machine:
+//   full === null, loading === false  → not yet fetched
+//   full === null, loading === true   → fetch in-flight
+//   full !== null                     → fetch complete; both cells read from it
+//   error !== null                    → fetch failed; both cells show the error
+//
+// ensureFull() is idempotent: a second call while loading is in progress does
+// nothing (the first call's promise will resolve and update shared state for
+// both cells). A second call after success returns immediately.
+const EventRow = ({ row, onOpen }: {
+  row: UsageRow;
+  onOpen: (images: string[], index: number) => void;
+}) => {
+  const [full, setFull] = useState<{ meta: string; meta_out: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Shared trigger. Both cells call this; only the first call actually fires
+  // the network request. Subsequent calls while in-flight or after resolution
+  // are no-ops — state updates from the first call propagate to both cells via
+  // normal React re-renders.
+  const ensureFull = async (): Promise<void> => {
+    // Already resolved or in-flight — nothing to do.
+    if (full !== null || loading) return;
+
+    // If the list endpoint happened to include inline bytes (legacy rows), or
+    // the row has no execution_id to look up, synthesise the result locally
+    // without hitting the network.
+    if ((row.meta.length > 0 || row.meta_size === 0) &&
+        (row.meta_out.length > 0 || row.meta_out_size === 0) &&
+        !row.execution_id) {
+      setFull({ meta: row.meta, meta_out: row.meta_out });
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fetchEvent({
+        execution_id: row.execution_id,
+        ts: row.ts,
+        email: row.email,
+        action: row.action,
+      });
+      setFull(result);
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <tr className="border-b border-slate-100 hover:bg-slate-50">
+      <td className="py-1.5 px-3 font-mono text-xs whitespace-nowrap">{fmtTime(row.ts)}</td>
+      <td className="py-1.5 px-3">{row.email}</td>
+      <td className="py-1.5 px-3 text-slate-600">{row.tab}</td>
+      <td className="py-1.5 px-3 font-semibold">{row.action}</td>
+      <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-[110px] truncate" title={row.execution_id}>
+        {row.execution_id ? (row.execution_id.length > 10 ? `${row.execution_id.slice(0, 8)}…` : row.execution_id) : '—'}
+      </td>
+      <MetaCell    row={row} full={full} loading={loading} error={error} onExpand={ensureFull} />
+      <MetaOutCell row={row} full={full} loading={loading} error={error} onExpand={ensureFull} onOpen={onOpen} />
+    </tr>
   );
 };
 
@@ -448,17 +584,7 @@ const EventsView = ({ rows }: { rows: UsageRow[] }) => {
       </thead>
       <tbody>
         {rows.map((r, i) => (
-          <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
-            <td className="py-1.5 px-3 font-mono text-xs whitespace-nowrap">{fmtTime(r.ts)}</td>
-            <td className="py-1.5 px-3">{r.email}</td>
-            <td className="py-1.5 px-3 text-slate-600">{r.tab}</td>
-            <td className="py-1.5 px-3 font-semibold">{r.action}</td>
-            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-[110px] truncate" title={r.execution_id}>
-              {r.execution_id ? (r.execution_id.length > 10 ? `${r.execution_id.slice(0, 8)}…` : r.execution_id) : '—'}
-            </td>
-            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={r.meta}>{r.meta}</td>
-            <MetaOutCell row={r} onOpen={openLightbox} />
-          </tr>
+          <EventRow key={i} row={r} onOpen={openLightbox} />
         ))}
       </tbody>
     </table>
@@ -590,7 +716,7 @@ const ACTION_PALETTE = [
   'bg-violet-500', 'bg-sky-500',     'bg-orange-500', 'bg-pink-500',
 ];
 const TOP_ACTIONS_IN_GRAPH = ACTION_PALETTE.length;
-const TAB_OPTIONS = ['creatives', 'keywords', 'angles', 'article'] as const;
+const TAB_OPTIONS = ['creatives', 'creative-edit', 'keywords', 'angles', 'article'] as const;
 
 const GraphView = ({ rows }: { rows: UsageRow[] }) => {
   const [selectedTabs, setSelectedTabs] = useState<Set<string>>(new Set());
@@ -859,6 +985,12 @@ export const DashboardPage = () => {
         meta_out_size: typeof r.meta_out_size === 'number'
           ? r.meta_out_size
           : (typeof r.meta_out === 'string' ? r.meta_out.length : 0),
+        // meta_size: prefer the explicit server-side field (added alongside
+        // meta_out_size); fall back to the actual meta string length for legacy
+        // rows that still carry the full inline value.
+        meta_size: typeof r.meta_size === 'number'
+          ? r.meta_size
+          : (typeof r.meta === 'string' ? r.meta.length : 0),
       }));
       normalized.sort((a, b) => (a.ts < b.ts ? 1 : -1));
       setRows(normalized);
