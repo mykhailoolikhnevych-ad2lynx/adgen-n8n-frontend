@@ -25,19 +25,37 @@ const LOG_URL = import.meta.env.PUBLIC_WEBHOOK_LOG_EVENT_URL as string | undefin
 
 // Input context — stays tight; only summary fields.
 const META_LIMIT = 2000;
-// Webhook response — generous, because generateCreative dumps Aggregate Images'
-// payload here (5x base64-encoded JPEGs at ~300-500 KB each → ~3 MB serialized;
-// real batches with saved-prompt picks have been seen at ~8 MB). Bumped 5 MB
-// → 10 MB after rows started tripping the sentinel in production.
-const META_OUT_LIMIT = 20_000_000;
+// Webhook response — capped tight (was 20 MB). Base64 image bytes are
+// stripped BEFORE this cap is checked (see stripBase64ImagesFromMetaOut),
+// so 100 KB easily fits any realistic JSON/error/log payload. n8n's
+// data-table reads scale with stored byte count; a bloated meta_out column
+// was wedging list-events for 18+ minutes per fetch.
+const META_OUT_LIMIT = 100_000;
 const ERROR_LIMIT = 500;
 
 const truncate = (s: string, max: number): string =>
   s.length > max ? s.slice(0, max) : s;
 
+// Strip every `data:image/...;base64,...` blob from meta_out before storing it.
+// The dashboard's "See N images" button has no use for these bytes inline —
+// they're never displayed unless an admin explicitly clicks expand, and even
+// then we'd rather they fetch from n8n's execution log via execution_id than
+// duplicate them in the usage_log data table. A leading marker preserves the
+// count so analytics can still surface "this event generated N images".
+const BASE64_IMG_RE = /data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+/g;
+const stripBase64ImagesFromMetaOut = (s: string): string => {
+  if (!s.includes('data:image/')) return s;
+  const matches = s.match(BASE64_IMG_RE) ?? [];
+  const unique = new Set(matches).size;
+  if (unique === 0) return s;
+  const stripped = s.replace(BASE64_IMG_RE, '[image_bytes_omitted]');
+  return `[base64_images_omitted: ${unique}]\n${stripped}`;
+};
+
 // Serialize an arbitrary value into one Data-Table column. JSON over `limit` is
 // dropped in favour of a "limit reached" sentinel — a truncated JSON blob is
-// invalid and harder to read than an explicit notice.
+// invalid and harder to read than an explicit notice. For meta_out, base64
+// image bytes are stripped FIRST so they never count against the limit.
 const serializeForColumn = (label: string, v: unknown, limit: number): string => {
   if (v == null) return '';
   let s: string;
@@ -45,6 +63,9 @@ const serializeForColumn = (label: string, v: unknown, limit: number): string =>
     s = typeof v === 'string' ? v : JSON.stringify(v);
   } catch {
     s = String(v);
+  }
+  if (label === 'meta_out') {
+    s = stripBase64ImagesFromMetaOut(s);
   }
   if (s.length > limit) {
     return `[${label} limit reached: ${s.length} chars, max ${limit}]`;
