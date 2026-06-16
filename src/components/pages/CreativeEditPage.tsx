@@ -7,6 +7,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { HOOK_HELP, ACCENT_HELP, CTA_HELP } from '@/components/ImageGenSettings';
 import { Combobox } from '@/components/ui/Combobox';
 import { AD_LANGUAGES } from '@/lib/geos';
+import { logEvent } from '@/lib/usage';
 
 const CREATIVE_EDIT_HELP =
   'Завантаж статичний банер (PNG / JPG / WebP), заповни Hook / Accent / CTA та (опційно) опиши, ' +
@@ -103,8 +104,14 @@ export const CreativeEditPage = () => {
   const handleAnalyze = async () => {
     if (!file) return;
 
+    // meta describes the *input* — never the image bytes (the file can be MBs;
+    // meta is capped at 2 KB). The image itself is omitted by design.
+    const meta = { fileName: file.name, fileType: file.type, fileSizeKB: Math.round(file.size / 1024) };
+
     if (!ANALYZE_WEBHOOK) {
-      setAnalyzeError('PUBLIC_WEBHOOK_CREATIVE_EDIT_ANALYZE_URL is not configured. Set it in .env.');
+      const msg = 'PUBLIC_WEBHOOK_CREATIVE_EDIT_ANALYZE_URL is not configured. Set it in .env.';
+      setAnalyzeError(msg);
+      logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, errorMessage: msg });
       return;
     }
 
@@ -122,6 +129,7 @@ export const CreativeEditPage = () => {
       if (data === null || typeof data !== 'object') {
         console.error('[CreativeEdit] analyze: unexpected response', data);
         setAnalyzeError('Unexpected analyze response shape');
+        logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: data, errorMessage: 'Unexpected analyze response shape' });
         return;
       }
 
@@ -135,20 +143,22 @@ export const CreativeEditPage = () => {
       if (!nextHook && !nextAccent && !nextCta) {
         console.error('[CreativeEdit] analyze: no hook/accent/cta in response', data);
         setAnalyzeError('Analyze returned no Hook / Accent / CTA');
+        logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: data, errorMessage: 'Analyze returned no Hook / Accent / CTA' });
         return;
       }
 
       setHook(nextHook);
       setAccent(nextAccent);
       setCta(nextCta);
+      logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: data });
     } catch (err: unknown) {
       const axiosErr = err as {
         response?: { data?: { message?: string } };
         message?: string;
       };
-      setAnalyzeError(
-        axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Analyze failed',
-      );
+      const msg = axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Analyze failed';
+      setAnalyzeError(msg);
+      logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: axiosErr?.response?.data, errorMessage: msg });
     } finally {
       setIsAnalyzing(false);
     }
@@ -193,8 +203,21 @@ export const CreativeEditPage = () => {
   const handleGenerate = async () => {
     if (!file || !hook.trim()) return;
 
+    // meta describes the *input* — the source filename plus the text/prompt
+    // fields the operator submitted. The uploaded image bytes are omitted.
+    const meta = {
+      fileName: file.name,
+      hook: hook.trim(),
+      accent: accent.trim(),
+      cta: cta.trim(),
+      imagePrompt: imagePrompt.trim(),
+      language: language === 'Keep original language' ? '' : language,
+    };
+
     if (!WEBHOOK) {
-      setErrorMessage('PUBLIC_WEBHOOK_CREATIVE_EDIT_URL is not configured. Set it in .env.');
+      const msg = 'PUBLIC_WEBHOOK_CREATIVE_EDIT_URL is not configured. Set it in .env.';
+      setErrorMessage(msg);
+      logEvent({ tab: 'creative-edit', action: 'editCreative', meta, errorMessage: msg });
       return;
     }
 
@@ -214,8 +237,13 @@ export const CreativeEditPage = () => {
       });
       const data = response.data;
 
+      // metaOut carries the webhook response. Edited creatives come back as
+      // image data URLs; usage.ts downscales them to thumbnails before storing,
+      // so they surface in the Dashboard's "See N images" the same as generated
+      // creatives. No special-casing needed here.
       if (typeof data === 'string') {
         setResults((prev) => [...prev, { url: data }]);
+        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
       } else if (
         data !== null &&
         typeof data === 'object' &&
@@ -229,6 +257,7 @@ export const CreativeEditPage = () => {
           )
           .map((item) => ({ url: item.url, fileName: item.fileName }));
         setResults((prev) => [...prev, ...items]);
+        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
       } else if (
         data !== null &&
         typeof data === 'object' &&
@@ -237,18 +266,20 @@ export const CreativeEditPage = () => {
       ) {
         const d = data as { url: string; fileName?: string };
         setResults((prev) => [...prev, { url: d.url, fileName: d.fileName }]);
+        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
       } else {
         console.error('[CreativeEdit] unexpected response', data);
         setErrorMessage('Unexpected response shape');
+        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data, errorMessage: 'Unexpected response shape' });
       }
     } catch (err: unknown) {
       const axiosErr = err as {
         response?: { data?: { message?: string } };
         message?: string;
       };
-      setErrorMessage(
-        axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Generation failed',
-      );
+      const msg = axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Generation failed';
+      setErrorMessage(msg);
+      logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: axiosErr?.response?.data, errorMessage: msg });
     } finally {
       setIsLoading(false);
     }
