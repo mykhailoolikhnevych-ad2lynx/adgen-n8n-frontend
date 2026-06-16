@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { fetchEventMetaOut } from '@/lib/events';
 
-// Admin-only usage analytics. Polls PUBLIC_WEBHOOK_LIST_EVENTS_URL every 30s
+// Admin-only usage analytics. Fetches PUBLIC_WEBHOOK_LIST_EVENTS_URL on mount
 // for the last 30 days of usage events and renders them as sub-tabs:
 //   - Events            (raw chronological log, with email/action filters)
 //   - Top Users         (leaderboard by event count)
@@ -29,6 +29,10 @@ interface UsageRow {
    *  by the dev-list-events response. Old rows (logged before the column was
    *  added) report 0 — for those the FE falls back to scanning meta_out. */
   image_count: number;
+  /** Character length of the original meta_out on the server, before list-events
+   *  stripped the bytes. 0 means there's nothing to expand. Drives the
+   *  text-row "Expand" button. */
+  meta_out_size: number;
 }
 
 type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph';
@@ -41,8 +45,11 @@ const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'graph',    label: 'Graph' },
 ];
 
-const LIST_URL = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
-const POLL_MS = 30_000;
+const LIST_URL  = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
+const STATS_URL = import.meta.env.PUBLIC_WEBHOOK_LIST_STATS_URL  as string | undefined;
+// 90s axios timeout — list-events / list-stats on a large usage_log table
+// can genuinely take a minute. Below that we'd prematurely abort.
+const REQUEST_TIMEOUT_MS = 90_000;
 const FETCH_LIMIT = 5000;
 const DEFAULT_RANGE_DAYS = 30;
 
@@ -255,19 +262,15 @@ const ImageThumb = ({ src, index, total, onClick }: {
   );
 };
 
-// Render a meta_out cell. Three modes:
-//   - Plain-text row (errors, small JSON) → truncated mono text, no <img> work.
-//   - Image row, default → "See N images" button. NO base64 is decoded, and the
-//     bytes haven't even been downloaded yet (the list response strips them).
-//   - Image row, after first click → lazy-fetch the full meta_out from
-//     dev-get-event, cache it in this row's state, then render thumbnails with
-//     the existing lightbox/truncated-badge pipeline. "hide" folds the
-//     thumbnails away without dropping the cached bytes, so re-opening is free.
-//
-// The image count comes from `row.image_count` (server-side; cheap, no
-// decoding). For pre-existing rows that pre-date that column the FE falls back
-// to scanning whatever meta_out it received — which for old data still
-// contains the full base64 inline, so the scan works.
+// Render a meta_out cell. list-events ALWAYS strips meta_out to keep its
+// payload light (every row arrives with meta_out=''); the bytes are fetched
+// on demand via dev-get-event when the operator clicks expand. Modes:
+//   - Empty row (no images, meta_out_size === 0) → "(empty)".
+//   - Image row, default → "See N images" button → fetch on click → thumbnails.
+//   - Text-only row (no images, meta_out_size > 0) → "Expand (N chars)" button
+//     → fetch on click → scrollable mono block with hide button.
+//   - Legacy rows that still carry full meta_out inline skip the network call
+//     (the cached effectiveValue already has the bytes).
 const MetaOutCell = ({ row, onOpen }: {
   row: UsageRow;
   onOpen: (images: string[], index: number) => void;
@@ -277,67 +280,104 @@ const MetaOutCell = ({ row, onOpen }: {
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Use the on-demand bytes once we have them; otherwise whatever the list
-  // endpoint returned (full base64 for legacy rows, empty for new rows).
   const effectiveValue = fetchedValue ?? row.meta_out;
   const images = useMemo(() => extractBase64Images(effectiveValue), [effectiveValue]);
 
-  // Server-reported count beats client-scanned count — image_count comes from
-  // the n8n side which sees the row before bytes are stripped.
   const declaredCount = row.image_count > 0
     ? row.image_count
     : images.length;
   const hasImages = declaredCount > 0;
+  const hasText = !hasImages && (row.meta_out_size > 0 || row.meta_out.length > 0);
 
-  if (!hasImages) {
+  if (!hasImages && !hasText) {
+    return <td className="py-1.5 px-3 font-mono text-[11px] text-slate-400">(empty)</td>;
+  }
+
+  const ensureFetched = async (): Promise<boolean> => {
+    const bytesAlreadyHere = effectiveValue.length > 0;
+    if (bytesAlreadyHere || !row.execution_id) return true;
+    setFetching(true);
+    setFetchError(null);
+    try {
+      const full = await fetchEventMetaOut({
+        execution_id: row.execution_id,
+        ts: row.ts,
+        email: row.email,
+        action: row.action,
+      });
+      setFetchedValue(full);
+      setFetching(false);
+      return true;
+    } catch (e: any) {
+      setFetchError(e?.message ?? String(e));
+      setFetching(false);
+      return false;
+    }
+  };
+
+  if (hasImages) {
+    const plural = declaredCount === 1 ? '' : 's';
+
+    if (!expanded) {
+      return (
+        <td className="py-1.5 px-3 max-w-md">
+          <button
+            type="button"
+            onClick={async () => { if (await ensureFetched()) setExpanded(true); }}
+            disabled={fetching}
+            className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 disabled:opacity-60 disabled:cursor-progress transition-colors px-2.5 py-1 text-[11px] font-medium text-slate-700"
+            title="Lazy-load the row's base64 bytes and render thumbnails. The list endpoint omits these to keep its payload small."
+          >
+            <span aria-hidden="true">▸</span>
+            <span>
+              {fetching
+                ? `Loading ${declaredCount} image${plural}…`
+                : `See ${declaredCount} image${plural}`}
+            </span>
+          </button>
+          {fetchError && (
+            <div className="text-[10px] text-red-600 mt-1 whitespace-pre-wrap" role="alert">{fetchError}</div>
+          )}
+        </td>
+      );
+    }
+
+    const shown = images.slice(0, MAX_IMAGES_PER_CELL);
+    const extra = images.length - shown.length;
     return (
-      <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500 max-w-md truncate" title={row.meta_out}>
-        {row.meta_out}
+      <td className="py-1.5 px-3 max-w-md">
+        <div className="flex flex-wrap items-center gap-1">
+          {shown.map((src, i) => (
+            <ImageThumb key={i} src={src} index={i} total={images.length} onClick={() => onOpen(images, i)} />
+          ))}
+          {extra > 0 && (
+            <span className="font-mono text-[10px] text-slate-400">+{extra}</span>
+          )}
+          <button
+            type="button"
+            onClick={() => setExpanded(false)}
+            className="ml-1 text-[10px] text-slate-400 hover:text-slate-600 underline"
+          >
+            hide
+          </button>
+        </div>
       </td>
     );
   }
 
-  const plural = declaredCount === 1 ? '' : 's';
-
   if (!expanded) {
-    const onClick = async () => {
-      // If meta_out already has the bytes (legacy row OR previous expansion),
-      // skip the network call entirely.
-      const bytesAlreadyHere = effectiveValue.includes('data:image/');
-      if (!bytesAlreadyHere && row.execution_id) {
-        setFetching(true);
-        setFetchError(null);
-        try {
-          const full = await fetchEventMetaOut({
-            execution_id: row.execution_id,
-            ts: row.ts,
-            email: row.email,
-            action: row.action,
-          });
-          setFetchedValue(full);
-        } catch (e: any) {
-          setFetchError(e?.message ?? String(e));
-          setFetching(false);
-          return;
-        }
-        setFetching(false);
-      }
-      setExpanded(true);
-    };
     return (
       <td className="py-1.5 px-3 max-w-md">
         <button
           type="button"
-          onClick={onClick}
+          onClick={async () => { if (await ensureFetched()) setExpanded(true); }}
           disabled={fetching}
           className="inline-flex items-center gap-1.5 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 hover:border-slate-300 disabled:opacity-60 disabled:cursor-progress transition-colors px-2.5 py-1 text-[11px] font-medium text-slate-700"
-          title="Lazy-load the row's base64 bytes and render thumbnails. The list endpoint omits these to keep its payload small."
+          title="Lazy-load the row's meta_out from dev-get-event. The list endpoint omits these bytes to keep its payload small."
         >
           <span aria-hidden="true">▸</span>
           <span>
-            {fetching
-              ? `Loading ${declaredCount} image${plural}…`
-              : `See ${declaredCount} image${plural}`}
+            {fetching ? 'Loading…' : `Expand (${row.meta_out_size.toLocaleString()} chars)`}
           </span>
         </button>
         {fetchError && (
@@ -347,25 +387,18 @@ const MetaOutCell = ({ row, onOpen }: {
     );
   }
 
-  const shown = images.slice(0, MAX_IMAGES_PER_CELL);
-  const extra = images.length - shown.length;
   return (
     <td className="py-1.5 px-3 max-w-md">
-      <div className="flex flex-wrap items-center gap-1">
-        {shown.map((src, i) => (
-          <ImageThumb key={i} src={src} index={i} total={images.length} onClick={() => onOpen(images, i)} />
-        ))}
-        {extra > 0 && (
-          <span className="font-mono text-[10px] text-slate-400">+{extra}</span>
-        )}
-        <button
-          type="button"
-          onClick={() => setExpanded(false)}
-          className="ml-1 text-[10px] text-slate-400 hover:text-slate-600 underline"
-        >
-          hide
-        </button>
+      <div className="font-mono text-[10px] text-slate-700 max-h-40 overflow-auto whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded p-1.5">
+        {effectiveValue}
       </div>
+      <button
+        type="button"
+        onClick={() => setExpanded(false)}
+        className="mt-1 text-[10px] text-slate-400 hover:text-slate-600 underline"
+      >
+        hide
+      </button>
     </td>
   );
 };
@@ -764,8 +797,17 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
 // Top-level page.
 // ---------------------------------------------------------------------------
 
+export interface DashboardStats {
+  total_events: number;
+  events_by_day: { day: string; total: number; by_action: Record<string, number> }[];
+  top_users: { email: string; count: number }[];
+  actions_by_count: { action: string; count: number }[];
+  tabs_by_count: { tab: string; count: number }[];
+}
+
 export const DashboardPage = () => {
   const [rows, setRows] = useState<UsageRow[]>([]);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<number | null>(null);
@@ -776,19 +818,27 @@ export const DashboardPage = () => {
   // the upper bound is always "now". Re-fetches when this changes.
   const [fromDate, setFromDate] = useState<string>(() => daysAgoInput(DEFAULT_RANGE_DAYS));
 
+  // In-flight guards. Without these the 30s/120s poll tick can fire a new
+  // request while the previous one is still chewing through the data table,
+  // causing executions to stack and n8n to grind to a halt.
+  const eventsInFlightRef = useRef(false);
+  const statsInFlightRef  = useRef(false);
+
   const fetchEvents = async (sinceOverride?: string) => {
     if (!LIST_URL) {
       setStatus('error');
       setError('PUBLIC_WEBHOOK_LIST_EVENTS_URL is not set in .env');
       return;
     }
+    if (eventsInFlightRef.current) return;
+    eventsInFlightRef.current = true;
     setStatus('loading');
     try {
       const since = sinceOverride ?? dateInputToIso(fromDate);
       const { data } = await axios.post(
         LIST_URL,
         { limit: FETCH_LIMIT, since },
-        { timeout: 30_000 },
+        { timeout: REQUEST_TIMEOUT_MS },
       );
       const outer = Array.isArray(data) ? data[0] : data;
       const payload = outer && typeof outer === 'object' && 'json' in outer ? (outer as any).json : outer;
@@ -806,6 +856,9 @@ export const DashboardPage = () => {
         error_message: String(r.error_message ?? ''),
         execution_id: String(r.execution_id ?? ''),
         image_count: typeof r.image_count === 'number' ? r.image_count : 0,
+        meta_out_size: typeof r.meta_out_size === 'number'
+          ? r.meta_out_size
+          : (typeof r.meta_out === 'string' ? r.meta_out.length : 0),
       }));
       normalized.sort((a, b) => (a.ts < b.ts ? 1 : -1));
       setRows(normalized);
@@ -816,16 +869,60 @@ export const DashboardPage = () => {
       console.error('[Dashboard] fetch error:', e);
       setStatus('error');
       setError(e?.message ?? String(e));
+    } finally {
+      eventsInFlightRef.current = false;
     }
   };
 
-  // Re-fetch (and restart the 30s poll) whenever the lower-bound date changes.
+  // Aggregations endpoint — counts only, no per-row meta. Lets Graph / Top
+  // Users / Action Popularity / Tab Breakdown render even when list-events is
+  // still chewing through the data table. If the endpoint isn't configured we
+  // silently skip; the existing tab views fall back to client-side aggregation
+  // off `rows`.
+  const fetchStats = async (sinceOverride?: string) => {
+    if (!STATS_URL) return;
+    if (statsInFlightRef.current) return;
+    statsInFlightRef.current = true;
+    try {
+      const since = sinceOverride ?? dateInputToIso(fromDate);
+      const { data } = await axios.post(
+        STATS_URL,
+        { since },
+        { timeout: REQUEST_TIMEOUT_MS },
+      );
+      const outer = Array.isArray(data) ? data[0] : data;
+      const payload = outer && typeof outer === 'object' && 'json' in outer ? (outer as any).json : outer;
+      if (payload && typeof payload === 'object') {
+        setStats(payload as DashboardStats);
+      }
+    } catch (e: any) {
+      console.error('[Dashboard] stats fetch error:', e);
+    } finally {
+      statsInFlightRef.current = false;
+    }
+  };
+
+  // Fetch events ONLY on mount and when the lower-bound date changes. Stats
+  // are LAZY — fired only when the operator opens an aggregation tab below
+  // (Graph / Top Users / Action Popularity / Tab Breakdown). Running both
+  // fetches in parallel doubled the n8n data-table contention.
   useEffect(() => {
     void fetchEvents();
-    const id = setInterval(() => { void fetchEvents(); }, POLL_MS);
-    return () => clearInterval(id);
+    // Date change invalidates cached stats — they'll be refetched only if the
+    // operator actually visits an aggregation tab.
+    setStats(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate]);
+
+  // Lazy stats fetch: only when an aggregation tab is shown AND we don't
+  // already have stats cached.
+  const needsStats = activeTab === 'graph' || activeTab === 'topUsers' || activeTab === 'actions' || activeTab === 'tabs';
+  useEffect(() => {
+    if (!needsStats) return;
+    if (stats !== null) return;
+    void fetchStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
   // Email/action filters narrow the rows for every sub-tab (raw or aggregated).
   const filtered = useMemo(() => {
@@ -882,7 +979,7 @@ export const DashboardPage = () => {
         <span className="text-xs text-slate-400 ml-auto">
           Last fetched: <span className="font-mono">{lastFetchedLabel}</span>
         </span>
-        <Button variant="outline" size="sm" onClick={() => { void fetchEvents(); }} disabled={status === 'loading'}>
+        <Button variant="outline" size="sm" onClick={() => { void fetchEvents(); if (needsStats) void fetchStats(); }} disabled={status === 'loading'}>
           {status === 'loading' ? 'Loading…' : 'Refresh'}
         </Button>
       </div>
