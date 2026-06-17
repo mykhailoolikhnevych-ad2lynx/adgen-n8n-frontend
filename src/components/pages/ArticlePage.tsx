@@ -90,7 +90,11 @@ export const ArticlePage = () => {
   const articleStatus = useAppStore((s) => s.articleStatus);
   const articleHtml = useAppStore((s) => s.articleHtml);
   const articleError = useAppStore((s) => s.articleError);
+  const articleTranslatedHtml = useAppStore((s) => s.articleTranslatedHtml);
+  const articleIsTranslating = useAppStore((s) => s.articleIsTranslating);
+  const articleShowTranslation = useAppStore((s) => s.articleShowTranslation);
   const generateArticle = useAppStore((s) => s.generateArticle);
+  const toggleArticleTranslation = useAppStore((s) => s.toggleArticleTranslation);
 
   const isLoading = articleStatus === 'loading';
 
@@ -152,9 +156,14 @@ export const ArticlePage = () => {
 
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
 
+  // Copy reflects what the user is currently looking at — UA if they've toggled
+  // the translation on, otherwise the original.
+  const displayedHtml =
+    articleShowTranslation && articleTranslatedHtml ? articleTranslatedHtml : articleHtml;
+
   const handleCopy = async () => {
-    if (!articleHtml) return;
-    const text = extractArticleText(articleHtml);
+    if (!displayedHtml) return;
+    const text = extractArticleText(displayedHtml);
     try {
       await navigator.clipboard.writeText(text);
       setCopyState('copied');
@@ -163,6 +172,10 @@ export const ArticlePage = () => {
     }
     setTimeout(() => setCopyState('idle'), 2000);
   };
+
+  let translateLabel = '🇺🇦 Translate';
+  if (articleIsTranslating) translateLabel = 'Translating…';
+  else if (articleShowTranslation && articleTranslatedHtml) translateLabel = '🇺🇸 Original';
 
   return (
     <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
@@ -254,14 +267,25 @@ export const ArticlePage = () => {
           <div className="flex items-center justify-between mb-2 shrink-0">
             <h2 className="font-bold text-xl">2. Results</h2>
             {articleStatus === 'success' && articleHtml && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCopy}
-                aria-label="Copy article text"
-              >
-                {copyState === 'copied' ? 'Copied!' : copyState === 'failed' ? 'Copy failed' : 'Copy'}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void toggleArticleTranslation()}
+                  disabled={articleIsTranslating}
+                  aria-label="Translate article to Ukrainian"
+                >
+                  {translateLabel}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCopy}
+                  aria-label="Copy article text"
+                >
+                  {copyState === 'copied' ? 'Copied!' : copyState === 'failed' ? 'Copy failed' : 'Copy'}
+                </Button>
+              </div>
             )}
           </div>
 
@@ -301,10 +325,10 @@ export const ArticlePage = () => {
                 {articleError ?? 'Unknown error'}
               </div>
             )}
-            {articleStatus === 'success' && articleHtml && (
+            {articleStatus === 'success' && displayedHtml && (
               <iframe
                 title="Full new article"
-                srcDoc={articleHtml}
+                srcDoc={displayedHtml}
                 sandbox="allow-same-origin"
                 className="w-full h-full border-0 rounded-md bg-white"
               />

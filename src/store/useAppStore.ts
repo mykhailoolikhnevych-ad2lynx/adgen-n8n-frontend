@@ -204,6 +204,11 @@ interface AppState {
   articleHtml: string | null;
   articleStatus: ArticleStatus;
   articleError: string | null;
+  /** Cached UA version of articleHtml, built on first toggle by translating the
+   *  h1/h2/h3/p/li text via the shared /translate_uk webhook. Null until requested. */
+  articleTranslatedHtml: string | null;
+  articleIsTranslating: boolean;
+  articleShowTranslation: boolean;
   keywordHtml: string | null;
   keywordStatus: ArticleStatus;
   keywordError: string | null;
@@ -239,6 +244,10 @@ interface AppState {
   toggleAngleTranslation: (angleId: string) => Promise<void>;
   toggleConceptTranslation: (conceptId: string) => Promise<void>;
   toggleCreativeTranslation: (creativeId: string) => Promise<void>;
+  /** Article tab — translate the rendered article HTML to UA on first toggle,
+   *  cache, then just flip visibility on later toggles. Same UX as the angle/
+   *  concept/creative cards. */
+  toggleArticleTranslation: () => Promise<void>;
   showError: (message: string) => void;
   dismissError: () => void;
   showWarning: (message: string) => void;
@@ -564,6 +573,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
   articleHtml: null, articleStatus: 'idle', articleError: null,
+  articleTranslatedHtml: null, articleIsTranslating: false, articleShowTranslation: false,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
@@ -694,12 +704,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     const meta = { topic, geo, language, mode };
     if (!WEBHOOKS.article) {
       const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
-      set({ articleStatus: 'error', articleError: msg, articleHtml: null });
+      set({
+        articleStatus: 'error', articleError: msg, articleHtml: null,
+        articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
+      });
       get().showError(msg);
       logEvent({ tab: 'article', action: 'generateArticle', meta, errorMessage: msg });
       return;
     }
-    set({ articleStatus: 'loading', articleError: null, articleHtml: null });
+    set({
+      articleStatus: 'loading', articleError: null, articleHtml: null,
+      articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
+    });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         // GEO drives the SERP fetch; `language` is used only by the article-writing
@@ -724,7 +740,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         console.error(e);
         const msg = humanizeError(e);
-        set({ articleStatus: 'error', articleError: msg, articleHtml: null });
+        set({
+          articleStatus: 'error', articleError: msg, articleHtml: null,
+          articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
+        });
         get().showError(`Article generation failed: ${msg}`);
         logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: (e as any)?.response?.data, errorMessage: msg });
         return;
@@ -1648,6 +1667,66 @@ export const useAppStore = create<AppState>((set, get) => ({
       set((state) => ({
         creatives: state.creatives.map(c => c.id === creativeId ? { ...c, isTranslating: false } : c),
       }));
+      get().showError(`Translation failed: ${humanizeError(e)}`);
+    }
+  },
+
+  // Article tab — translate the rendered article (h1/h2/h3/p/li text inside
+  // article.article-card) to UA via the shared /translate_uk webhook. Cached on
+  // first call; later toggles just flip articleShowTranslation. Mirrors the
+  // angle/concept/creative card UX.
+  toggleArticleTranslation: async () => {
+    const { articleHtml, articleTranslatedHtml, articleShowTranslation, articleIsTranslating } = get();
+    if (!articleHtml || articleIsTranslating) return;
+
+    // Cache hit — flip visibility, no network call.
+    if (articleTranslatedHtml) {
+      set({ articleShowTranslation: !articleShowTranslation });
+      return;
+    }
+
+    set({ articleIsTranslating: true });
+    try {
+      const doc = new DOMParser().parseFromString(articleHtml, 'text/html');
+      // The article body is the first article.article-card; the second card on
+      // this page is the References block (built from <a> tags, no prose).
+      const articleNode = doc.querySelector('article.article-card');
+      if (!articleNode) throw new Error('Article body not found in HTML');
+
+      const nodes = Array.from(
+        articleNode.querySelectorAll('h1, h2, h3, p, li')
+      ) as HTMLElement[];
+      const payload: Record<string, string> = {};
+      const keys: string[] = [];
+      nodes.forEach((el, i) => {
+        const text = (el.textContent ?? '').trim();
+        if (!text) return;
+        const key = `t_${i}`;
+        payload[key] = text;
+        keys.push(key);
+      });
+      if (keys.length === 0) throw new Error('No translatable text in article');
+
+      const tr = await postTranslateUk(payload);
+
+      nodes.forEach((el, i) => {
+        const key = `t_${i}`;
+        if (!(key in payload)) return;
+        const translated = tr[key];
+        if (typeof translated === 'string' && translated.length > 0) {
+          el.textContent = translated;
+        }
+      });
+
+      const translatedHtml = '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+      set({
+        articleTranslatedHtml: translatedHtml,
+        articleIsTranslating: false,
+        articleShowTranslation: true,
+      });
+    } catch (e) {
+      console.error('[toggleArticleTranslation]', e);
+      set({ articleIsTranslating: false });
       get().showError(`Translation failed: ${humanizeError(e)}`);
     }
   },
