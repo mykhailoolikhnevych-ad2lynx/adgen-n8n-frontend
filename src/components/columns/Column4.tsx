@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
+import { CopyNameButton } from '@/components/ui/CopyNameButton';
 
 const CREATIVES_BATCHES_HELP =
   "Готові пакети креативів — кожен містить 4 варіанти банера (A / B / C / D) в різних візуальних стилях: YouTube-thumbnail, organic-social, highlight-block та illustrated. Усі 4 використовують той самий хук, акцент і CTA — тестуємо, як саме візуальний стиль впливає на CTR. Можна завантажити пакет ZIP-ом або одразу надіслати в Telegram-канал команди.";
@@ -276,33 +277,36 @@ export const Column4 = ({
                 // we draw no badge — only the failing case needs an indicator.
                 const failedCompliance = img.compliant === false;
                 return (
-                  <button
-                    type="button"
-                    key={i}
-                    onClick={() => openLightbox(creative, i)}
-                    className={`relative aspect-square bg-slate-100 rounded-md overflow-hidden border cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-green-500 ${
-                      failedCompliance ? 'border-amber-400 ring-1 ring-amber-300' : ''
-                    }`}
-                    aria-label={`Open image ${img.style || i + 1}`}
-                    title={failedCompliance
-                      ? `Not compliant — ${img.complianceType || 'flagged'}${img.complianceDescription ? `: ${img.complianceDescription}` : ''}`
-                      : undefined}
-                  >
-                    <img src={img.url} alt={`Creative ${img.style || i + 1}`} className="w-full h-full object-cover" />
-                    {img.style && (
-                      <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
-                        {img.style}
-                      </span>
-                    )}
-                    {failedCompliance && (
-                      <span
-                        className="absolute top-1 right-1 inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 border border-yellow-600 shadow"
-                        aria-label="Not compliant"
-                      >
-                        <span className="text-[9px] font-bold text-yellow-900 leading-none">!</span>
-                      </span>
-                    )}
-                  </button>
+                  <div key={i} className="flex flex-col gap-1">
+                    <button
+                      type="button"
+                      onClick={() => openLightbox(creative, i)}
+                      className={`relative aspect-square bg-slate-100 rounded-md overflow-hidden border cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                        failedCompliance ? 'border-amber-400 ring-1 ring-amber-300' : ''
+                      }`}
+                      aria-label={`Open image ${img.style || i + 1}`}
+                      title={failedCompliance
+                        ? `Not compliant — ${img.complianceType || 'flagged'}${img.complianceDescription ? `: ${img.complianceDescription}` : ''}`
+                        : undefined}
+                    >
+                      <img src={img.url} alt={`Creative ${img.style || i + 1}`} className="w-full h-full object-cover" />
+                      {img.style && (
+                        <span className="absolute top-1 left-1 bg-black/60 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+                          {img.style}
+                        </span>
+                      )}
+                      {failedCompliance && (
+                        <span
+                          className="absolute top-1 right-1 inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-400 border border-yellow-600 shadow"
+                          aria-label="Not compliant"
+                        >
+                          <span className="text-[9px] font-bold text-yellow-900 leading-none">!</span>
+                        </span>
+                      )}
+                    </button>
+                    {/* One-click copy of the standardized file name -> Facebook Ad name. */}
+                    {img.fileName && <CopyNameButton fileName={img.fileName} className="w-full" />}
+                  </div>
                 );
               })}
             </div>
@@ -457,6 +461,13 @@ export const Column4 = ({
                 <span className="font-bold">STYLE:</span>{' '}
                 <span className="text-gray-200">{currentImage.style || '—'}</span>
               </div>
+              {currentImage.fileName && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-bold">FILE NAME:</span>
+                  <span className="text-gray-200 break-all">{currentImage.fileName}</span>
+                  <CopyNameButton fileName={currentImage.fileName} />
+                </div>
+              )}
               {lightbox.creative.origin !== 'creativeOnly' && (
                 <>
                   <div>

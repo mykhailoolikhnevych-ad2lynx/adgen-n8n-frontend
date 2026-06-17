@@ -6,6 +6,7 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { Skeleton } from '@/components/ui/skeleton';
 import { HOOK_HELP, ACCENT_HELP, CTA_HELP } from '@/components/ImageGenSettings';
 import { Combobox } from '@/components/ui/Combobox';
+import { CopyNameButton } from '@/components/ui/CopyNameButton';
 import { AD_LANGUAGES } from '@/lib/geos';
 import { logEvent } from '@/lib/usage';
 
@@ -470,13 +471,17 @@ export const CreativeEditPage = () => {
                       className="max-h-[480px] w-full object-contain rounded"
                     />
                   </div>
-                  <a
-                    href={item.url}
-                    download={name}
-                    className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors w-fit"
-                  >
-                    Download
-                  </a>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={item.url}
+                      download={name}
+                      className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors w-fit"
+                    >
+                      Download
+                    </a>
+                    {/* Copies the standardized file name (no extension) -> Facebook Ad name. */}
+                    <CopyNameButton fileName={name} className="px-3 py-1.5 text-sm" />
+                  </div>
                 </div>
               );
             })}
