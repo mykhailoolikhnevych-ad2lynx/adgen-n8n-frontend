@@ -39,7 +39,7 @@ interface UsageRow {
   meta_size: number;
 }
 
-type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph';
+type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph' | 'costs';
 
 const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'events',   label: 'Events' },
@@ -47,15 +47,28 @@ const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'actions',  label: 'Action Popularity' },
   { value: 'tabs',     label: 'Tab Breakdown' },
   { value: 'graph',    label: 'Graph' },
+  { value: 'costs',    label: 'Costs' },
 ];
 
 const LIST_URL  = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
 const STATS_URL = import.meta.env.PUBLIC_WEBHOOK_LIST_STATS_URL  as string | undefined;
+// Per-node OpenRouter cost aggregation (dev-cost-stats in the DEV Usage Log
+// workflow). Returns { nodes:[{ node, calls, min, max, avg, total }], grand_total }.
+const COST_STATS_URL = import.meta.env.PUBLIC_WEBHOOK_COST_STATS_URL as string | undefined;
 // 90s axios timeout — list-events / list-stats on a large usage_log table
 // can genuinely take a minute. Below that we'd prematurely abort.
 const REQUEST_TIMEOUT_MS = 90_000;
 const FETCH_LIMIT = 5000;
 const DEFAULT_RANGE_DAYS = 30;
+
+// USD formatter for cost figures. OpenRouter costs are tiny per call (often
+// sub-cent), so 4 decimal places keeps min/avg readable without scientific
+// notation. Totals reuse the same format for consistency.
+const fmtUsd = (n: number): string => {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '$0.0000';
+  return `$${v.toFixed(4)}`;
+};
 
 const fmtTime = (iso: string): string => {
   try {
@@ -920,6 +933,127 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
 };
 
 // ---------------------------------------------------------------------------
+// Costs view — per-node OpenRouter spend. Fetches dev-cost-stats (which reads
+// the cost_log Data Table populated by each workflow's cost-logging branch) and
+// renders one row per node: calls, min, max, avg, total. Self-contained: it
+// fetches on mount and whenever the date range (`since`) changes, independent of
+// the events/stats fetches, so it works even when there are zero usage events.
+// ---------------------------------------------------------------------------
+
+interface CostNode {
+  node: string;
+  workflow: string;
+  model: string;
+  calls: number;
+  min: number;
+  max: number;
+  avg: number;
+  total: number;
+}
+
+const CostsView = ({ since }: { since: string }) => {
+  const [nodes, setNodes] = useState<CostNode[]>([]);
+  const [grandTotal, setGrandTotal] = useState(0);
+  const [totalCalls, setTotalCalls] = useState(0);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+
+  const load = useCallback(async () => {
+    if (!COST_STATS_URL) {
+      setStatus('error');
+      setError('PUBLIC_WEBHOOK_COST_STATS_URL is not set in .env');
+      return;
+    }
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setStatus('loading');
+    try {
+      const { data } = await axios.post(COST_STATS_URL, { since }, { timeout: REQUEST_TIMEOUT_MS });
+      const outer = Array.isArray(data) ? data[0] : data;
+      const payload = outer && typeof outer === 'object' && 'json' in outer ? (outer as any).json : outer;
+      const list: any[] = Array.isArray(payload?.nodes) ? payload.nodes : [];
+      setNodes(list.map((n) => ({
+        node: String(n.node ?? ''),
+        workflow: String(n.workflow ?? ''),
+        model: String(n.model ?? ''),
+        calls: Number(n.calls ?? 0),
+        min: Number(n.min ?? 0),
+        max: Number(n.max ?? 0),
+        avg: Number(n.avg ?? 0),
+        total: Number(n.total ?? 0),
+      })));
+      setGrandTotal(Number(payload?.grand_total ?? 0));
+      setTotalCalls(Number(payload?.total_calls ?? 0));
+      setStatus('success');
+      setError(null);
+    } catch (e: any) {
+      console.error('[Dashboard] cost stats fetch error:', e);
+      setStatus('error');
+      setError(e?.message ?? String(e));
+    } finally {
+      inFlight.current = false;
+    }
+  }, [since]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  if (status === 'error') {
+    return <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Failed to load cost stats'}</div>;
+  }
+  if (status === 'loading' && nodes.length === 0) {
+    return <div className="p-6 text-gray-400 italic">Loading cost stats…</div>;
+  }
+  if (nodes.length === 0) {
+    return <div className="p-6 text-gray-400 italic">No cost data in the selected range. Generate a creative (or run an analyze/edit) so a workflow logs to cost_log.</div>;
+  }
+
+  const maxTotal = nodes.reduce((m, n) => Math.max(m, n.total), 0) || 1;
+
+  return (
+    <table className="w-full text-sm border-collapse">
+      <thead className="sticky top-0 bg-slate-100 z-10">
+        <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+          <th className="py-2 px-3">Node</th>
+          <th className="py-2 px-3">Workflow</th>
+          <th className="py-2 px-3">Model</th>
+          <th className="py-2 px-3 w-20">Calls</th>
+          <th className="py-2 px-3 w-24">Min</th>
+          <th className="py-2 px-3 w-24">Max</th>
+          <th className="py-2 px-3 w-24">Avg</th>
+          <th className="py-2 px-3 w-24">Total</th>
+          <th className="py-2 px-3 w-48">Share of spend</th>
+        </tr>
+      </thead>
+      <tbody>
+        {nodes.map((n) => (
+          <tr key={`${n.workflow}::${n.node}`} className="border-b border-slate-100 hover:bg-slate-50">
+            <td className="py-1.5 px-3 font-semibold">{n.node}</td>
+            <td className="py-1.5 px-3 text-[11px] text-slate-500">{n.workflow || '—'}</td>
+            <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500">{n.model || '—'}</td>
+            <td className="py-1.5 px-3 font-mono">{n.calls}</td>
+            <td className="py-1.5 px-3 font-mono text-slate-600">{fmtUsd(n.min)}</td>
+            <td className="py-1.5 px-3 font-mono text-slate-600">{fmtUsd(n.max)}</td>
+            <td className="py-1.5 px-3 font-mono font-semibold">{fmtUsd(n.avg)}</td>
+            <td className="py-1.5 px-3 font-mono">{fmtUsd(n.total)}</td>
+            <td className="py-1.5 px-3"><Bar value={n.total} max={maxTotal} tint="bg-amber-200" /></td>
+          </tr>
+        ))}
+      </tbody>
+      <tfoot>
+        <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
+          <td className="py-2 px-3" colSpan={3}>Grand total</td>
+          <td className="py-2 px-3 font-mono">{totalCalls}</td>
+          <td className="py-2 px-3" colSpan={3} />
+          <td className="py-2 px-3 font-mono">{fmtUsd(grandTotal)}</td>
+          <td className="py-2 px-3" />
+        </tr>
+      </tfoot>
+    </table>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Top-level page.
 // ---------------------------------------------------------------------------
 
@@ -1151,19 +1285,28 @@ export const DashboardPage = () => {
 
       {/* Content */}
       <div className="flex-1 min-h-0 bg-white rounded-xl border shadow-sm overflow-auto">
-        {status === 'error' && (
-          <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Unknown error fetching usage events'}</div>
-        )}
-        {status !== 'error' && rows.length === 0 && status !== 'loading' && (
-          <div className="p-6 text-gray-400 italic">No events in the selected range.</div>
-        )}
-        {status !== 'error' && (rows.length > 0 || status === 'loading') && (
+        {/* Costs has its own fetch + status (dev-cost-stats), so it renders
+            independently of the events fetch — even when there are zero usage
+            events the operator can still see per-node spend. */}
+        {activeTab === 'costs' ? (
+          <CostsView since={dateInputToIso(fromDate)} />
+        ) : (
           <>
-            {activeTab === 'events'   && <EventsView    rows={filtered} />}
-            {activeTab === 'topUsers' && <TopUsersView  rows={filtered} />}
-            {activeTab === 'actions'  && <CountView     rows={filtered} keyFn={(r) => r.action} label="Action" tint="bg-purple-200" />}
-            {activeTab === 'tabs'     && <CountView     rows={filtered} keyFn={(r) => r.tab}    label="Tab"    tint="bg-emerald-200" />}
-            {activeTab === 'graph'    && <GraphView     rows={filtered} />}
+            {status === 'error' && (
+              <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Unknown error fetching usage events'}</div>
+            )}
+            {status !== 'error' && rows.length === 0 && status !== 'loading' && (
+              <div className="p-6 text-gray-400 italic">No events in the selected range.</div>
+            )}
+            {status !== 'error' && (rows.length > 0 || status === 'loading') && (
+              <>
+                {activeTab === 'events'   && <EventsView    rows={filtered} />}
+                {activeTab === 'topUsers' && <TopUsersView  rows={filtered} />}
+                {activeTab === 'actions'  && <CountView     rows={filtered} keyFn={(r) => r.action} label="Action" tint="bg-purple-200" />}
+                {activeTab === 'tabs'     && <CountView     rows={filtered} keyFn={(r) => r.tab}    label="Tab"    tint="bg-emerald-200" />}
+                {activeTab === 'graph'    && <GraphView     rows={filtered} />}
+              </>
+            )}
           </>
         )}
       </div>
