@@ -19,6 +19,9 @@ export interface SavedPrompt {
    *  InfoTooltip text next to each saved prompt in Column3 so operators see
    *  what the prompt does at a glance, without having to read the body. */
   ua_description?: string;
+  /** Optional reference image stored as a downscaled JPEG data URL (max 480 px).
+   *  Empty/undefined when no image is set. */
+  image?: string;
   updated_at?: string;
   updated_by?: string;
 }
@@ -57,6 +60,7 @@ export const listPrompts = async (): Promise<SavedPrompt[]> => {
       name: String(r.name ?? ''),
       prompt: String(r.prompt ?? ''),
       ua_description: r.ua_description ? String(r.ua_description) : undefined,
+      image: r.image ? String(r.image) : undefined,
       updated_at: r.updated_at ? String(r.updated_at) : undefined,
       updated_by: r.updated_by ? String(r.updated_by) : undefined,
     }));
@@ -70,6 +74,7 @@ export const savePrompt = async (input: {
   name: string;
   prompt: string;
   ua_description?: string;
+  image?: string;
 }): Promise<SavedPrompt> => {
   if (!SAVE_URL) missingUrl('PUBLIC_WEBHOOK_SAVE_PROMPT_URL');
   const ident = await getAuthEmail();
@@ -80,6 +85,7 @@ export const savePrompt = async (input: {
     name: input.name,
     prompt: input.prompt,
     ua_description: input.ua_description ?? '',
+    image: input.image ?? '',
     email: ident?.email ?? 'unknown@unknown',
   };
   if (input.id != null && String(input.id).trim() !== '') {
@@ -98,6 +104,7 @@ export const savePrompt = async (input: {
     ua_description: saved.ua_description != null
       ? String(saved.ua_description)
       : input.ua_description,
+    image: saved.image ?? input.image ?? undefined,
     updated_at: saved.updated_at ? String(saved.updated_at) : undefined,
     updated_by: saved.updated_by ? String(saved.updated_by) : undefined,
   };

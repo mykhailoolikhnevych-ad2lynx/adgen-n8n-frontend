@@ -201,6 +201,14 @@ export const ImageGenSettings = () => {
   } = useAppStore();
 
   const { presetsInvalid } = useEffectivePresets();
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!previewImage) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewImage(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewImage]);
 
   // Pull the shared prompt library on mount — re-fetches each time so a
   // freshly-saved prompt in Docs shows up here without a hard refresh.
@@ -341,6 +349,21 @@ export const ImageGenSettings = () => {
                             {p.name}
                           </span>
                         </label>
+                        {p.image && (
+                          <button
+                            type="button"
+                            onClick={() => setPreviewImage(p.image!)}
+                            className="shrink-0 rounded border border-slate-300 hover:ring-2 hover:ring-blue-400 transition"
+                            aria-label="Preview reference image"
+                            title="Click to preview"
+                          >
+                            <img
+                              src={p.image}
+                              alt=""
+                              className="w-10 h-10 object-cover rounded block"
+                            />
+                          </button>
+                        )}
                         <InfoTooltip text={(p.ua_description && p.ua_description.trim()) || p.prompt} iconSize={11} />
                       </div>
                     );
@@ -453,6 +476,27 @@ export const ImageGenSettings = () => {
           </div>
         )}
       </div>
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setPreviewImage(null)}
+        >
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+            className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
+            aria-label="Close"
+          >
+            ×
+          </button>
+          <img
+            src={previewImage}
+            alt="Reference"
+            className="max-w-[92vw] max-h-[92vh] object-contain rounded-md"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 };
