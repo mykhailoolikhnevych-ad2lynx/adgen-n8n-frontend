@@ -1885,6 +1885,31 @@ const KnowledgeBaseView = () => {
 // roundtrip to the API and reuse the response (no extra refetch).
 // ---------------------------------------------------------------------------
 
+const resizeImageToJpegDataUrl = (file: File, maxPx: number, quality: number): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      if (typeof dataUrl !== 'string') { reject(new Error('FileReader returned non-string')); return; }
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxPx / Math.max(img.naturalWidth, img.naturalHeight, 1));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { reject(new Error('canvas 2d unavailable')); return; }
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.onerror = () => reject(new Error('image decode failed'));
+      img.src = dataUrl;
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
+    reader.readAsDataURL(file);
+  });
+
 type FetchStatus = 'idle' | 'loading' | 'success' | 'error';
 
 const humanizeError = (e: unknown): string => {
@@ -1911,6 +1936,9 @@ const PromptBasesView = () => {
   // Sidebar search — case-insensitive substring on the name. Empty query shows
   // everything. UX matches the GEO / Language comboboxes in Creatives.
   const [searchQuery, setSearchQuery] = useState('');
+  const [draftImage, setDraftImage] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
 
   // Initial load.
   useEffect(() => {
@@ -1936,6 +1964,8 @@ const PromptBasesView = () => {
     setDraftName('');
     setDraftBody('');
     setDraftUaDescription('');
+    setDraftImage('');
+    setImageError(null);
     setEditingId(null);
     setOpError(null);
   };
@@ -1952,6 +1982,7 @@ const PromptBasesView = () => {
         name,
         prompt: body,
         ua_description: draftUaDescription,
+        image: draftImage,
       });
       setPrompts((cur) => {
         const idx = cur.findIndex((p) => p.id === saved.id);
@@ -1973,6 +2004,8 @@ const PromptBasesView = () => {
     setDraftName(p.name);
     setDraftBody(p.prompt);
     setDraftUaDescription(p.ua_description ?? '');
+    setDraftImage(p.image ?? '');
+    setImageError(null);
     setOpError(null);
   };
 
@@ -1988,6 +2021,31 @@ const PromptBasesView = () => {
     } finally {
       setBusy(null);
     }
+  };
+
+  const handleImageFile = async (file: File) => {
+    setImageError(null);
+    try {
+      const dataUrl = await resizeImageToJpegDataUrl(file, 480, 0.8);
+      setDraftImage(dataUrl);
+    } catch (e) {
+      setImageError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleImageDragEnter = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); };
+  const handleImageDragLeave = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); };
+  const handleImageDragOver = (e: React.DragEvent) => { e.preventDefault(); };
+  const handleImageDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) handleImageFile(file);
+  };
+  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleImageFile(file);
+    e.target.value = '';
   };
 
   const canSave = draftName.trim().length > 0 && draftBody.trim().length > 0 && busy === null;
@@ -2053,8 +2111,17 @@ const PromptBasesView = () => {
                     isEditing ? 'bg-blue-50' : 'hover:bg-slate-50'
                   }`}
                 >
-                  <div className="font-semibold text-sm truncate" title={p.name}>
-                    {p.name}
+                  <div className="flex items-center gap-2">
+                    {p.image && (
+                      <img
+                        src={p.image}
+                        alt=""
+                        className="w-8 h-8 shrink-0 object-cover rounded border"
+                      />
+                    )}
+                    <div className="font-semibold text-sm truncate" title={p.name}>
+                      {p.name}
+                    </div>
                   </div>
                   <div className="text-[11px] text-slate-500 mt-1 line-clamp-2 whitespace-pre-wrap">
                     {p.prompt}
@@ -2133,6 +2200,54 @@ const PromptBasesView = () => {
           className="text-sm min-h-[80px] mb-4"
           disabled={busy !== null}
         />
+
+        <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
+          Creative image{' '}
+          <span className="ml-1 normal-case font-normal text-slate-400">— optional</span>
+        </label>
+        <label
+          onDragEnter={handleImageDragEnter}
+          onDragLeave={handleImageDragLeave}
+          onDragOver={handleImageDragOver}
+          onDrop={handleImageDrop}
+          className={`cursor-pointer flex flex-col items-center justify-center rounded-md border-2 border-dashed px-3 py-4 text-sm font-medium transition-colors w-full text-center ${
+            isDragging
+              ? 'border-blue-500 bg-blue-50 text-blue-700'
+              : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
+          }`}
+        >
+          <span>{draftImage ? 'Replace creative' : 'Upload creative'}</span>
+          <span className="mt-0.5 text-[11px] font-normal text-slate-500">or drag & drop here</span>
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={handleImageFileChange}
+            disabled={busy !== null}
+          />
+        </label>
+        {draftImage && (
+          <div className="mt-1 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setDraftImage(''); setImageError(null); }}
+              className="text-xs text-red-500 hover:underline"
+            >
+              Remove
+            </button>
+          </div>
+        )}
+        {draftImage && (
+          <img
+            src={draftImage}
+            alt="Creative preview"
+            className="mt-2 max-h-40 w-full object-contain rounded border mb-4"
+          />
+        )}
+        {!draftImage && <div className="mb-4" />}
+        {imageError && (
+          <div className="text-xs text-red-600 mb-3">{imageError}</div>
+        )}
 
         {opError && (
           <div className="text-xs text-red-600 mb-3 whitespace-pre-wrap" role="alert">
