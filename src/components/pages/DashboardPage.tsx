@@ -727,9 +727,10 @@ const CountView = ({
 const ACTION_PALETTE = [
   'bg-indigo-500', 'bg-emerald-500', 'bg-amber-500', 'bg-rose-500',
   'bg-violet-500', 'bg-sky-500',     'bg-orange-500', 'bg-pink-500',
+  'bg-teal-500',   'bg-lime-500',    'bg-cyan-500',   'bg-fuchsia-500',
+  'bg-red-500',    'bg-yellow-500',  'bg-blue-500',   'bg-purple-500',
 ];
-const TOP_ACTIONS_IN_GRAPH = ACTION_PALETTE.length;
-const TAB_OPTIONS = ['creatives', 'creative-edit', 'keywords', 'angles', 'article'] as const;
+const TAB_OPTIONS = ['creatives', 'creative_gen', 'creative-edit', 'keywords', 'angles', 'article'] as const;
 
 const GraphView = ({ rows }: { rows: UsageRow[] }) => {
   const [selectedTabs, setSelectedTabs] = useState<Set<string>>(new Set());
@@ -758,6 +759,8 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
 
   // Legend reflects whatever survived the tab filter — selecting an action that no
   // longer exists in the data is a non-issue because the legend won't list it.
+  // Every distinct action gets a slot; the palette cycles when there are more
+  // actions than colors so no event ever falls into a generic "others" bucket.
   const topActions = useMemo<string[]>(() => {
     const counts = new Map<string, number>();
     for (const r of tabFiltered) {
@@ -766,7 +769,6 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
     }
     return Array.from(counts.entries())
       .sort((a, b) => b[1] - a[1])
-      .slice(0, TOP_ACTIONS_IN_GRAPH)
       .map(([a]) => a);
   }, [tabFiltered]);
 
@@ -796,7 +798,7 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
   const maxTotal = dailyData.reduce((m, d) => Math.max(m, d.total), 0) || 1;
   const colorFor = (action: string): string => {
     const idx = topActions.indexOf(action);
-    return idx === -1 ? 'bg-slate-300' : ACTION_PALETTE[idx];
+    return idx === -1 ? 'bg-slate-300' : ACTION_PALETTE[idx % ACTION_PALETTE.length];
   };
 
   const hasFilter = selectedTabs.size > 0 || selectedActions.size > 0;
@@ -872,10 +874,6 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
             </button>
           );
         })}
-        <span className="flex items-center gap-1.5 px-2.5 py-1 opacity-60">
-          <span className="inline-block w-3 h-3 rounded bg-slate-300" />
-          <span className="text-slate-500">others</span>
-        </span>
       </div>
 
       {dailyData.length === 0 ? (
@@ -893,13 +891,9 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
           </thead>
           <tbody>
             {dailyData.map((d) => {
-              const knownSegments = topActions
+              const segments = topActions
                 .map((a) => ({ action: a, count: d.byAction.get(a) ?? 0, color: colorFor(a) }))
                 .filter((s) => s.count > 0);
-              const othersCount = d.total - knownSegments.reduce((s, x) => s + x.count, 0);
-              const segments = othersCount > 0
-                ? [...knownSegments, { action: 'others', count: othersCount, color: 'bg-slate-300' }]
-                : knownSegments;
               const widthPct = (d.total / maxTotal) * 100;
               return (
                 <tr key={d.day} className="border-b border-slate-100 hover:bg-slate-50">
