@@ -86,6 +86,14 @@ const dateInputToIso = (yyyyMmDd: string): string => {
   return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
 };
 
+// Same as dateInputToIso but anchored at the END of the day (23:59:59.999).
+// Used for the upper bound so the picked day is included whole.
+const dateInputToIsoEndOfDay = (yyyyMmDd: string): string => {
+  const [y, m, d] = yyyyMmDd.split('-').map(Number);
+  if (!y || !m || !d) return new Date(8640000000000000).toISOString();
+  return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+};
+
 // Format a Date as YYYY-MM-DD (what <input type="date"> expects).
 const toDateInput = (d: Date): string => {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -101,26 +109,30 @@ const daysAgoInput = (days: number): string => {
 
 const todayInput = (): string => toDateInput(new Date());
 
-// Preset ranges available in the picker dropdown. Each preset knows how to
-// compute its own "from" date (as YYYY-MM-DD). "Custom" has no computed value;
-// it just keeps whatever the user typed into the date input.
-type PresetKey = 'today' | 'last7' | 'last30' | 'thisMonth' | 'custom';
+// Preset ranges available in the picker dropdown. Each preset computes BOTH
+// ends of the range (from + to) as YYYY-MM-DD strings. "Custom" has no
+// computed value; it just keeps whatever the user typed.
+type PresetKey = 'today' | 'yesterday' | 'last7' | 'last30' | 'thisMonth' | 'custom';
+type PresetRange = { from: string; to: string };
 
-const PRESETS: { value: PresetKey; label: string; compute: (() => string) | null }[] = [
-  { value: 'today',     label: 'Today',         compute: () => todayInput() },
-  { value: 'last7',     label: 'Last 7 days',   compute: () => daysAgoInput(7) },
-  { value: 'last30',    label: 'Last 30 days',  compute: () => daysAgoInput(30) },
+const PRESETS: { value: PresetKey; label: string; compute: (() => PresetRange) | null }[] = [
+  { value: 'today',     label: 'Today',         compute: () => ({ from: todayInput(),       to: todayInput() }) },
+  { value: 'yesterday', label: 'Yesterday',     compute: () => ({ from: daysAgoInput(1),    to: daysAgoInput(1) }) },
+  { value: 'last7',     label: 'Last 7 days',   compute: () => ({ from: daysAgoInput(7),    to: todayInput() }) },
+  { value: 'last30',    label: 'Last 30 days',  compute: () => ({ from: daysAgoInput(30),   to: todayInput() }) },
   { value: 'thisMonth', label: 'This month',    compute: () => {
-      const d = new Date(); d.setDate(1); return toDateInput(d);
+      const d = new Date(); d.setDate(1); return { from: toDateInput(d), to: todayInput() };
     } },
   { value: 'custom',    label: 'Custom',        compute: null },
 ];
 
-// Look at the current `fromDate` and tell which preset it corresponds to.
+// Look at the current range and tell which preset it corresponds to.
 // Anything that doesn't match a preset exactly falls through to "custom".
-const detectPreset = (fromDate: string): PresetKey => {
+const detectPreset = (fromDate: string, toDate: string): PresetKey => {
   for (const p of PRESETS) {
-    if (p.compute && p.compute() === fromDate) return p.value;
+    if (!p.compute) continue;
+    const r = p.compute();
+    if (r.from === fromDate && r.to === toDate) return p.value;
   }
   return 'custom';
 };
@@ -945,8 +957,15 @@ interface CostNode {
   total: number;
 }
 
-const CostsView = ({ since }: { since: string }) => {
+interface CostDay {
+  day: string;
+  calls: number;
+  total: number;
+}
+
+const CostsView = ({ since, until }: { since: string; until: string }) => {
   const [nodes, setNodes] = useState<CostNode[]>([]);
+  const [daily, setDaily] = useState<CostDay[]>([]);
   const [grandTotal, setGrandTotal] = useState(0);
   const [totalCalls, setTotalCalls] = useState(0);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -963,7 +982,7 @@ const CostsView = ({ since }: { since: string }) => {
     inFlight.current = true;
     setStatus('loading');
     try {
-      const { data } = await axios.post(COST_STATS_URL, { since }, { timeout: REQUEST_TIMEOUT_MS });
+      const { data } = await axios.post(COST_STATS_URL, { since, until }, { timeout: REQUEST_TIMEOUT_MS });
       const outer = Array.isArray(data) ? data[0] : data;
       const payload = outer && typeof outer === 'object' && 'json' in outer ? (outer as any).json : outer;
       const list: any[] = Array.isArray(payload?.nodes) ? payload.nodes : [];
@@ -977,6 +996,15 @@ const CostsView = ({ since }: { since: string }) => {
         avg: Number(n.avg ?? 0),
         total: Number(n.total ?? 0),
       })));
+      // daily is optional — older n8n workflows don't return it; in that case
+      // we still try to derive it client-side from cost rows if present, else
+      // we just leave daily empty and skip the per-day table.
+      const dailyList: any[] = Array.isArray(payload?.daily) ? payload.daily : [];
+      setDaily(dailyList.map((d) => ({
+        day: String(d.day ?? ''),
+        calls: Number(d.calls ?? 0),
+        total: Number(d.total ?? 0),
+      })).sort((a, b) => a.day.localeCompare(b.day)));
       setGrandTotal(Number(payload?.grand_total ?? 0));
       setTotalCalls(Number(payload?.total_calls ?? 0));
       setStatus('success');
@@ -988,7 +1016,7 @@ const CostsView = ({ since }: { since: string }) => {
     } finally {
       inFlight.current = false;
     }
-  }, [since]);
+  }, [since, until]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -1003,8 +1031,54 @@ const CostsView = ({ since }: { since: string }) => {
   }
 
   const maxTotal = nodes.reduce((m, n) => Math.max(m, n.total), 0) || 1;
+  const maxDayTotal = daily.reduce((m, d) => Math.max(m, d.total), 0) || 1;
 
   return (
+    <div className="space-y-4">
+      {/* Daily breakdown — total cost and total calls per day. Only renders
+          if the backend returned a `daily` array (newer DEV Usage Log
+          workflow). Helps spot day-over-day spend trends without diving
+          into per-node detail. */}
+      {daily.length > 0 && (
+        <div>
+          <div className="px-3 pt-3 pb-1 text-[10px] font-bold uppercase text-slate-500">
+            By day
+          </div>
+          <table className="w-full text-sm border-collapse">
+            <thead className="bg-slate-50">
+              <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+                <th className="py-2 px-3 w-28">Day</th>
+                <th className="py-2 px-3 w-24">Calls</th>
+                <th className="py-2 px-3 w-28">Total</th>
+                <th className="py-2 px-3">Spend</th>
+              </tr>
+            </thead>
+            <tbody>
+              {daily.map((d) => (
+                <tr key={d.day} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="py-1.5 px-3 font-mono text-xs whitespace-nowrap">{d.day}</td>
+                  <td className="py-1.5 px-3 font-mono">{d.calls}</td>
+                  <td className="py-1.5 px-3 font-mono font-semibold">{fmtUsd(d.total)}</td>
+                  <td className="py-1.5 px-3"><Bar value={d.total} max={maxDayTotal} tint="bg-amber-300" /></td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
+                <td className="py-2 px-3">Total</td>
+                <td className="py-2 px-3 font-mono">{totalCalls}</td>
+                <td className="py-2 px-3 font-mono">{fmtUsd(grandTotal)}</td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
+      <div>
+        <div className="px-3 pt-3 pb-1 text-[10px] font-bold uppercase text-slate-500">
+          By node
+        </div>
     <table className="w-full text-sm border-collapse">
       <thead className="sticky top-0 bg-slate-100 z-10">
         <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
@@ -1044,6 +1118,8 @@ const CostsView = ({ since }: { since: string }) => {
         </tr>
       </tfoot>
     </table>
+      </div>
+    </div>
   );
 };
 
@@ -1068,9 +1144,10 @@ export const DashboardPage = () => {
   const [emailFilter, setEmailFilter] = useState('');
   const [actionFilter, setActionFilter] = useState('');
   const [activeTab, setActiveTab] = useState<SubTab>('events');
-  // User-controlled lower bound for the date range. Defaults to 30 days ago;
-  // the upper bound is always "now". Re-fetches when this changes.
+  // User-controlled lower/upper bounds for the date range. Defaults to last
+  // 30 days through today. Either endpoint changing triggers a re-fetch.
   const [fromDate, setFromDate] = useState<string>(() => daysAgoInput(DEFAULT_RANGE_DAYS));
+  const [toDate, setToDate]     = useState<string>(() => todayInput());
 
   // In-flight guards. Without these the 30s/120s poll tick can fire a new
   // request while the previous one is still chewing through the data table,
@@ -1089,9 +1166,10 @@ export const DashboardPage = () => {
     setStatus('loading');
     try {
       const since = sinceOverride ?? dateInputToIso(fromDate);
+      const until = dateInputToIsoEndOfDay(toDate);
       const { data } = await axios.post(
         LIST_URL,
-        { limit: FETCH_LIMIT, since },
+        { limit: FETCH_LIMIT, since, until },
         { timeout: REQUEST_TIMEOUT_MS },
       );
       const outer = Array.isArray(data) ? data[0] : data;
@@ -1145,9 +1223,10 @@ export const DashboardPage = () => {
     statsInFlightRef.current = true;
     try {
       const since = sinceOverride ?? dateInputToIso(fromDate);
+      const until = dateInputToIsoEndOfDay(toDate);
       const { data } = await axios.post(
         STATS_URL,
-        { since },
+        { since, until },
         { timeout: REQUEST_TIMEOUT_MS },
       );
       const outer = Array.isArray(data) ? data[0] : data;
@@ -1172,7 +1251,7 @@ export const DashboardPage = () => {
     // operator actually visits an aggregation tab.
     setStats(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate]);
+  }, [fromDate, toDate]);
 
   // Lazy stats fetch: only when an aggregation tab is shown AND we don't
   // already have stats cached.
@@ -1184,16 +1263,19 @@ export const DashboardPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // Email/action filters narrow the rows for every sub-tab (raw or aggregated).
+  // Email/action/date filters narrow the rows for every sub-tab. The toDate
+  // upper bound is enforced client-side too, so the rows view stays correct
+  // even when the n8n backend doesn't yet support the `until` parameter.
   const filtered = useMemo(() => {
     const emailQ = emailFilter.trim().toLowerCase();
     const actionQ = actionFilter.trim().toLowerCase();
-    if (!emailQ && !actionQ) return rows;
+    const untilIso = dateInputToIsoEndOfDay(toDate);
     return rows.filter((r) =>
       (!emailQ  || r.email.toLowerCase().includes(emailQ)) &&
-      (!actionQ || r.action.toLowerCase().includes(actionQ)),
+      (!actionQ || r.action.toLowerCase().includes(actionQ)) &&
+      (r.ts <= untilIso),
     );
-  }, [rows, emailFilter, actionFilter]);
+  }, [rows, emailFilter, actionFilter, toDate]);
 
   const lastFetchedLabel = lastFetched ? new Date(lastFetched).toLocaleTimeString() : '—';
   const todayMax = todayInput();
@@ -1211,11 +1293,15 @@ export const DashboardPage = () => {
           <label className="text-[10px] font-bold uppercase text-slate-500" htmlFor="dash-range">Range</label>
           <select
             id="dash-range"
-            value={detectPreset(fromDate)}
+            value={detectPreset(fromDate, toDate)}
             onChange={(e) => {
               const p = PRESETS.find((x) => x.value === e.target.value);
-              if (p?.compute) setFromDate(p.compute());
-              // "Custom" doesn't change fromDate — just keeps whatever's in the input.
+              if (p?.compute) {
+                const r = p.compute();
+                setFromDate(r.from);
+                setToDate(r.to);
+              }
+              // "Custom" doesn't change dates — keeps whatever's in the inputs.
             }}
             className="text-sm border rounded-md px-2 py-1 bg-white"
           >
@@ -1229,11 +1315,20 @@ export const DashboardPage = () => {
             id="dash-from"
             type="date"
             value={fromDate}
-            max={todayMax}
+            max={toDate || todayMax}
             onChange={(e) => setFromDate(e.target.value || daysAgoInput(DEFAULT_RANGE_DAYS))}
             className="text-sm border rounded-md px-2 py-1 bg-white"
           />
-          <span className="text-xs text-slate-400">→ now</span>
+          <label className="text-[10px] font-bold uppercase text-slate-500 ml-1" htmlFor="dash-to">To</label>
+          <input
+            id="dash-to"
+            type="date"
+            value={toDate}
+            min={fromDate}
+            max={todayMax}
+            onChange={(e) => setToDate(e.target.value || todayInput())}
+            className="text-sm border rounded-md px-2 py-1 bg-white"
+          />
         </div>
 
         <span className="text-xs text-slate-400 ml-auto">
@@ -1283,7 +1378,7 @@ export const DashboardPage = () => {
             independently of the events fetch — even when there are zero usage
             events the operator can still see per-node spend. */}
         {activeTab === 'costs' ? (
-          <CostsView since={dateInputToIso(fromDate)} />
+          <CostsView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
         ) : (
           <>
             {status === 'error' && (
