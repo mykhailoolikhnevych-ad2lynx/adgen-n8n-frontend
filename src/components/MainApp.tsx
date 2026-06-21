@@ -7,6 +7,7 @@ import { Column3 } from './columns/Column3';
 import { Column4 } from './columns/Column4';
 import { KeywordsPage } from './pages/KeywordsPage';
 import { ArticlePage } from './pages/ArticlePage';
+import { OfferArticlePage } from './pages/OfferArticlePage';
 import { AnglesPage } from './pages/AnglesPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DocsPage } from './pages/DocsPage';
@@ -15,7 +16,7 @@ import { CreativeEditPage } from './pages/CreativeEditPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail } from '@/lib/identity';
 
-type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'creatives' | 'dashboard' | 'docs';
+type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'offer-article' | 'creatives' | 'dashboard' | 'docs';
 
 // Admin Google emails that get the Dashboard tab. Sourced from PUBLIC_ADMIN_EMAILS
 // (comma-separated) — value lives in local .env for dev and in Vercel's env vars
@@ -68,8 +69,29 @@ export default function MainApp() {
   const errorBanner = useAppStore((s) => s.errorBanner);
   const dismissError = useAppStore((s) => s.dismissError);
   const noticeBanner = useAppStore((s) => s.noticeBanner);
+  // "Offer Article" tab is only visible after the operator presses "Create Offer
+  // Article" on the Article tab — keeps the nav clean until they actually need it.
+  const offerArticleOpen = useAppStore((s) => s.offerArticleOpen);
+  const openOfferArticle = useAppStore((s) => s.openOfferArticle);
+  const closeOfferArticle = useAppStore((s) => s.closeOfferArticle);
 
   const [page, setPage] = useState<Page>('keywords');
+
+  // If the operator closes the Offer Article tab while it's the active page,
+  // bounce them back to the Article tab so we don't render an empty page.
+  useEffect(() => {
+    if (page === 'offer-article' && !offerArticleOpen) setPage('article');
+  }, [page, offerArticleOpen]);
+
+  const handleCreateOffer = () => {
+    openOfferArticle();
+    setPage('offer-article');
+  };
+
+  const handleCloseOffer = () => {
+    closeOfferArticle();
+    setPage('article');
+  };
 
   // Resolve the signed-in email once (Cloudflare Access in prod, PUBLIC_DEV_AUTH_EMAIL locally).
   // Used only to decide whether to render the admin Dashboard tab. Identity lookup is async,
@@ -183,7 +205,7 @@ export default function MainApp() {
               <div className="mx-2 h-6 w-px bg-white/30" aria-hidden="true" />
               {NAV_ITEMS.map((item) => {
                 const isActive = page === item.value;
-                return (
+                const button = (
                   <button
                     key={item.value}
                     type="button"
@@ -198,6 +220,41 @@ export default function MainApp() {
                     {item.label}
                   </button>
                 );
+                // Inject the dynamic "Offer Article" tab right after Article — only
+                // appears once openOfferArticle() has fired, has an inline close (×).
+                if (item.value === 'article' && offerArticleOpen) {
+                  const isOfferActive = page === 'offer-article';
+                  return (
+                    <span key="article-with-offer" className="flex items-center">
+                      {button}
+                      <span
+                        className={`ml-1 flex items-center rounded text-sm transition-colors ${
+                          isOfferActive
+                            ? 'bg-white text-black'
+                            : 'text-white/80 hover:bg-white/10 hover:text-white'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setPage('offer-article')}
+                          className="pl-3 pr-1 py-1.5"
+                          aria-current={isOfferActive ? 'page' : undefined}
+                        >
+                          Offer Article
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleCloseOffer}
+                          aria-label="Close Offer Article tab"
+                          className="pr-2 pl-1 py-1.5 text-xs opacity-70 hover:opacity-100"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    </span>
+                  );
+                }
+                return button;
               })}
             </nav>
 
@@ -232,7 +289,8 @@ export default function MainApp() {
           {page === 'creatives' && <CreativesPage />}
           {page === 'keywords' && <KeywordsPage />}
           {page === 'angles' && <AnglesPage />}
-          {page === 'article' && <ArticlePage />}
+          {page === 'article' && <ArticlePage onCreateOffer={handleCreateOffer} />}
+          {page === 'offer-article' && offerArticleOpen && <OfferArticlePage onClose={handleCloseOffer} />}
           {page === 'dashboard' && isAdmin && <DashboardPage />}
           {page === 'docs' && <DocsPage isAdmin={isAdmin} />}
         </main>

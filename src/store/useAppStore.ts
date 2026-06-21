@@ -204,6 +204,14 @@ interface AppState {
   articleHtml: string | null;
   articleStatus: ArticleStatus;
   articleError: string | null;
+  /** Snapshot of the inputs that produced articleHtml — used by the Offer Article
+   *  tab to pre-fill `name` (topic), `offer_country_code` (geo) etc. without
+   *  making the operator re-type them. */
+  articleInputs: { topic: string; geo: string; language: string } | null;
+  /** Controls whether the "Offer Article" tab is shown in the nav. Set to true
+   *  when the operator presses "Create Offer Article" on the Article tab; reset
+   *  by the new tab's close button. */
+  offerArticleOpen: boolean;
   /** Cached UA version of articleHtml, built on first toggle by translating the
    *  h1/h2/h3/p/li text via the shared /translate_uk webhook. Null until requested. */
   articleTranslatedHtml: string | null;
@@ -248,6 +256,11 @@ interface AppState {
    *  cache, then just flip visibility on later toggles. Same UX as the angle/
    *  concept/creative cards. */
   toggleArticleTranslation: () => Promise<void>;
+  /** Article tab → reveal the "Offer Article" tab in the nav. Called when the
+   *  operator presses "Create Offer Article" after a successful generation. */
+  openOfferArticle: () => void;
+  /** Hide the "Offer Article" tab again (X button on that tab). */
+  closeOfferArticle: () => void;
   showError: (message: string) => void;
   dismissError: () => void;
   showWarning: (message: string) => void;
@@ -573,6 +586,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
   articleHtml: null, articleStatus: 'idle', articleError: null,
+  articleInputs: null, offerArticleOpen: false,
   articleTranslatedHtml: null, articleIsTranslating: false, articleShowTranslation: false,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
@@ -714,6 +728,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({
       articleStatus: 'loading', articleError: null, articleHtml: null,
+      articleInputs: { topic, geo, language },
       articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
     });
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -1730,4 +1745,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().showError(`Translation failed: ${humanizeError(e)}`);
     }
   },
+
+  openOfferArticle: () => set({ offerArticleOpen: true }),
+  closeOfferArticle: () => set({ offerArticleOpen: false }),
 }));
+
+// Dev-only: expose the store on window so it can be inspected/mutated from
+// the browser console (e.g. during manual QA without running the full pipeline).
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as unknown as { __appStore: typeof useAppStore }).__appStore = useAppStore;
+}

@@ -73,7 +73,14 @@ const extractArticleText = (html: string): string => {
   return parts.join('\n\n');
 };
 
-export const ArticlePage = () => {
+interface ArticlePageProps {
+  /** Reveal the "Offer Article" tab and switch the active page to it. The tab
+   *  isn't part of the static nav — it only appears after the operator presses
+   *  Create Offer Article on a successfully generated article. */
+  onCreateOffer?: () => void;
+}
+
+export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
   const [topic, setTopic] = useState('');
   const [geo, setGeo] = useState('United States (US)');
   const [language, setLanguage] = useState(() => adLanguagesForGeo('United States (US)')[0]);
@@ -285,6 +292,15 @@ export const ArticlePage = () => {
                 >
                   {copyState === 'copied' ? 'Copied!' : copyState === 'failed' ? 'Copy failed' : 'Copy'}
                 </Button>
+                {onCreateOffer && (
+                  <Button
+                    size="sm"
+                    onClick={onCreateOffer}
+                    aria-label="Open the Offer Article tab to publish this article"
+                  >
+                    📤 Create Offer Article
+                  </Button>
+                )}
               </div>
             )}
           </div>
