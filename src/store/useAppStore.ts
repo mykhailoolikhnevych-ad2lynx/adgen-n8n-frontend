@@ -3,6 +3,7 @@ import axios from 'axios';
 import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFilename';
 import { logEvent } from '@/lib/usage';
 import { listPrompts, type SavedPrompt } from '@/lib/prompts';
+import { getAuthEmail } from '@/lib/identity';
 
 interface FormData {
   articleUrl: string;
@@ -204,6 +205,21 @@ interface AppState {
   articleHtml: string | null;
   articleStatus: ArticleStatus;
   articleError: string | null;
+  /** Snapshot of the inputs that produced articleHtml — used by the Offer Article
+   *  tab to pre-fill `name` (topic), `offer_country_code` (geo) etc. without
+   *  making the operator re-type them. */
+  articleInputs: { topic: string; geo: string; language: string } | null;
+  /** Controls whether the "Offer Article" tab is shown in the nav. Set to true
+   *  when the operator presses "Create Offer Article" on the Article tab; reset
+   *  by the new tab's close button. */
+  offerArticleOpen: boolean;
+  /** Live RSOC API options (pixels, campaign groups, amo domains, layouts)
+   *  per the authenticated user. Cached for the session — loadOfferOptions is
+   *  a no-op once we have a non-null value. Falls back to hardcoded constants
+   *  in OfferArticlePage when null/empty. */
+  offerOptions: OfferOptions | null;
+  offerOptionsStatus: ArticleStatus;
+  offerOptionsError: string | null;
   /** Cached UA version of articleHtml, built on first toggle by translating the
    *  h1/h2/h3/p/li text via the shared /translate_uk webhook. Null until requested. */
   articleTranslatedHtml: string | null;
@@ -248,6 +264,15 @@ interface AppState {
    *  cache, then just flip visibility on later toggles. Same UX as the angle/
    *  concept/creative cards. */
   toggleArticleTranslation: () => Promise<void>;
+  /** Article tab → reveal the "Offer Article" tab in the nav. Called when the
+   *  operator presses "Create Offer Article" after a successful generation. */
+  openOfferArticle: () => void;
+  /** Hide the "Offer Article" tab again (X button on that tab). */
+  closeOfferArticle: () => void;
+  /** Fetch /api/rsoc-articles/options via the n8n proxy and cache for the
+   *  session. Safe to call on every Offer Article mount — no-ops when we
+   *  already have a cached result. */
+  loadOfferOptions: () => Promise<void>;
   showError: (message: string) => void;
   dismissError: () => void;
   showWarning: (message: string) => void;
@@ -302,6 +327,7 @@ const WEBHOOKS = {
   keywords: import.meta.env.PUBLIC_WEBHOOK_KEYWORDS_URL,
   rsocAudiences: import.meta.env.PUBLIC_WEBHOOK_RSOC_AUDIENCES_URL,
   rsocHeadlines: import.meta.env.PUBLIC_WEBHOOK_RSOC_HEADLINES_URL,
+  rsocOptions: import.meta.env.PUBLIC_WEBHOOK_RSOC_OPTIONS_URL,
 };
 
 export interface KeywordStudioInput {
@@ -311,6 +337,29 @@ export interface KeywordStudioInput {
   languageName: string;
   anchor: string;
   translation: 'auto' | 'none';
+}
+
+// Shape mirrors response_1782144242145.json under .data
+export interface OfferOptions {
+  base_fields?: {
+    traffic_source_slug?: Record<string, string>;
+    article_source?: Record<string, string>;
+    provider_slugs?: Record<string, string>;
+  };
+  tracker_fields?: {
+    campaign_pixel?: Record<string, string>;
+    campaign_conversion_event?: Record<string, string>;
+    offer_country_code?: Record<string, string>;
+    campaign_source?: Record<string, string>;
+    campaign_group_uuid?: Record<string, string>;
+  };
+  provider_fields?: {
+    amo?: {
+      domain?: Record<string, Record<string, string>>;
+      tracker_offer_url_layout?: Record<string, string>;
+    };
+  };
+  status?: Record<string, string>;
 }
 
 // Shared helper — POSTs an object of strings to /translate_uk, returns translated object.
@@ -573,6 +622,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
   articleHtml: null, articleStatus: 'idle', articleError: null,
+  articleInputs: null, offerArticleOpen: false,
+  offerOptions: null, offerOptionsStatus: 'idle', offerOptionsError: null,
   articleTranslatedHtml: null, articleIsTranslating: false, articleShowTranslation: false,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
@@ -714,6 +765,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({
       articleStatus: 'loading', articleError: null, articleHtml: null,
+      articleInputs: { topic, geo, language },
       articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
     });
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -1730,4 +1782,43 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().showError(`Translation failed: ${humanizeError(e)}`);
     }
   },
+
+  openOfferArticle: () => set({ offerArticleOpen: true }),
+  closeOfferArticle: () => set({ offerArticleOpen: false }),
+
+  loadOfferOptions: async () => {
+    // Session cache — no point refetching if we already have data or a fetch
+    // is already in flight. The Offer Article page calls this on every mount,
+    // so this guard keeps the UI snappy after the first successful fetch.
+    const s = get();
+    if (s.offerOptions || s.offerOptionsStatus === 'loading') return;
+    if (!WEBHOOKS.rsocOptions) {
+      set({ offerOptionsStatus: 'error', offerOptionsError: 'PUBLIC_WEBHOOK_RSOC_OPTIONS_URL is not set in .env' });
+      return;
+    }
+    set({ offerOptionsStatus: 'loading', offerOptionsError: null });
+    try {
+      const ident = await getAuthEmail();
+      const email = ident?.email ?? 'unknown@unknown';
+      const { data } = await axios.post(WEBHOOKS.rsocOptions, { email }, { timeout: 30_000 });
+      // API wraps as { data: { ... } }; n8n forwards verbatim.
+      const outer = Array.isArray(data) ? data[0] : data;
+      const opts: OfferOptions | null = outer?.data ?? outer ?? null;
+      if (!opts || typeof opts !== 'object') {
+        throw new Error('Options response missing .data');
+      }
+      set({ offerOptions: opts, offerOptionsStatus: 'success', offerOptionsError: null });
+    } catch (e) {
+      console.warn('[loadOfferOptions]', e);
+      // Keep any previously cached options so the form still works on a refetch
+      // failure (e.g. transient network blip).
+      set({ offerOptionsStatus: 'error', offerOptionsError: humanizeError(e) });
+    }
+  },
 }));
+
+// Dev-only: expose the store on window so it can be inspected/mutated from
+// the browser console (e.g. during manual QA without running the full pipeline).
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as unknown as { __appStore: typeof useAppStore }).__appStore = useAppStore;
+}
