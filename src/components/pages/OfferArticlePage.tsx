@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { OFFER_GEOS, OFFER_GEO_LABELS } from '@/lib/offerGeos';
+import { getAuthEmail } from '@/lib/identity';
 import { useAppStore } from '@/store/useAppStore';
 
 // === Static dropdown data (mirrors the GET /api/rsoc-articles/options examples
@@ -123,6 +124,12 @@ interface OfferArticlePageProps {
 export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const articleHtml = useAppStore((s) => s.articleHtml);
   const articleInputs = useAppStore((s) => s.articleInputs);
+  const offerOptions = useAppStore((s) => s.offerOptions);
+  const loadOfferOptions = useAppStore((s) => s.loadOfferOptions);
+
+  // Fetch the user-specific RSOC options on mount. The store guards against
+  // duplicate fetches, so this is safe to call on every remount.
+  useEffect(() => { void loadOfferOptions(); }, [loadOfferOptions]);
 
   const parsed = useMemo(() => parseArticle(articleHtml ?? ''), [articleHtml]);
   const defaultCountryLabel = useMemo(() => {
@@ -149,7 +156,10 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   // Always 'create' for now — there is no UI to switch this. Kept as a constant
   // so the payload-building code below still reads from one place.
   const campaignSource: 'none' | 'create' = 'create';
-  const [campaignGroupUuid, setCampaignGroupUuid] = useState(CAMPAIGN_GROUPS[0]?.uuid ?? '');
+  // Combobox shows the human-readable group name; the UUID is derived for the
+  // payload below. Typing a name that doesn't match any known group leaves the
+  // UUID empty so the field is omitted from the payload.
+  const [campaignGroupName, setCampaignGroupName] = useState(CAMPAIGN_GROUPS[0]?.name ?? '');
   // null = follow the live auto-derived name; string = operator typed an override.
   // Reset button on the field flips it back to null.
   const [campaignNameManual, setCampaignNameManual] = useState<string | null>(null);
@@ -161,7 +171,9 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const [amoIntro, setAmoIntro] = useState(parsed.intro);
   const [amoBody, setAmoBody] = useState(parsed.body);
   const [amoKeywordsRaw, setAmoKeywordsRaw] = useState(articleInputs?.topic ?? '');
-  const [amoLayout, setAmoLayout] = useState<typeof TRACKER_LAYOUTS[number]>('tango');
+  // Widened to `string` because the live options API can return layout codes
+  // beyond the hardcoded TRACKER_LAYOUTS fallback list.
+  const [amoLayout, setAmoLayout] = useState<string>('tango');
   const [amoLayoutScroll, setAmoLayoutScroll] = useState(false);
   const [amoChannelId, setAmoChannelId] = useState('');
   // Same manual-override pattern as campaign_name: null = use the live
@@ -177,10 +189,14 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // When traffic source changes, snap the domain back to the first allowed value
-  // for that source (the previous selection is almost always invalid).
+  // for that source (the previous selection is almost always invalid). Uses the
+  // live options when available, otherwise the hardcoded fallback.
   const handleTrafficSourceChange = (v: TrafficSource) => {
     setTrafficSource(v);
-    const allowed = DOMAINS_BY_TRAFFIC[v];
+    const liveAllowed = offerOptions?.provider_fields?.amo?.domain?.[v];
+    const allowed = liveAllowed && Object.keys(liveAllowed).length
+      ? Object.keys(liveAllowed)
+      : DOMAINS_BY_TRAFFIC[v];
     if (!allowed.includes(amoDomain)) setAmoDomain(allowed[0]);
   };
 
@@ -189,6 +205,39 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   };
 
   const offerCountryCode = codeFromLabel(offerCountryLabel);
+
+  // === Dropdown sources — prefer the live /api/rsoc-articles/options response
+  // === (per-user, fetched into store.offerOptions) and fall back to the
+  // === hardcoded constants at the top of this file when it's not loaded yet.
+  const pixelOptions = useMemo(() => {
+    const live = offerOptions?.tracker_fields?.campaign_pixel;
+    return live ? Object.keys(live) : CAMPAIGN_PIXELS;
+  }, [offerOptions]);
+  const conversionEventOptions = useMemo(() => {
+    const live = offerOptions?.tracker_fields?.campaign_conversion_event;
+    return live && Object.keys(live).length ? Object.keys(live) : ['Lead'];
+  }, [offerOptions]);
+  const campaignGroupEntries = useMemo<{ uuid: string; name: string }[]>(() => {
+    const live = offerOptions?.tracker_fields?.campaign_group_uuid;
+    return live
+      ? Object.entries(live).map(([uuid, name]) => ({ uuid, name }))
+      : CAMPAIGN_GROUPS;
+  }, [offerOptions]);
+  const campaignGroupNames = useMemo(() => campaignGroupEntries.map((g) => g.name), [campaignGroupEntries]);
+  const campaignGroupUuid = useMemo(
+    () => campaignGroupEntries.find((g) => g.name === campaignGroupName)?.uuid ?? '',
+    [campaignGroupEntries, campaignGroupName],
+  );
+  const amoDomains = useMemo(() => {
+    const live = offerOptions?.provider_fields?.amo?.domain?.[trafficSource];
+    return live && Object.keys(live).length
+      ? Object.keys(live)
+      : DOMAINS_BY_TRAFFIC[trafficSource];
+  }, [offerOptions, trafficSource]);
+  const amoLayouts = useMemo<readonly string[]>(() => {
+    const live = offerOptions?.provider_fields?.amo?.tracker_offer_url_layout;
+    return live ? Object.keys(live) : TRACKER_LAYOUTS;
+  }, [offerOptions]);
 
   // === Auto-generated names (mirror the format shown in the operator screens) ===
   // Both names share the same "{name} | {country} | {traffic} | megatool_article | Buyer_Dev"
@@ -301,7 +350,11 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
     }
     setIsSubmitting(true);
     try {
-      const { data } = await axios.post(PUBLISH_URL, payload, { timeout: 60_000 });
+      // n8n proxy expects { email, payload } — it forwards email as the
+      // X-Auth-Email header and uses payload as the upstream POST body.
+      const ident = await getAuthEmail();
+      const body = { email: ident?.email ?? 'unknown@unknown', payload };
+      const { data } = await axios.post(PUBLISH_URL, body, { timeout: 60_000 });
       setSubmitResponse(typeof data === 'string' ? data : JSON.stringify(data, null, 2));
     } catch (e: unknown) {
       const err = e as { response?: { data?: unknown; status?: number }; message?: string };
@@ -340,11 +393,6 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
           <h2 className="font-bold text-xl">📤 Create Offer Article</h2>
           <Button variant="outline" size="sm" onClick={onClose}>← Back</Button>
         </div>
-        <p className="text-xs text-slate-500 mb-4">
-          Auth ({`Bearer + X-Auth-Email`}) is hardcoded in the n8n webhook. This form just
-          shapes the payload from the generated article and your inputs.
-        </p>
-
         {/* --- Base fields --- */}
         <section className="mb-5">
           <h3 className="font-semibold text-sm uppercase text-slate-600 border-b pb-1 mb-3">Base fields</h3>
@@ -388,14 +436,23 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
                 <Combobox
                   value={campaignPixel}
                   onChange={setCampaignPixel}
-                  options={CAMPAIGN_PIXELS}
+                  options={pixelOptions}
                   placeholder="Click to choose or type… e.g. 7994…"
                   inputClassName="text-sm rounded-md bg-white px-2"
                 />
               </div>
               <div>
                 <label className="text-xs font-medium uppercase text-slate-500">Campaign Conversion Event</label>
-                <Input value={campaignConversionEvent} onChange={(e) => setCampaignConversionEvent(e.target.value)} placeholder="Lead" />
+                {/* Combobox accepts any typed value — the API only returns
+                    "Lead" right now but other event names (Purchase, Subscribe…)
+                    can be entered manually until they show up in /options. */}
+                <Combobox
+                  value={campaignConversionEvent}
+                  onChange={setCampaignConversionEvent}
+                  options={conversionEventOptions}
+                  placeholder="Click to choose or type… e.g. Lead"
+                  inputClassName="text-sm rounded-md bg-white px-2"
+                />
               </div>
               <div>
                 <label className="text-xs font-medium uppercase text-slate-500 flex items-center gap-2">
@@ -423,16 +480,15 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
               </div>
               <div>
                 <label className="text-xs font-medium uppercase text-slate-500">Campaign Group</label>
-                <select
-                  value={campaignGroupUuid}
-                  onChange={(e) => setCampaignGroupUuid(e.target.value)}
-                  className="w-full text-sm border rounded-md px-2 py-1 bg-white"
-                >
-                  <option value="">(none)</option>
-                  {CAMPAIGN_GROUPS.map((g) => (
-                    <option key={g.uuid} value={g.uuid}>{g.name}</option>
-                  ))}
-                </select>
+                {/* Searchable — type to narrow the team list. Clear the field to
+                    omit campaign_group_uuid from the payload entirely. */}
+                <Combobox
+                  value={campaignGroupName}
+                  onChange={setCampaignGroupName}
+                  options={campaignGroupNames}
+                  placeholder="Click to choose or type… e.g. ILAB"
+                  inputClassName="text-sm rounded-md bg-white px-2"
+                />
               </div>
             </div>
           </section>
@@ -464,7 +520,7 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
                   onChange={(e) => setAmoDomain(e.target.value)}
                   className="w-full text-sm border rounded-md px-2 py-1 bg-white"
                 >
-                  {DOMAINS_BY_TRAFFIC[trafficSource].map((d) => (
+                  {amoDomains.map((d) => (
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
@@ -509,10 +565,10 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
                       <label className="text-xs font-medium uppercase text-slate-500">Layout (Tracker)</label>
                       <select
                         value={amoLayout}
-                        onChange={(e) => setAmoLayout(e.target.value as typeof TRACKER_LAYOUTS[number])}
+                        onChange={(e) => setAmoLayout(e.target.value)}
                         className="w-full text-sm border rounded-md px-2 py-1 bg-white"
                       >
-                        {TRACKER_LAYOUTS.map((l) => <option key={l} value={l}>{l}</option>)}
+                        {amoLayouts.map((l) => <option key={l} value={l}>{l}</option>)}
                       </select>
                     </div>
                     <div>
