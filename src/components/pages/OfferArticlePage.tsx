@@ -52,14 +52,6 @@ const CAMPAIGN_GROUPS: { name: string; uuid: string }[] = [
   { name: 'ILAB', uuid: '05715f2c-827b-4665-970b-7340a0c4c258' },
 ];
 
-// Pre-defined offer-name override templates. "(auto-generated)" means the
-// payload sends the live auto-derived name; any other entry overrides it
-// verbatim. Currently a single placeholder slot — add real templates here.
-const OFFER_NAME_TEMPLATES: string[] = [
-  '(auto-generated)',
-  'Template Slot 1',
-];
-
 // === Article HTML → { title, intro, body } splitter. The generation workflow
 // === emits <article class="article-card"> with an <h1>, then alternating
 // === <h2>/<h3>/<p> children. RSOC needs title separately, an "intro" first
@@ -149,6 +141,9 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const [campaignConversionEvent, setCampaignConversionEvent] = useState('Lead');
   const [campaignSource, setCampaignSource] = useState<'none' | 'create'>('create');
   const [campaignGroupUuid, setCampaignGroupUuid] = useState(CAMPAIGN_GROUPS[0]?.uuid ?? '');
+  // null = follow the live auto-derived name; string = operator typed an override.
+  // Reset button on the field flips it back to null.
+  const [campaignNameManual, setCampaignNameManual] = useState<string | null>(null);
 
   // === Provider selection + amo fields ===
   const [providerSlugs, setProviderSlugs] = useState<string[]>(['amo']);
@@ -162,9 +157,10 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const [amoChannelId, setAmoChannelId] = useState('');
   // Override-country combobox value. Empty = inherit from tracker_fields.
   const [amoOfferCountryLabel, setAmoOfferCountryLabel] = useState('');
-  // Picked entry from OFFER_NAME_TEMPLATES — "(auto-generated)" means use the
-  // live derived name; anything else overrides it verbatim.
-  const [amoOfferNameChoice, setAmoOfferNameChoice] = useState(OFFER_NAME_TEMPLATES[0]);
+  // Same manual-override pattern as campaign_name: null = use the live
+  // auto-derived offer name; string = use this verbatim. Set either by typing
+  // in the text input or by picking a template from the quick-fill dropdown.
+  const [amoOfferNameManual, setAmoOfferNameManual] = useState<string | null>(null);
 
   const [status, setStatus] = useState<typeof STATUSES[number]>('draft');
 
@@ -211,10 +207,11 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
     return parts.filter(Boolean).join(' | ');
   }, [name, offerCountryCode, trafficSource, amoLayout, amoChannelId, providerSlugs]);
 
-  // Resolved name to send on the wire — auto-derived unless the operator picked
-  // an override template from OFFER_NAME_TEMPLATES.
-  const resolvedOfferName =
-    amoOfferNameChoice === OFFER_NAME_TEMPLATES[0] ? autoOfferName : amoOfferNameChoice;
+  // Resolved names to send on the wire. The "Manual" state is null until the
+  // operator types into the field — that's what flips the inline label from
+  // "(auto-generated)" to "(custom)".
+  const resolvedCampaignName = campaignNameManual ?? autoCampaignName;
+  const resolvedOfferName = amoOfferNameManual ?? autoOfferName;
 
   // Live word counts feeding the inline hints (intro ≥ 50, intro+body ≥ 600).
   const introWords = wordCount(amoIntro);
@@ -264,16 +261,16 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
       if (campaignPixel) trackerFields.campaign_pixel = campaignPixel;
       if (campaignConversionEvent) trackerFields.campaign_conversion_event = campaignConversionEvent;
       trackerFields.campaign_source = campaignSource;
-      // Always send the auto-generated campaign name (matches the on-screen
-      // value — no separate manual-edit affordance for v1).
-      trackerFields.campaign_name = autoCampaignName;
+      // Always send the resolved (auto or manual override) campaign name —
+      // matches what's shown in the field, label tag tracks which mode.
+      trackerFields.campaign_name = resolvedCampaignName;
       if (campaignGroupUuid) trackerFields.campaign_group_uuid = campaignGroupUuid;
       out.tracker_fields = trackerFields;
     }
     return out;
   }, [
     name, trafficSource, trackerEnabled, offerCountryCode, campaignPixel,
-    campaignConversionEvent, campaignSource, autoCampaignName, campaignGroupUuid,
+    campaignConversionEvent, campaignSource, resolvedCampaignName, campaignGroupUuid,
     providerSlugs, amoDomain, amoTitle, amoIntro, amoBody, amoKeywordsRaw,
     amoLayout, amoLayoutScroll, amoChannelId, amoOfferCountryCode, resolvedOfferName,
     status,
@@ -411,11 +408,28 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
                 </select>
               </div>
               <div>
-                <label className="text-xs font-medium uppercase text-slate-500">
-                  Campaign Name *{' '}
-                  <span className="text-slate-400 normal-case">(auto-generated)</span>
+                <label className="text-xs font-medium uppercase text-slate-500 flex items-center gap-2">
+                  <span>
+                    Campaign Name *{' '}
+                    <span className="text-slate-400 normal-case">
+                      {campaignNameManual === null ? '(auto-generated)' : '(custom)'}
+                    </span>
+                  </span>
+                  {campaignNameManual !== null && (
+                    <button
+                      type="button"
+                      onClick={() => setCampaignNameManual(null)}
+                      className="ml-auto text-[10px] normal-case text-blue-600 hover:underline"
+                      aria-label="Reset Campaign Name to auto-generated"
+                    >
+                      ↺ Reset to auto
+                    </button>
+                  )}
                 </label>
-                <Input value={autoCampaignName} readOnly className="bg-slate-50 cursor-default" />
+                <Input
+                  value={resolvedCampaignName}
+                  onChange={(e) => setCampaignNameManual(e.target.value)}
+                />
               </div>
               <div>
                 <label className="text-xs font-medium uppercase text-slate-500">Campaign Group</label>
@@ -526,20 +540,28 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
                       />
                     </div>
                     <div className="col-span-2">
-                      <label className="text-xs font-medium uppercase text-slate-500">
-                        Offer Name (Tracker) *{' '}
-                        <span className="text-slate-400 normal-case">
-                          {amoOfferNameChoice === OFFER_NAME_TEMPLATES[0] ? '(auto-generated)' : '(override)'}
+                      <label className="text-xs font-medium uppercase text-slate-500 flex items-center gap-2">
+                        <span>
+                          Offer Name (Tracker) *{' '}
+                          <span className="text-slate-400 normal-case">
+                            {amoOfferNameManual === null ? '(auto-generated)' : '(custom)'}
+                          </span>
                         </span>
+                        {amoOfferNameManual !== null && (
+                          <button
+                            type="button"
+                            onClick={() => setAmoOfferNameManual(null)}
+                            className="ml-auto text-[10px] normal-case text-blue-600 hover:underline"
+                            aria-label="Reset Offer Name (Tracker) to auto-generated"
+                          >
+                            ↺ Reset to auto
+                          </button>
+                        )}
                       </label>
-                      <select
-                        value={amoOfferNameChoice}
-                        onChange={(e) => setAmoOfferNameChoice(e.target.value)}
-                        className="w-full text-sm border rounded-md px-2 py-1 bg-white mb-1"
-                      >
-                        {OFFER_NAME_TEMPLATES.map((t) => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                      <Input value={resolvedOfferName} readOnly className="bg-slate-100 cursor-default" />
+                      <Input
+                        value={resolvedOfferName}
+                        onChange={(e) => setAmoOfferNameManual(e.target.value)}
+                      />
                     </div>
                   </div>
                   <label className="flex items-center gap-2 text-sm">
