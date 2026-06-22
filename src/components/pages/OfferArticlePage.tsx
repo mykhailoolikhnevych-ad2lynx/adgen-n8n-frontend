@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -133,13 +133,22 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   // === Base fields ===
   const [name, setName] = useState(articleInputs?.topic ?? parsed.title);
   const [trafficSource, setTrafficSource] = useState<TrafficSource>('facebook');
-  const [trackerEnabled, setTrackerEnabled] = useState(true);
+  // tracker_fields are always required for the amo provider in our setup —
+  // there is no UI to flip this off, but the conditional payload logic below
+  // still reads it so the value stays a constant true here.
+  const trackerEnabled = true;
 
   // === Tracker fields (only sent when trackerEnabled) ===
+  // Bound to the Article-tab GEO via the effect below — when the operator
+  // regenerates the article with a different country, this auto-resyncs.
+  // Operator can still override the picker locally; next GEO change wins.
   const [offerCountryLabel, setOfferCountryLabel] = useState(defaultCountryLabel);
+  useEffect(() => { setOfferCountryLabel(defaultCountryLabel); }, [defaultCountryLabel]);
   const [campaignPixel, setCampaignPixel] = useState('');
   const [campaignConversionEvent, setCampaignConversionEvent] = useState('Lead');
-  const [campaignSource, setCampaignSource] = useState<'none' | 'create'>('create');
+  // Always 'create' for now — there is no UI to switch this. Kept as a constant
+  // so the payload-building code below still reads from one place.
+  const campaignSource: 'none' | 'create' = 'create';
   const [campaignGroupUuid, setCampaignGroupUuid] = useState(CAMPAIGN_GROUPS[0]?.uuid ?? '');
   // null = follow the live auto-derived name; string = operator typed an override.
   // Reset button on the field flips it back to null.
@@ -155,14 +164,12 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const [amoLayout, setAmoLayout] = useState<typeof TRACKER_LAYOUTS[number]>('tango');
   const [amoLayoutScroll, setAmoLayoutScroll] = useState(false);
   const [amoChannelId, setAmoChannelId] = useState('');
-  // Override-country combobox value. Empty = inherit from tracker_fields.
-  const [amoOfferCountryLabel, setAmoOfferCountryLabel] = useState('');
   // Same manual-override pattern as campaign_name: null = use the live
   // auto-derived offer name; string = use this verbatim. Set either by typing
   // in the text input or by picking a template from the quick-fill dropdown.
   const [amoOfferNameManual, setAmoOfferNameManual] = useState<string | null>(null);
 
-  const [status, setStatus] = useState<typeof STATUSES[number]>('draft');
+  const [status, setStatus] = useState<typeof STATUSES[number]>('published');
 
   // === Submit state ===
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -182,13 +189,15 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   };
 
   const offerCountryCode = codeFromLabel(offerCountryLabel);
-  const amoOfferCountryCode = codeFromLabel(amoOfferCountryLabel);
 
   // === Auto-generated names (mirror the format shown in the operator screens) ===
-  // Campaign Name → "{name} | {country} | {traffic} | Buyer_Dev"
-  // Offer Name (Tracker) → "{name} | {country} | {traffic} | Buyer_Dev | {Layout} | {Provider} | ch {channel}"
+  // Both names share the same "{name} | {country} | {traffic} | megatool_article | Buyer_Dev"
+  // prefix — keeping them in lockstep so a Campaign Name change reads the same
+  // way as the matching Offer Name (Tracker).
+  // Campaign Name → "{prefix}"
+  // Offer Name (Tracker) → "{prefix} | {Layout} | {Provider} | ch {channel}"
   const autoCampaignName = useMemo(() => {
-    const parts = [name, offerCountryCode, TRAFFIC_SHORT[trafficSource], 'Buyer_Dev'];
+    const parts = [name, offerCountryCode, TRAFFIC_SHORT[trafficSource], 'megatool_article', 'Buyer_Dev'];
     return parts.filter(Boolean).join(' | ');
   }, [name, offerCountryCode, trafficSource]);
 
@@ -199,6 +208,7 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
       name,
       offerCountryCode,
       TRAFFIC_SHORT[trafficSource],
+      'megatool_article',
       'Buyer_Dev',
       titleCase(amoLayout),
       titleCase(provider),
@@ -236,7 +246,6 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
       amoFields.tracker_offer_url_layout = amoLayout;
       amoFields.tracker_offer_url_layout_scroll = amoLayoutScroll;
       if (amoChannelId) amoFields.tracker_offer_url_channel_id = amoChannelId;
-      if (amoOfferCountryCode) amoFields.tracker_offer_country_code = amoOfferCountryCode;
       // Always include the resolved (auto or override) offer name — UI shows
       // it pre-populated, so the wire matches what the operator sees.
       amoFields.tracker_offer_name = resolvedOfferName;
@@ -272,7 +281,7 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
     name, trafficSource, trackerEnabled, offerCountryCode, campaignPixel,
     campaignConversionEvent, campaignSource, resolvedCampaignName, campaignGroupUuid,
     providerSlugs, amoDomain, amoTitle, amoIntro, amoBody, amoKeywordsRaw,
-    amoLayout, amoLayoutScroll, amoChannelId, amoOfferCountryCode, resolvedOfferName,
+    amoLayout, amoLayoutScroll, amoChannelId, resolvedOfferName,
     status,
   ]);
 
@@ -354,15 +363,6 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
                 {TRAFFIC_SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={trackerEnabled}
-                onChange={(e) => setTrackerEnabled(e.target.checked)}
-              />
-              Tracker enabled
-              <InfoTooltip text="When ON, tracker_fields (offer/campaign) are required and the amo provider must include tracker_offer_url_keywords." />
-            </label>
           </div>
         </section>
 
@@ -383,29 +383,19 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
               </div>
               <div>
                 <label className="text-xs font-medium uppercase text-slate-500">Campaign Pixel</label>
-                <select
+                {/* Searchable like the GEO picker on the Article tab — type any
+                    digits to narrow the list, leave empty to omit from payload. */}
+                <Combobox
                   value={campaignPixel}
-                  onChange={(e) => setCampaignPixel(e.target.value)}
-                  className="w-full text-sm border rounded-md px-2 py-1 bg-white"
-                >
-                  <option value="">(none)</option>
-                  {CAMPAIGN_PIXELS.map((p) => <option key={p} value={p}>{p}</option>)}
-                </select>
+                  onChange={setCampaignPixel}
+                  options={CAMPAIGN_PIXELS}
+                  placeholder="Click to choose or type… e.g. 7994…"
+                  inputClassName="text-sm rounded-md bg-white px-2"
+                />
               </div>
               <div>
                 <label className="text-xs font-medium uppercase text-slate-500">Campaign Conversion Event</label>
                 <Input value={campaignConversionEvent} onChange={(e) => setCampaignConversionEvent(e.target.value)} placeholder="Lead" />
-              </div>
-              <div>
-                <label className="text-xs font-medium uppercase text-slate-500">Campaign Source *</label>
-                <select
-                  value={campaignSource}
-                  onChange={(e) => setCampaignSource(e.target.value as 'none' | 'create')}
-                  className="w-full text-sm border rounded-md px-2 py-1 bg-white"
-                >
-                  <option value="create">create</option>
-                  <option value="none">none</option>
-                </select>
               </div>
               <div>
                 <label className="text-xs font-medium uppercase text-slate-500 flex items-center gap-2">
@@ -528,16 +518,6 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
                     <div>
                       <label className="text-xs font-medium uppercase text-slate-500">Channel ID (Tracker)</label>
                       <Input value={amoChannelId} onChange={(e) => setAmoChannelId(e.target.value)} placeholder="123456" />
-                    </div>
-                    <div className="col-span-2">
-                      <label className="text-xs font-medium uppercase text-slate-500">Offer Country (Tracker)</label>
-                      <Combobox
-                        value={amoOfferCountryLabel}
-                        onChange={setAmoOfferCountryLabel}
-                        options={OFFER_GEO_LABELS}
-                        placeholder={`(leave empty to inherit ${offerCountryCode || 'tracker'})`}
-                        inputClassName="text-sm rounded-md bg-white px-2"
-                      />
                     </div>
                     <div className="col-span-2">
                       <label className="text-xs font-medium uppercase text-slate-500 flex items-center gap-2">
