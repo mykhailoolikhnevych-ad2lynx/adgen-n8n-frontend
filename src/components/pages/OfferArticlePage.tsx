@@ -47,12 +47,6 @@ const CAMPAIGN_PIXELS: string[] = [
   '799437594558386',
 ];
 
-// Campaign group UUIDs the user can pick from — display name → UUID. The list
-// has a single entry (ILAB) right now and will grow as more teams are wired in.
-const CAMPAIGN_GROUPS: { name: string; uuid: string }[] = [
-  { name: 'ILAB', uuid: '05715f2c-827b-4665-970b-7340a0c4c258' },
-];
-
 // === Article HTML → { title, intro, body } splitter. The generation workflow
 // === emits <article class="article-card"> with an <h1>, then alternating
 // === <h2>/<h3>/<p> children. RSOC needs title separately, an "intro" first
@@ -158,8 +152,9 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const campaignSource: 'none' | 'create' = 'create';
   // Combobox shows the human-readable group name; the UUID is derived for the
   // payload below. Typing a name that doesn't match any known group leaves the
-  // UUID empty so the field is omitted from the payload.
-  const [campaignGroupName, setCampaignGroupName] = useState(CAMPAIGN_GROUPS[0]?.name ?? '');
+  // UUID empty so the field is omitted from the payload. Starts empty — the
+  // effect below picks the first available group once /options resolves.
+  const [campaignGroupName, setCampaignGroupName] = useState('');
   // null = follow the live auto-derived name; string = operator typed an override.
   // Reset button on the field flips it back to null.
   const [campaignNameManual, setCampaignNameManual] = useState<string | null>(null);
@@ -217,17 +212,27 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
     const live = offerOptions?.tracker_fields?.campaign_conversion_event;
     return live && Object.keys(live).length ? Object.keys(live) : ['Lead'];
   }, [offerOptions]);
+  // Authoritative list comes from /options — no hardcoded fallback because
+  // different users have access to different team groups (e.g. some have no
+  // ILAB at all). Empty until /options resolves.
   const campaignGroupEntries = useMemo<{ uuid: string; name: string }[]>(() => {
     const live = offerOptions?.tracker_fields?.campaign_group_uuid;
-    return live
-      ? Object.entries(live).map(([uuid, name]) => ({ uuid, name }))
-      : CAMPAIGN_GROUPS;
+    return live ? Object.entries(live).map(([uuid, name]) => ({ uuid, name })) : [];
   }, [offerOptions]);
   const campaignGroupNames = useMemo(() => campaignGroupEntries.map((g) => g.name), [campaignGroupEntries]);
   const campaignGroupUuid = useMemo(
     () => campaignGroupEntries.find((g) => g.name === campaignGroupName)?.uuid ?? '',
     [campaignGroupEntries, campaignGroupName],
   );
+
+  // Auto-pick the first available group once /options resolves, so the
+  // operator doesn't see an empty field. Only fires when no group is selected
+  // yet — leaves explicit choices alone.
+  useEffect(() => {
+    if (!campaignGroupName && campaignGroupEntries.length > 0) {
+      setCampaignGroupName(campaignGroupEntries[0].name);
+    }
+  }, [campaignGroupEntries, campaignGroupName]);
   const amoDomains = useMemo(() => {
     const live = offerOptions?.provider_fields?.amo?.domain?.[trafficSource];
     return live && Object.keys(live).length
