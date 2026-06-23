@@ -286,13 +286,6 @@ export default function MainApp() {
                     }
                     return button;
                   })}
-                  <button
-                    type="button"
-                    onClick={() => setMegatool(false)}
-                    className="ml-2 rounded border border-white/30 px-3 py-1 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-colors"
-                  >
-                    Exit Megatool
-                  </button>
                 </>
               ) : (
                 <>
