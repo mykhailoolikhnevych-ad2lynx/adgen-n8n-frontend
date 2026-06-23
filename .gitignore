@@ -24,4 +24,9 @@ pnpm-debug.log*
 
 # jetbrains setting folder
 .idea/
-"RSOC Audiences & Top-Pick Headlines.json" 
+"RSOC Audiences & Top-Pick Headlines.json"
+
+# Apps Script source pulled via clasp
+apps_script/
+apps_script_folder/
+
