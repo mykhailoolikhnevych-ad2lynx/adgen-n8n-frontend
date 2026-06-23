@@ -339,8 +339,6 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
     status,
   ]);
 
-  const payloadJson = useMemo(() => JSON.stringify(payload, null, 2), [payload]);
-
   const handleSubmit = async () => {
     setSubmitError(null);
     setSubmitResponse(null);
@@ -373,10 +371,6 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
     }
   };
 
-  const handleCopyPayload = async () => {
-    try { await navigator.clipboard.writeText(payloadJson); } catch { /* clipboard blocked */ }
-  };
-
   if (!articleHtml) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-slate-100 p-6">
@@ -393,7 +387,7 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   return (
     <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
       {/* ===== LEFT — form ===== */}
-      <div className="w-1/2 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+      <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-xl">📤 Create Offer Article</h2>
           <Button variant="outline" size="sm" onClick={onClose}>← Back</Button>
@@ -632,25 +626,23 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
         </section>
       </div>
 
-      {/* ===== RIGHT — JSON preview + submit ===== */}
-      <div className="w-1/2 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
+      {/* ===== RIGHT — submit + result ===== */}
+      <div className="w-80 shrink-0 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
         <div className="flex items-center justify-between mb-3 shrink-0">
-          <h2 className="font-bold text-xl">Payload preview</h2>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={handleCopyPayload}>Copy JSON</Button>
-            <Button size="sm" onClick={() => void handleSubmit()} disabled={isSubmitting}>
-              {isSubmitting ? 'Submitting…' : 'Submit'}
-            </Button>
-          </div>
+          <h2 className="font-bold text-xl">Publish</h2>
+          <Button size="sm" onClick={() => void handleSubmit()} disabled={isSubmitting}>
+            {isSubmitting ? 'Submitting…' : 'Submit'}
+          </Button>
         </div>
 
-        <pre className="flex-1 min-h-0 overflow-auto text-xs bg-slate-900 text-slate-100 p-3 rounded-md font-mono">
-          {payloadJson}
-        </pre>
-
         {/* Submit result area */}
+        {!submitError && !submitResponse && (
+          <div className="flex-1 min-h-0 flex items-center justify-center text-slate-400 text-xs italic px-2 text-center">
+            Press Submit to publish this Offer Article via the RSOC API. The response will appear here.
+          </div>
+        )}
         {(submitError || submitResponse) && (
-          <div className="mt-3 shrink-0 max-h-48 overflow-auto">
+          <div className="flex-1 min-h-0 overflow-auto">
             {submitError && (
               <div className="border border-red-300 bg-red-50 text-red-700 text-xs p-2 rounded-md whitespace-pre-wrap">
                 <div className="font-semibold mb-1">Error</div>
