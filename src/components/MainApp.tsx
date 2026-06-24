@@ -15,6 +15,7 @@ import { CreativeGenPage } from './pages/CreativeGenPage';
 import { CreativeEditPage } from './pages/CreativeEditPage';
 import { MegatoolFBCampaignPage } from './pages/MegatoolFBCampaignPage';
 import { MegatoolCreateBinomOfferPage } from './pages/MegatoolCreateBinomOfferPage';
+import { MegatoolCreateNbCampaignPage } from './pages/MegatoolCreateNbCampaignPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail } from '@/lib/identity';
 
@@ -23,7 +24,7 @@ type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article'
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
 // active megatool here. Adding a second tool = append to this list.
-type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer';
+type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign';
 const MEGATOOL_NAV: { value: MegatoolPage; label: string }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
 ];
@@ -75,6 +76,13 @@ const CreativesPage = () => (
   </div>
 );
 
+// Dev-only: expose the Zustand store on window so we can seed state from
+// devtools or automated tests. Removed in production builds via Vite's
+// import.meta.env.DEV dead-code elimination.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as any).__appStore = useAppStore;
+}
+
 export default function MainApp() {
   const errorBanner = useAppStore((s) => s.errorBanner);
   const dismissError = useAppStore((s) => s.dismissError);
@@ -91,6 +99,11 @@ export default function MainApp() {
   const openBinomOffer = useAppStore((s) => s.openBinomOffer);
   const closeBinomOffer = useAppStore((s) => s.closeBinomOffer);
   const selectedFbAd = useAppStore((s) => s.selectedFbAd);
+  const binomOfferResult = useAppStore((s) => s.binomOfferResult);
+  // MEGATOOL — Create NB Campaign sub-tab (third sub-tab, gated on binomOfferResult).
+  const nbCampaignOpen = useAppStore((s) => s.nbCampaignOpen);
+  const openNbCampaign = useAppStore((s) => s.openNbCampaign);
+  const closeNbCampaign = useAppStore((s) => s.closeNbCampaign);
 
   const [page, setPage] = useState<Page>('keywords');
   // Megatool mode is toggled by clicking the brand text in the header. It
@@ -124,18 +137,41 @@ export default function MainApp() {
   };
   const handleCloseBinomOffer = () => {
     closeBinomOffer();
+    closeNbCampaign();
     setMegatoolPage('fb-campaign-reader');
   };
 
-  // Auto-close the Binom sub-tab when the selected ad is cleared — mirrors the
-  // Offer Article auto-bounce above so the operator never lands on a sub-tab
-  // whose data dependency has gone away.
+  // MEGATOOL — NB Campaign sub-tab handlers.
+  const handleOpenNbCampaign = () => {
+    openNbCampaign();
+    setMegatoolPage('create-nb-campaign');
+  };
+  const handleCloseNbCampaign = () => {
+    closeNbCampaign();
+    setMegatoolPage('create-binom-offer');
+  };
+
+  // Auto-close the Binom and NB sub-tabs when their data dependencies disappear.
+  // Mirrors the Offer Article auto-bounce so the operator never lands on a tab
+  // whose prerequisite is gone.
+  useEffect(() => {
+    if (nbCampaignOpen && (!selectedFbAd || !binomOfferResult)) {
+      closeNbCampaign();
+      if (megatoolPage === 'create-nb-campaign') {
+        setMegatoolPage(binomOfferOpen ? 'create-binom-offer' : 'fb-campaign-reader');
+      }
+    }
+  }, [nbCampaignOpen, selectedFbAd, binomOfferResult, binomOfferOpen, megatoolPage, closeNbCampaign]);
+
   useEffect(() => {
     if (binomOfferOpen && !selectedFbAd) {
       closeBinomOffer();
-      if (megatoolPage === 'create-binom-offer') setMegatoolPage('fb-campaign-reader');
+      closeNbCampaign();
+      if (megatoolPage === 'create-binom-offer' || megatoolPage === 'create-nb-campaign') {
+        setMegatoolPage('fb-campaign-reader');
+      }
     }
-  }, [binomOfferOpen, selectedFbAd, megatoolPage, closeBinomOffer]);
+  }, [binomOfferOpen, selectedFbAd, megatoolPage, closeBinomOffer, closeNbCampaign]);
 
   // Resolve the signed-in email once (Cloudflare Access in prod, PUBLIC_DEV_AUTH_EMAIL locally).
   // Used only to decide whether to render the admin Dashboard tab. Identity lookup is async,
@@ -248,12 +284,12 @@ export default function MainApp() {
                         {item.label}
                       </button>
                     );
-                    // Inject the dynamic "Create Binom Offer" sub-tab right
-                    // after FB Campaign Reader — only appears once the operator
-                    // clicked "→ Create Binom Offer" on a selected ad. Has an
-                    // inline close (×) that bounces back to the parent tab.
+                    // Inject dynamic sub-tabs after FB Campaign Reader:
+                    // "Create Binom Offer" appears once the operator clicked "→ Create Binom Offer".
+                    // "Create NB Campaign" appears after a successful Binom result.
                     if (item.value === 'fb-campaign-reader' && binomOfferOpen) {
                       const isBinomActive = megatoolPage === 'create-binom-offer';
+                      const isNbActive = megatoolPage === 'create-nb-campaign';
                       return (
                         <span key="fb-with-binom" className="flex items-center">
                           {button}
@@ -281,6 +317,32 @@ export default function MainApp() {
                               ×
                             </button>
                           </span>
+                          {nbCampaignOpen && (
+                            <span
+                              className={`ml-1 flex items-center rounded text-sm transition-colors ${
+                                isNbActive
+                                  ? 'bg-amber-400 text-black'
+                                  : 'text-white/80 hover:bg-white/10 hover:text-white'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => setMegatoolPage('create-nb-campaign')}
+                                className="pl-3 pr-1 py-1.5"
+                                aria-current={isNbActive ? 'page' : undefined}
+                              >
+                                Create NB Campaign
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleCloseNbCampaign}
+                                aria-label="Close Create NB Campaign tab"
+                                className="pr-2 pl-1 py-1.5 text-xs opacity-70 hover:opacity-100"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          )}
                         </span>
                       );
                     }
@@ -408,7 +470,10 @@ export default function MainApp() {
                   <MegatoolFBCampaignPage onOpenBinomOffer={handleOpenBinomOffer} />
                 )}
                 {megatoolPage === 'create-binom-offer' && binomOfferOpen && (
-                  <MegatoolCreateBinomOfferPage onClose={handleCloseBinomOffer} />
+                  <MegatoolCreateBinomOfferPage onClose={handleCloseBinomOffer} onOpenNbCampaign={handleOpenNbCampaign} />
+                )}
+                {megatoolPage === 'create-nb-campaign' && nbCampaignOpen && (
+                  <MegatoolCreateNbCampaignPage onClose={handleCloseNbCampaign} />
                 )}
               </>
             )

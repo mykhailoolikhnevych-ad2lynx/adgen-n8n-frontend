@@ -231,6 +231,8 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
   const clearSelectedFbAd = useAppStore((s) => s.clearSelectedFbAd);
   const closeBinomOffer = useAppStore((s) => s.closeBinomOffer);
   const resetBinomOffer = useAppStore((s) => s.resetBinomOffer);
+  const closeNbCampaign = useAppStore((s) => s.closeNbCampaign);
+  const resetNbCampaign = useAppStore((s) => s.resetNbCampaign);
 
   const isLoading = status === 'loading';
 
@@ -252,11 +254,13 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
     if (!trimmed) { setIdError(true); return; }
     setIdError(false);
     // Fetching a new campaign invalidates the previous selection and any
-    // Binom offer the operator may have built from it — clear both so the
-    // Create Binom Offer sub-tab can't carry stale state across campaigns.
+    // Binom / NB state built from it — reset all three so sub-tabs can't
+    // carry stale state across campaigns.
     clearSelectedFbAd();
     closeBinomOffer();
     resetBinomOffer();
+    closeNbCampaign();
+    resetNbCampaign();
     void fetchFbCampaign(trimmed);
   };
 

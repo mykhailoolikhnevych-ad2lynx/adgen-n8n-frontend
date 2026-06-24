@@ -21,6 +21,7 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 
 interface MegatoolCreateBinomOfferPageProps {
   onClose: () => void;
+  onOpenNbCampaign?: () => void;
 }
 
 const CopyableCard = ({ label, value, isLink }: { label: string; value: string; isLink?: boolean }) => {
@@ -66,7 +67,7 @@ const CopyableCard = ({ label, value, isLink }: { label: string; value: string; 
   );
 };
 
-export const MegatoolCreateBinomOfferPage = ({ onClose }: MegatoolCreateBinomOfferPageProps) => {
+export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: MegatoolCreateBinomOfferPageProps) => {
   const selectedFbAd = useAppStore((s) => s.selectedFbAd);
   const status = useAppStore((s) => s.binomOfferStatus);
   const result = useAppStore((s) => s.binomOfferResult);
@@ -290,6 +291,18 @@ export const MegatoolCreateBinomOfferPage = ({ onClose }: MegatoolCreateBinomOff
                   </pre>
                 )}
               </div>
+
+              {onOpenNbCampaign && (
+                <div className="pt-1">
+                  <Button
+                    onClick={onOpenNbCampaign}
+                    disabled={!selectedFbAd}
+                    className="w-full"
+                  >
+                    → Create NB Campaign
+                  </Button>
+                </div>
+              )}
             </>
           )}
         </div>
