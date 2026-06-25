@@ -6,20 +6,12 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { ARTICLE_GEOS, adLanguagesForGeo } from '@/lib/geos';
 import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
 
-// The 3 "Basic LLM Chain" prompt variants in the n8n RSOC webhook (the `mode` field),
-// ordered from the most informative to the least. The UI defaults to "2" (Balanced);
-// mode "1" is the n8n Switch fallback.
-const CONCEPT_MODES: { value: string; label: string; hint: string }[] = [
-  { value: '1', label: 'Detailed', hint: 'Most concrete: real facts, ranges and comparisons plus a short bullet rundown. Withholds only the reader’s personal answer.' },
-  { value: '2', label: 'Balanced', hint: 'Moderate: round-number ranges in each paragraph, no exact figures or brand lists.' },
-  { value: '3', label: 'Teaser', hint: 'Least info: almost no numbers, maximum curiosity gap to push clicks to the search box.' },
-];
+const KEY_COUNT = 3;
 
-const CONCEPT_HELP =
-  'Який промпт-варіант генерує статтю — від найбільш інформативного до найменш:\n' +
-  '• Detailed — найбільше конкретики: реальні факти, діапазони, порівняння + короткий список-перелік. Притримує лише персональну відповідь читача.\n' +
-  '• Balanced — помірно: округлені діапазони чисел у кожному абзаці, без точних цифр і переліків брендів.\n' +
-  '• Teaser — мінімум конкретики, майже без чисел. Максимальний «розрив цікавості», щоб підштовхнути клік у пошуковий блок.';
+const REFERENCES_HELP =
+  'Add a "References" section at the end of the article listing the source URLs '
+  + '(plain text, not hyperlinks). All SERP sources used to generate the article '
+  + 'are included — including .gov / official sites.';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -44,7 +36,6 @@ const VALID_GEO_SET = new Set(ARTICLE_GEOS);
 const extractArticleText = (html: string): string => {
   const doc = new DOMParser().parseFromString(html, 'text/html');
 
-  // The first `<article class="article-card">` is the article; the second is References.
   const articleNode = doc.querySelector('article.article-card');
   const bodyLines: string[] = [];
   if (articleNode) {
@@ -61,9 +52,10 @@ const extractArticleText = (html: string): string => {
     });
   }
 
-  // References live in the second `.article-card` div — pull out the href, not the link text.
-  const refUrls = Array.from(doc.querySelectorAll('div.article-card a'))
-    .map((a) => (a as HTMLAnchorElement).href)
+  // References block: the webhook renders URLs as plain-text <li> entries inside
+  // <section class="article-card references"> — no <a> tags.
+  const refUrls = Array.from(doc.querySelectorAll('section.article-card.references li'))
+    .map((li) => (li.textContent ?? '').trim())
     .filter(Boolean);
 
   const parts: string[] = [];
@@ -81,10 +73,12 @@ interface ArticlePageProps {
 }
 
 export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
-  const [topic, setTopic] = useState('');
+  // Three article-topic inputs (keys). Only the first is required; the n8n
+  // workflow scales SERP results per key (1→10, 2→5 each, 3→3 each).
+  const [keys, setKeys] = useState<string[]>(() => Array(KEY_COUNT).fill(''));
   const [geo, setGeo] = useState('United States (US)');
   const [language, setLanguage] = useState(() => adLanguagesForGeo('United States (US)')[0]);
-  const [mode, setMode] = useState('2'); // default = Balanced
+  const [addReferences, setAddReferences] = useState(false);
   const [errors, setErrors] = useState<{ topic: boolean; geo: boolean; geoMsg?: string; language: boolean }>({
     topic: false,
     geo: false,
@@ -137,11 +131,12 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
   };
 
   const handleGenerate = () => {
-    const trimmedTopic = topic.trim();
+    const trimmedKeys = keys.map((k) => k.trim());
     const trimmedGeo = geo.trim();
     const trimmedLang = language.trim();
 
-    const topicErr = !trimmedTopic;
+    // Only the first key is required.
+    const topicErr = !trimmedKeys[0];
     let geoErr = false;
     let geoMsg: string | undefined;
     if (!trimmedGeo) {
@@ -158,7 +153,13 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
 
     setStartedAt(Date.now());
     setElapsedMs(0);
-    void generateArticle({ topic: trimmedTopic, geo: trimmedGeo, language: trimmedLang, mode });
+    // The store filters empties and slices to max 3 — passing all 3 is safe.
+    void generateArticle({
+      keys: trimmedKeys,
+      geo: trimmedGeo,
+      language: trimmedLang,
+      addReferences,
+    });
   };
 
   const elapsedSec = (elapsedMs / 1000).toFixed(1);
@@ -193,18 +194,39 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
 
           <div className="space-y-3">
             <div>
-              <label className="text-xs font-medium uppercase text-slate-500">Article topic *</label>
-              <Input
-                value={topic}
-                onChange={(e) => {
-                  setTopic(e.target.value);
-                  if (errors.topic) setErrors((p) => ({ ...p, topic: false }));
-                }}
-                placeholder="e.g. Reverse mortgage calculators"
-                className={errors.topic ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                disabled={isLoading}
-              />
-              {errors.topic && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+              <label className="text-xs font-medium uppercase text-slate-500">
+                Article topic <span className="text-slate-400 normal-case">(up to 3, first required)</span>
+              </label>
+              <div className="space-y-1.5">
+                {keys.map((value, idx) => {
+                  const isPrimary = idx === 0;
+                  const showError = isPrimary && errors.topic;
+                  return (
+                    <div key={idx}>
+                      <Input
+                        value={value}
+                        onChange={(e) => {
+                          const next = [...keys];
+                          next[idx] = e.target.value;
+                          setKeys(next);
+                          if (isPrimary && errors.topic) setErrors((p) => ({ ...p, topic: false }));
+                        }}
+                        placeholder={
+                          isPrimary
+                            ? 'Key 1 * — e.g. Reverse mortgage calculators'
+                            : `Key ${idx + 1} (optional)`
+                        }
+                        className={showError ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                        disabled={isLoading}
+                      />
+                      {showError && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1">
+                1 key → 10 source articles · 2 keys → 5 each · 3 keys → 3 each.
+              </p>
             </div>
 
             <div>
@@ -241,23 +263,19 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
             </div>
 
             <div>
-              <label className="flex items-center gap-1 text-xs font-medium uppercase text-slate-500">
-                Concept
-                <InfoTooltip text={CONCEPT_HELP} />
+              <label className="flex items-center gap-2 text-xs font-medium uppercase text-slate-500 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={addReferences}
+                  onChange={(e) => setAddReferences(e.target.checked)}
+                  disabled={isLoading}
+                  className="h-3.5 w-3.5"
+                />
+                Add References
+                <InfoTooltip text={REFERENCES_HELP} />
               </label>
-              {/* Picks which Basic LLM Chain prompt runs in n8n (the `mode` field). */}
-              <select
-                value={mode}
-                onChange={(e) => setMode(e.target.value)}
-                disabled={isLoading}
-                className="w-full text-sm border rounded-md px-2 py-1 bg-white"
-              >
-                {CONCEPT_MODES.map((m) => (
-                  <option key={m.value} value={m.value}>{m.label}</option>
-                ))}
-              </select>
               <p className="text-[10px] text-slate-400 mt-1">
-                {CONCEPT_MODES.find((m) => m.value === mode)?.hint}
+                Appends a plain-text list of source URLs at the end of the article.
               </p>
             </div>
           </div>
