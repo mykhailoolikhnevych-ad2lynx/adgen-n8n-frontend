@@ -385,7 +385,7 @@ interface AppState {
   deleteCreative: (id: string) => void;
   clearConcepts: () => void;
   generateAngles: () => Promise<void>;
-  generateArticle: (input: { topic: string; geo: string; language: string; mode: string }) => Promise<void>;
+  generateArticle: (input: { keys: string[]; geo: string; language: string; addReferences: boolean }) => Promise<void>;
   generateKeywords: (input: KeywordStudioInput) => Promise<void>;
   fetchFbCampaign: (campaignId: string) => Promise<void>;
   resetFbCampaign: () => void;
@@ -917,8 +917,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  generateArticle: async ({ topic, geo, language, mode }) => {
-    const meta = { topic, geo, language, mode };
+  generateArticle: async ({ keys, geo, language, addReferences }) => {
+    const cleanKeys = keys.map((k) => k.trim()).filter(Boolean).slice(0, 3);
+    const topic = cleanKeys[0] ?? '';
+    const meta = { keys: cleanKeys, geo, language, addReferences };
     if (!WEBHOOKS.article) {
       const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
       set({
@@ -931,14 +933,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({
       articleStatus: 'loading', articleError: null, articleHtml: null,
+      // Downstream tabs (OfferArticlePage) only need the primary key — store it as `topic`.
       articleInputs: { topic, geo, language },
       articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
     });
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        // GEO drives the SERP fetch; `language` is used only by the article-writing
-        // chains (after Aggregate); `mode` picks which Basic LLM Chain prompt runs.
-        const payload = { 'Article topic': topic, GEO: geo, language, mode };
+        // GEO drives the SERP fetch (one per key); `language` is used only by the
+        // article-writing chain (after Aggregate). The n8n workflow fans out into
+        // 1, 2 or 3 SERP calls based on keys.length and scales results per key
+        // accordingly (10 / 5 / 3). addReferences toggles the References section.
+        const payload = { keys: cleanKeys, GEO: geo, language, addReferences };
         console.log('[generateArticle] request payload:', payload);
         // The n8n workflow scrapes the SERP top-10 + LLM rewrite — can run ~60-120s.
         const { data } = await axios.post(WEBHOOKS.article, payload, {
