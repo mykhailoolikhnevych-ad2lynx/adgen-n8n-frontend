@@ -245,15 +245,15 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   }, [offerOptions]);
 
   // === Auto-generated names (mirror the format shown in the operator screens) ===
-  // Both names share the same "{name} | {country} | {traffic} | megatool_article | Buyer_Dev"
+  // Both names share the same "{name} | {country} | {traffic} | megatool_article | {Campaign Group}"
   // prefix — keeping them in lockstep so a Campaign Name change reads the same
   // way as the matching Offer Name (Tracker).
   // Campaign Name → "{prefix}"
   // Offer Name (Tracker) → "{prefix} | {Layout} | {Provider} | ch {channel}"
   const autoCampaignName = useMemo(() => {
-    const parts = [name, offerCountryCode, TRAFFIC_SHORT[trafficSource], 'megatool_article', 'Buyer_Dev'];
+    const parts = [name, offerCountryCode, TRAFFIC_SHORT[trafficSource], 'megatool_article', campaignGroupName];
     return parts.filter(Boolean).join(' | ');
-  }, [name, offerCountryCode, trafficSource]);
+  }, [name, offerCountryCode, trafficSource, campaignGroupName]);
 
   const autoOfferName = useMemo(() => {
     const provider = providerSlugs[0] ?? 'amo';
@@ -263,13 +263,13 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
       offerCountryCode,
       TRAFFIC_SHORT[trafficSource],
       'megatool_article',
-      'Buyer_Dev',
+      campaignGroupName,
       titleCase(amoLayout),
       titleCase(provider),
       chSegment,
     ];
     return parts.filter(Boolean).join(' | ');
-  }, [name, offerCountryCode, trafficSource, amoLayout, amoChannelId, providerSlugs]);
+  }, [name, offerCountryCode, trafficSource, amoLayout, amoChannelId, providerSlugs, campaignGroupName]);
 
   // Resolved names to send on the wire. The "Manual" state is null until the
   // operator types into the field — that's what flips the inline label from
