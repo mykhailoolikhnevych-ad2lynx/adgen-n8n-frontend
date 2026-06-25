@@ -46,27 +46,39 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
     : `creatives_batch_${batchIndex + 1}`;
 
   // Single-image batches download as a plain image — no zip wrapper, since
-  // there's nothing to bundle and operators expect a direct file.
-  const validImages = creative.images.filter((img) => {
-    if (!img.url.startsWith('data:')) return false;
-    return img.url.indexOf(',') !== -1;
-  });
+  // there's nothing to bundle and operators expect a direct file. Works for
+  // both data:URL responses and remote URLs (we fetch the latter into a blob
+  // so the browser respects the `download` attribute and the chosen name).
+  const validImages = creative.images.filter((img) => typeof img.url === 'string' && img.url.length > 0);
   if (validImages.length === 1) {
     const img = validImages[0];
-    const commaIdx = img.url.indexOf(',');
-    const header = img.url.slice(0, commaIdx);
-    const mimeMatch = header.match(/data:([^;]+)/);
-    const mime = mimeMatch?.[1] ?? 'image/jpeg';
-    const ext = mime.split('/')[1] || 'jpg';
+    let mime = 'image/jpeg';
+    if (img.url.startsWith('data:')) {
+      const header = img.url.slice(0, img.url.indexOf(','));
+      mime = header.match(/data:([^;]+)/)?.[1] ?? mime;
+    }
+    let downloadHref = img.url;
+    if (!img.url.startsWith('data:')) {
+      try {
+        const res = await fetch(img.url);
+        const blob = await res.blob();
+        if (blob.type) mime = blob.type;
+        downloadHref = URL.createObjectURL(blob);
+      } catch {
+        // Fall back to direct href — browser may navigate instead of download.
+      }
+    }
+    const ext = (mime.split('/')[1] || 'jpg').split('+')[0];
     const baseName = img.fileName
       ? sanitizeForFilename(img.fileName)
       : `A_${sanitizeForFilename(img.style || 'A')}`;
     const a = document.createElement('a');
-    a.href = img.url;
+    a.href = downloadHref;
     a.download = `${baseName}.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    if (downloadHref !== img.url) URL.revokeObjectURL(downloadHref);
     return;
   }
 
