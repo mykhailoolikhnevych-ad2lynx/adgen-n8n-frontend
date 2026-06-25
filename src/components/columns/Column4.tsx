@@ -37,8 +37,6 @@ const sanitizeForFilename = (s: string): string =>
   s.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120);
 
 const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => {
-  const zip = new JSZip();
-
   // ZIP is named after the n8n execution id — same "batch_<id>" shown in Telegram.
   // Creative Gen batches carry the same "creativeonly" marker as their image files.
   const batchNumber = creative.fileMeta?.batchNumber;
@@ -46,6 +44,33 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
   const batchName = batchNumber
     ? `${batchPrefix}_${batchNumber}`
     : `creatives_batch_${batchIndex + 1}`;
+
+  // Single-image batches download as a plain image — no zip wrapper, since
+  // there's nothing to bundle and operators expect a direct file.
+  const validImages = creative.images.filter((img) => {
+    if (!img.url.startsWith('data:')) return false;
+    return img.url.indexOf(',') !== -1;
+  });
+  if (validImages.length === 1) {
+    const img = validImages[0];
+    const commaIdx = img.url.indexOf(',');
+    const header = img.url.slice(0, commaIdx);
+    const mimeMatch = header.match(/data:([^;]+)/);
+    const mime = mimeMatch?.[1] ?? 'image/jpeg';
+    const ext = mime.split('/')[1] || 'jpg';
+    const baseName = img.fileName
+      ? sanitizeForFilename(img.fileName)
+      : `A_${sanitizeForFilename(img.style || 'A')}`;
+    const a = document.createElement('a');
+    a.href = img.url;
+    a.download = `${baseName}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    return;
+  }
+
+  const zip = new JSZip();
 
   creative.images.forEach((img, i) => {
     const variantLetter = String.fromCharCode(65 + i); // A, B, C, D

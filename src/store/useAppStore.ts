@@ -162,6 +162,130 @@ interface NoticeBanner { message: string; }
 
 export type ArticleStatus = 'idle' | 'loading' | 'success' | 'error';
 
+// MEGATOOL — FB Campaign Reader. Mirrors the n8n workflow's success payload
+// (data field of `{ ok: true, tokenIndex, data: {...}, totalAds }`).
+export interface FbCreativeLinkData {
+  link?: string;
+  message?: string;
+  name?: string;
+  image_hash?: string;
+  picture?: string;
+  call_to_action?: { type?: string; value?: { link?: string } };
+}
+export interface FbCreative {
+  id: string;
+  name?: string;
+  thumbnail_url?: string;
+  image_url?: string;
+  title?: string;
+  body?: string;
+  call_to_action_type?: string;
+  link_url?: string;
+  object_story_spec?: { link_data?: FbCreativeLinkData; video_data?: any };
+  url_tags?: string;
+  effective_object_story_id?: string;
+}
+export interface FbAd {
+  id: string;
+  name: string;
+  status: string;
+  effective_status: string;
+  creative: FbCreative;
+}
+export interface FbAdset {
+  id: string;
+  name: string;
+  status: string;
+  effective_status: string;
+  daily_budget?: string;
+  lifetime_budget?: string;
+  optimization_goal?: string;
+  targeting?: any;
+  promoted_object?: any;
+  start_time?: string;
+  end_time?: string;
+  ads: FbAd[];
+}
+export interface FbCampaign {
+  id: string;
+  name: string;
+  objective?: string;
+  status?: string;
+  effective_status?: string;
+  daily_budget?: string;
+  lifetime_budget?: string;
+  account_id?: string;
+  [key: string]: any;
+}
+export interface FbCampaignData {
+  campaign: FbCampaign;
+  adsets: FbAdset[];
+  totalAds: number;
+  tokenIndex?: number;
+}
+
+// MEGATOOL — selected ad snapshot, kept at store level so it survives sub-tab
+// switches between FB Campaign Reader and Create Binom Offer.
+export interface SelectedFbAd {
+  adId: string;
+  adName: string;
+  adsetId: string;
+  adsetName: string;
+  campaignId: string;
+  campaignName: string;
+  trackingUrl: string;
+  thumbnailUrl: string;
+  creativeTitle: string;
+  creativeBody: string;
+}
+
+// MEGATOOL — Create Binom Offer response shape (success branch of the n8n webhook).
+export interface BinomOfferResult {
+  ok: true;
+  tracker?: string;
+  domain?: string;
+  binomOfferIds: string[];
+  binomCampaignId: string;
+  binomCampaignUrl: string;
+  binomCampaignName?: string;
+  originalCampaignId?: string;
+  originalKey?: string;
+  [key: string]: any;
+}
+
+export interface CreateBinomOfferInput {
+  trackingUrl: string;
+  newAmoDomain: string;
+  newAmoChannel: string;
+  newBinomGroup: string;
+  isRoas?: boolean;
+}
+
+// MEGATOOL — Create NB Campaign response shape (success branch).
+export interface NbCampaignResult {
+  nbAccountId: string;
+  campaignId: string;
+  adsetId: string;
+  adId: string;
+  campaignName: string;
+  assetUrl: string;
+}
+
+export interface CreateNbCampaignInput {
+  nbAccountId: string;
+  campaignName: string;
+  headline: string;
+  body: string;
+  callToAction: string;
+  brandName: string;
+  assetUrl: string;
+  clickThroughUrl: string;
+  budget: number;
+  startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+  trackingId?: string;
+  roas?: number | null;
+}
+
 interface AppState {
   formData: FormData;
   angles: Angle[];
@@ -228,6 +352,24 @@ interface AppState {
   keywordHtml: string | null;
   keywordStatus: ArticleStatus;
   keywordError: string | null;
+  // MEGATOOL — FB Campaign Reader state.
+  fbCampaignStatus: ArticleStatus;
+  fbCampaignData: FbCampaignData | null;
+  fbCampaignError: string | null;
+  // MEGATOOL — Selected ad (from FB Campaign Reader) + Create Binom Offer flow.
+  selectedFbAd: SelectedFbAd | null;
+  binomOfferOpen: boolean;
+  binomOfferStatus: ArticleStatus;
+  binomOfferResult: BinomOfferResult | null;
+  binomOfferError: string | null;
+  // MEGATOOL — Create NB Campaign flow (third sub-tab, gated on binomOfferResult).
+  nbCampaignOpen: boolean;
+  nbCampaignStatus: ArticleStatus;
+  nbCampaignResult: NbCampaignResult | null;
+  nbCampaignError: string | null;
+  nbAccountsStatus: ArticleStatus;
+  nbAccountsList: { name: string; id: string }[];
+  nbAccountsError: string | null;
   rsocBundle: RsocBundle | null;
   rsocAudiencesStatus: ArticleStatus;
   rsocAudiencesError: string | null;
@@ -245,6 +387,19 @@ interface AppState {
   generateAngles: () => Promise<void>;
   generateArticle: (input: { topic: string; geo: string; language: string; mode: string }) => Promise<void>;
   generateKeywords: (input: KeywordStudioInput) => Promise<void>;
+  fetchFbCampaign: (campaignId: string) => Promise<void>;
+  resetFbCampaign: () => void;
+  setSelectedFbAd: (ad: SelectedFbAd | null) => void;
+  clearSelectedFbAd: () => void;
+  openBinomOffer: () => void;
+  closeBinomOffer: () => void;
+  resetBinomOffer: () => void;
+  createBinomOffer: (input: CreateBinomOfferInput) => Promise<void>;
+  openNbCampaign: () => void;
+  closeNbCampaign: () => void;
+  resetNbCampaign: () => void;
+  createNbCampaign: (input: CreateNbCampaignInput) => Promise<void>;
+  fetchNbAccounts: () => Promise<void>;
   generateRsocAudiences: (input: RsocAudiencesInput) => Promise<void>;
   generateRsocHeadlines: (pickedIds: string[]) => Promise<void>;
   toggleRsocAudienceTranslation: (segmentId: string) => Promise<void>;
@@ -328,6 +483,10 @@ const WEBHOOKS = {
   rsocAudiences: import.meta.env.PUBLIC_WEBHOOK_RSOC_AUDIENCES_URL,
   rsocHeadlines: import.meta.env.PUBLIC_WEBHOOK_RSOC_HEADLINES_URL,
   rsocOptions: import.meta.env.PUBLIC_WEBHOOK_RSOC_OPTIONS_URL,
+  fbCampaignReader: import.meta.env.PUBLIC_WEBHOOK_FB_CAMPAIGN_READER_URL,
+  binomOfferCreator: import.meta.env.PUBLIC_WEBHOOK_BINOM_OFFER_CREATOR_URL,
+  nbCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL,
+  nbAccountsList: import.meta.env.PUBLIC_WEBHOOK_NB_ACCOUNTS_LIST_URL,
 };
 
 export interface KeywordStudioInput {
@@ -626,6 +785,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   offerOptions: null, offerOptionsStatus: 'idle', offerOptionsError: null,
   articleTranslatedHtml: null, articleIsTranslating: false, articleShowTranslation: false,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
+  fbCampaignStatus: 'idle', fbCampaignData: null, fbCampaignError: null,
+  selectedFbAd: null,
+  binomOfferOpen: false,
+  binomOfferStatus: 'idle', binomOfferResult: null, binomOfferError: null,
+  nbCampaignOpen: false,
+  nbCampaignStatus: 'idle', nbCampaignResult: null, nbCampaignError: null,
+  nbAccountsStatus: 'idle', nbAccountsList: [], nbAccountsError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
@@ -935,6 +1101,231 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     fail(`timed out after ${(POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000}s`);
+  },
+
+  // MEGATOOL — FB Campaign Reader. Synchronous POST (FB API itself returns in
+  // ~5-30s — well under any edge cap), so no executions polling needed.
+  fetchFbCampaign: async (campaignId) => {
+    const logMeta = { campaignId };
+    if (!WEBHOOKS.fbCampaignReader) {
+      const msg = 'PUBLIC_WEBHOOK_FB_CAMPAIGN_READER_URL is not set in .env';
+      set({ fbCampaignStatus: 'error', fbCampaignError: msg, fbCampaignData: null });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-fb', action: 'fetchFbCampaign', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    set({ fbCampaignStatus: 'loading', fbCampaignError: null, fbCampaignData: null });
+    try {
+      const { data } = await axios.post(WEBHOOKS.fbCampaignReader, { campaignId }, { timeout: 120_000 });
+      // n8n may wrap as a one-element array depending on Respond mode.
+      const payload = Array.isArray(data) ? data[0] : data;
+      if (!payload || payload.ok === false) {
+        const msg = payload?.error || 'FB Campaign Reader returned an error';
+        set({ fbCampaignStatus: 'error', fbCampaignError: msg, fbCampaignData: null });
+        get().showError(`FB Campaign Reader: ${msg}`);
+        logEvent({ tab: 'megatool-fb', action: 'fetchFbCampaign', meta: logMeta, metaOut: payload, errorMessage: msg });
+        return;
+      }
+      const inner = payload.data;
+      if (!inner?.campaign) {
+        const msg = 'FB Campaign Reader returned no campaign data';
+        set({ fbCampaignStatus: 'error', fbCampaignError: msg, fbCampaignData: null });
+        get().showError(msg);
+        logEvent({ tab: 'megatool-fb', action: 'fetchFbCampaign', meta: logMeta, metaOut: payload, errorMessage: msg });
+        return;
+      }
+      const fbData: FbCampaignData = {
+        campaign: inner.campaign,
+        adsets: Array.isArray(inner.adsets) ? inner.adsets : [],
+        totalAds: typeof inner.totalAds === 'number' ? inner.totalAds : 0,
+        tokenIndex: payload.tokenIndex,
+      };
+      set({ fbCampaignStatus: 'success', fbCampaignData: fbData, fbCampaignError: null });
+      logEvent({ tab: 'megatool-fb', action: 'fetchFbCampaign', meta: logMeta, metaOut: { totalAds: fbData.totalAds, adsets: fbData.adsets.length } });
+    } catch (e) {
+      console.error('[fetchFbCampaign]', e);
+      const msg = humanizeError(e);
+      set({ fbCampaignStatus: 'error', fbCampaignError: msg, fbCampaignData: null });
+      get().showError(`FB Campaign Reader failed: ${msg}`);
+      logEvent({ tab: 'megatool-fb', action: 'fetchFbCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+    }
+  },
+  resetFbCampaign: () => set({ fbCampaignStatus: 'idle', fbCampaignData: null, fbCampaignError: null }),
+
+  // MEGATOOL — Selected ad (from FB Campaign Reader).
+  setSelectedFbAd: (ad) => set({ selectedFbAd: ad }),
+  clearSelectedFbAd: () => set({ selectedFbAd: null }),
+
+  // MEGATOOL — Create Binom Offer sub-tab visibility + run state.
+  openBinomOffer: () => set({ binomOfferOpen: true }),
+  closeBinomOffer: () => set({ binomOfferOpen: false }),
+  resetBinomOffer: () => set({ binomOfferStatus: 'idle', binomOfferResult: null, binomOfferError: null }),
+
+  // MEGATOOL — Create NB Campaign sub-tab visibility + run state.
+  openNbCampaign: () => set({ nbCampaignOpen: true }),
+  closeNbCampaign: () => set({ nbCampaignOpen: false }),
+  resetNbCampaign: () => set({ nbCampaignStatus: 'idle', nbCampaignResult: null, nbCampaignError: null }),
+
+  createBinomOffer: async (input) => {
+    const logMeta = {
+      trackingUrl: input.trackingUrl,
+      newAmoDomain: input.newAmoDomain,
+      newAmoChannel: input.newAmoChannel,
+      newBinomGroup: input.newBinomGroup,
+      isRoas: input.isRoas ?? false,
+    };
+    if (!WEBHOOKS.binomOfferCreator) {
+      const msg = 'PUBLIC_WEBHOOK_BINOM_OFFER_CREATOR_URL is not set in .env';
+      set({ binomOfferStatus: 'error', binomOfferError: msg, binomOfferResult: null });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    set({ binomOfferStatus: 'loading', binomOfferError: null, binomOfferResult: null });
+    try {
+      const payload = {
+        trackingUrl: input.trackingUrl,
+        newAmoDomain: input.newAmoDomain,
+        newAmoChannel: input.newAmoChannel,
+        newBinomGroup: input.newBinomGroup,
+        isRoas: input.isRoas ?? false,
+      };
+      console.log('[createBinomOffer] request payload:', payload);
+      const { data } = await axios.post(WEBHOOKS.binomOfferCreator, payload, { timeout: 180_000 });
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer || outer.ok === false) {
+        const msg = outer?.error || 'Binom Offer Creator returned an error';
+        const step = outer?.step ? ` (step: ${outer.step})` : '';
+        const full = `${msg}${step}`;
+        set({ binomOfferStatus: 'error', binomOfferError: full, binomOfferResult: null });
+        get().showError(`Binom Offer Creator: ${full}`);
+        logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, metaOut: outer, errorMessage: full });
+        return;
+      }
+      const result: BinomOfferResult = {
+        ok: true,
+        tracker: outer.tracker,
+        domain: outer.domain,
+        binomOfferIds: Array.isArray(outer.binomOfferIds) ? outer.binomOfferIds.map(String) : [],
+        binomCampaignId: String(outer.binomCampaignId ?? ''),
+        binomCampaignUrl: String(outer.binomCampaignUrl ?? ''),
+        binomCampaignName: outer.binomCampaignName,
+        originalCampaignId: outer.originalCampaignId,
+        originalKey: outer.originalKey,
+        ...outer,
+      };
+      set({ binomOfferStatus: 'success', binomOfferResult: result, binomOfferError: null });
+      logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, metaOut: result });
+    } catch (e) {
+      console.error('[createBinomOffer]', e);
+      const msg = humanizeError(e);
+      set({ binomOfferStatus: 'error', binomOfferError: msg, binomOfferResult: null });
+      get().showError(`Binom Offer Creator failed: ${msg}`);
+      logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+    }
+  },
+
+  createNbCampaign: async (input) => {
+    const logMeta = { nbAccountId: input.nbAccountId, campaignName: input.campaignName, budget: input.budget, startDate: input.startDate };
+    if (!WEBHOOKS.nbCampaignCreator) {
+      const msg = 'PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL is not set in .env';
+      set({ nbCampaignStatus: 'error', nbCampaignError: msg, nbCampaignResult: null });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    set({ nbCampaignStatus: 'loading', nbCampaignError: null, nbCampaignResult: null });
+    try {
+      console.log('[createNbCampaign] request payload:', input);
+      const { data } = await axios.post(WEBHOOKS.nbCampaignCreator, input, { timeout: 180_000 });
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer || outer.ok === false) {
+        const msg = outer?.error || 'NB Campaign Creator returned an error';
+        const step = outer?.step ? ` (step: ${outer.step})` : '';
+        const full = `${msg}${step}`;
+        set({ nbCampaignStatus: 'error', nbCampaignError: full, nbCampaignResult: null });
+        get().showError(`NB Campaign Creator: ${full}`);
+        logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: outer, errorMessage: full });
+        return;
+      }
+      const result: NbCampaignResult = {
+        nbAccountId: String(outer.nbAccountId ?? ''),
+        campaignId: String(outer.campaignId ?? ''),
+        adsetId: String(outer.adsetId ?? ''),
+        adId: String(outer.adId ?? ''),
+        campaignName: String(outer.campaignName ?? ''),
+        assetUrl: String(outer.assetUrl ?? ''),
+      };
+      set({ nbCampaignStatus: 'success', nbCampaignResult: result, nbCampaignError: null });
+      logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: result });
+    } catch (e) {
+      console.error('[createNbCampaign]', e);
+      const msg = humanizeError(e);
+      set({ nbCampaignStatus: 'error', nbCampaignError: msg, nbCampaignResult: null });
+      get().showError(`NB Campaign Creator failed: ${msg}`);
+      logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+    }
+  },
+
+  // Megatool — pull the NB Accounts list straight from the n8n `nb_accounts`
+  // datatable. We don't bundle the (~400+) rows in the frontend any more — that
+  // would freeze the renderer on dropdown open.
+  fetchNbAccounts: async () => {
+    const url = (WEBHOOKS as any).nbAccountsList as string | undefined;
+    if (!url) {
+      const msg = 'PUBLIC_WEBHOOK_NB_ACCOUNTS_LIST_URL is not set in .env';
+      set({ nbAccountsStatus: 'error', nbAccountsError: msg, nbAccountsList: [] });
+      return;
+    }
+    set({ nbAccountsStatus: 'loading', nbAccountsError: null });
+    try {
+      const { data } = await axios.post(url, {}, { timeout: 30_000 });
+      // n8n's "Respond with allIncomingItems" sends the rows as a top-level
+      // array — DON'T collapse to data[0] (that would pick a single row).
+      // Also handle wrapper shapes (Code-formatter output) and the n8n
+      // {json:{...}} envelope just in case the workflow shape changes.
+      const rawRows: any[] = Array.isArray(data)
+        ? data
+        : Array.isArray((data as any)?.items)
+          ? (data as any).items
+          : Array.isArray((data as any)?.data)
+            ? (data as any).data
+            : [];
+      const items = rawRows
+        .map((rawRow) => {
+          // Unwrap n8n's {json:{...}} envelope if present.
+          const row = rawRow && typeof rawRow === 'object' && 'json' in rawRow && rawRow.json && typeof rawRow.json === 'object'
+            ? rawRow.json
+            : rawRow;
+          const name = String(row.Account_Name ?? row['Account Name'] ?? row.account_name ?? row.name ?? '').trim();
+          const id = String(row.Account_ID ?? row['Account ID'] ?? row.account_id ?? row.id ?? '').trim();
+          return { name, id };
+        })
+        .filter((r) => r.name && r.id && /^\d+$/.test(r.id))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      // Dedupe by display name — the datatable allows two rows with the same
+      // "Account Name" (different IDs). The Combobox keys options by string,
+      // so a dup causes a React "two children with the same key" flood that
+      // makes the renderer unresponsive. Disambiguate by appending the trailing
+      // 5 digits of the ID so each option is unique AND identifiable.
+      const nameCounts = new Map<string, number>();
+      for (const r of items) nameCounts.set(r.name, (nameCounts.get(r.name) || 0) + 1);
+      const dedupedItems = items.map((r) =>
+        (nameCounts.get(r.name) || 0) > 1
+          ? { ...r, name: `${r.name} (…${r.id.slice(-5)})` }
+          : r,
+      );
+      const finalItems = dedupedItems;
+      if (finalItems.length === 0) {
+        set({ nbAccountsStatus: 'error', nbAccountsError: 'No NB accounts returned from datatable', nbAccountsList: [] });
+        return;
+      }
+      set({ nbAccountsStatus: 'success', nbAccountsList: finalItems, nbAccountsError: null });
+    } catch (e) {
+      console.error('[fetchNbAccounts]', e);
+      const msg = humanizeError(e);
+      set({ nbAccountsStatus: 'error', nbAccountsError: msg, nbAccountsList: [] });
+    }
   },
 
   // Angles tab — step 1: anchor/geo/language/translation -> SERP research -> audience segments.
