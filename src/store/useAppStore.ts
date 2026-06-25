@@ -921,14 +921,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     const cleanKeys = keys.map((k) => k.trim()).filter(Boolean).slice(0, 3);
     const topic = cleanKeys[0] ?? '';
     const meta = { keys: cleanKeys, geo, language, addReferences };
-    if (!WEBHOOKS.article) {
-      const msg = 'PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env';
+    const fail = (msg: string, responseBody?: any) => {
       set({
         articleStatus: 'error', articleError: msg, articleHtml: null,
         articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
       });
-      get().showError(msg);
-      logEvent({ tab: 'article', action: 'generateArticle', meta, errorMessage: msg });
+      get().showError(`Article generation failed: ${msg}`);
+      logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: responseBody, errorMessage: msg });
+    };
+    if (!WEBHOOKS.article) {
+      fail('PUBLIC_WEBHOOK_ARTICLE_URL is not set in .env');
+      return;
+    }
+    if (!N8N_EXECUTIONS_URL) {
+      fail('PUBLIC_N8N_EXECUTIONS_URL is not set in .env');
       return;
     }
     set({
@@ -937,40 +943,48 @@ export const useAppStore = create<AppState>((set, get) => ({
       articleInputs: { topic, geo, language },
       articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
     });
+
+    // Async pattern: the webhook's first node (Respond job_id) returns the
+    // execution id immediately, then the SERP+LLM pipeline (~60-120s) runs
+    // behind it. We poll /api/v1/executions/{id} until done. Synchronous
+    // return would hit Cloudflare's ~100s edge cap on longer keys.
+    const payload = { keys: cleanKeys, GEO: geo, language, addReferences };
+    console.log('[generateArticle] request payload:', payload);
+
+    // Step 1 — kick off and grab the job_id. One automatic retry for transient errors.
+    let jobId: string | null = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        // GEO drives the SERP fetch (one per key); `language` is used only by the
-        // article-writing chain (after Aggregate). The n8n workflow fans out into
-        // 1, 2 or 3 SERP calls based on keys.length and scales results per key
-        // accordingly (10 / 5 / 3). addReferences toggles the References section.
-        const payload = { keys: cleanKeys, GEO: geo, language, addReferences };
-        console.log('[generateArticle] request payload:', payload);
-        // The n8n workflow scrapes the SERP top-10 + LLM rewrite — can run ~60-120s.
-        const { data } = await axios.post(WEBHOOKS.article, payload, {
-          timeout: 300_000,
-          responseType: 'text',
-          transformResponse: (v) => v,
-        });
-        const html = typeof data === 'string' ? data : String(data ?? '');
-        if (!html.trim()) throw new Error('Webhook returned empty response');
-        set({ articleHtml: html, articleStatus: 'success', articleError: null });
-        logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: html });
-        return;
+        const { data: startPayload } = await axios.post(WEBHOOKS.article, payload, { timeout: 30_000 });
+        jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
+        if (!jobId) throw new Error('Webhook did not return a job_id');
+        break;
       } catch (e) {
         if (attempt === 0 && isRetryableError(e)) {
           get().showWarning(`${humanizeError(e)}. Retrying...`);
           continue;
         }
         console.error(e);
-        const msg = humanizeError(e);
-        set({
-          articleStatus: 'error', articleError: msg, articleHtml: null,
-          articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
-        });
-        get().showError(`Article generation failed: ${msg}`);
-        logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+        fail(humanizeError(e), (e as any)?.response?.data);
         return;
       }
+    }
+    if (!jobId) { fail('Webhook did not return a job_id'); return; }
+
+    console.log('[generateArticle] kicked off — job_id=%s, polling every %ss (max %ss)',
+      jobId, POLL_INTERVAL_MS / 1000, (POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS) / 1000);
+
+    // Step 2 — poll until the execution finishes. The last node is
+    // 'Convert text to HTML', which returns { response: <htmlString> }.
+    try {
+      const result = await pollExecutionResult(String(jobId), 'generateArticle');
+      const html = typeof result?.response === 'string' ? result.response : '';
+      if (!html.trim()) throw new Error('Execution finished but the article HTML is empty');
+      set({ articleHtml: html, articleStatus: 'success', articleError: null });
+      logEvent({ tab: 'article', action: 'generateArticle', meta, metaOut: html });
+    } catch (e) {
+      console.error(e);
+      fail(humanizeError(e), (e as any)?.response?.data);
     }
   },
 
