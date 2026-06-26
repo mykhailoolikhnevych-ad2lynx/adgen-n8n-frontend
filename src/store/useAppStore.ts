@@ -4,6 +4,7 @@ import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFile
 import { logEvent } from '@/lib/usage';
 import { listPrompts, type SavedPrompt } from '@/lib/prompts';
 import { getAuthEmail } from '@/lib/identity';
+import { adLanguagesForGeo } from '@/lib/geos';
 
 interface FormData {
   articleUrl: string;
@@ -332,7 +333,27 @@ interface AppState {
   /** Snapshot of the inputs that produced articleHtml — used by the Offer Article
    *  tab to pre-fill `name` (topic), `offer_country_code` (geo) etc. without
    *  making the operator re-type them. */
-  articleInputs: { topic: string; geo: string; language: string } | null;
+  /** `addReferences` is the operator's intent flag: when true, the References
+   *  block produced by the article webhook is forwarded into the Offer Article
+   *  body. The article preview itself always shows References regardless. */
+  articleInputs: { topic: string; geo: string; language: string; addReferences: boolean } | null;
+  /** Live form values for the Article tab — lifted into the store so they
+   *  survive tab swaps. Updated by setArticleForm; wiped by resetArticleForm. */
+  articleForm: {
+    topic: string;
+    keys: string[]; // length 3 — first required, last two optional
+    geo: string;
+    language: string;
+    addReferences: boolean;
+  };
+  setArticleForm: (patch: Partial<{
+    topic: string;
+    keys: string[];
+    geo: string;
+    language: string;
+    addReferences: boolean;
+  }>) => void;
+  resetArticleForm: () => void;
   /** Controls whether the "Offer Article" tab is shown in the nav. Set to true
    *  when the operator presses "Create Offer Article" on the Article tab; reset
    *  by the new tab's close button. */
@@ -385,7 +406,7 @@ interface AppState {
   deleteCreative: (id: string) => void;
   clearConcepts: () => void;
   generateAngles: () => Promise<void>;
-  generateArticle: (input: { keys: string[]; geo: string; language: string; addReferences: boolean }) => Promise<void>;
+  generateArticle: (input: { topic: string; keys: string[]; geo: string; language: string; addReferences: boolean }) => Promise<void>;
   generateKeywords: (input: KeywordStudioInput) => Promise<void>;
   fetchFbCampaign: (campaignId: string) => Promise<void>;
   resetFbCampaign: () => void;
@@ -782,6 +803,31 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingCreativeOnly: false,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   articleInputs: null, offerArticleOpen: false,
+  articleForm: {
+    topic: '',
+    keys: ['', '', ''],
+    geo: 'United States (US)',
+    language: adLanguagesForGeo('United States (US)')[0] ?? 'English (US)',
+    addReferences: true,
+  },
+  setArticleForm: (patch) => set((s) => {
+    const nextForm = { ...s.articleForm, ...patch };
+    // If a previous generation snapshot exists, keep addReferences in sync so
+    // the Offer Article body picks up the operator's latest intent.
+    const nextInputs = s.articleInputs && patch.addReferences !== undefined
+      ? { ...s.articleInputs, addReferences: patch.addReferences }
+      : s.articleInputs;
+    return { articleForm: nextForm, articleInputs: nextInputs };
+  }),
+  resetArticleForm: () => set({
+    articleForm: {
+      topic: '',
+      keys: ['', '', ''],
+      geo: 'United States (US)',
+      language: adLanguagesForGeo('United States (US)')[0] ?? 'English (US)',
+      addReferences: false,
+    },
+  }),
   offerOptions: null, offerOptionsStatus: 'idle', offerOptionsError: null,
   articleTranslatedHtml: null, articleIsTranslating: false, articleShowTranslation: false,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
@@ -917,10 +963,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  generateArticle: async ({ keys, geo, language, addReferences }) => {
+  generateArticle: async ({ topic, keys, geo, language, addReferences }) => {
+    const trimmedTopic = topic.trim();
     const cleanKeys = keys.map((k) => k.trim()).filter(Boolean).slice(0, 3);
-    const topic = cleanKeys[0] ?? '';
-    const meta = { keys: cleanKeys, geo, language, addReferences };
+    const meta = { topic: trimmedTopic, keys: cleanKeys, geo, language, addReferences };
     const fail = (msg: string, responseBody?: any) => {
       set({
         articleStatus: 'error', articleError: msg, articleHtml: null,
@@ -939,8 +985,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({
       articleStatus: 'loading', articleError: null, articleHtml: null,
-      // Downstream tabs (OfferArticlePage) only need the primary key — store it as `topic`.
-      articleInputs: { topic, geo, language },
+      articleInputs: { topic: trimmedTopic, geo, language, addReferences },
       articleTranslatedHtml: null, articleShowTranslation: false, articleIsTranslating: false,
     });
 
@@ -948,7 +993,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     // execution id immediately, then the SERP+LLM pipeline (~60-120s) runs
     // behind it. We poll /api/v1/executions/{id} until done. Synchronous
     // return would hit Cloudflare's ~100s edge cap on longer keys.
-    const payload = { keys: cleanKeys, GEO: geo, language, addReferences };
+    // n8n now always emits References (top 3); `addReferences` is a frontend-only
+    // intent flag (read by OfferArticlePage), so we don't send it to the webhook.
+    const payload = { 'Article topic': trimmedTopic, keys: cleanKeys, GEO: geo, language };
     console.log('[generateArticle] request payload:', payload);
 
     // Step 1 — kick off and grab the job_id. One automatic retry for transient errors.

@@ -122,7 +122,7 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
       headline: selectedFbAd.creativeTitle,
       body: selectedFbAd.creativeBody,
       callToAction: 'Learn More',
-      brandName: '',
+      brandName: (selectedFbAd.adName || campaignName.trim() || 'Sponsored').slice(0, 40),
       assetUrl: selectedFbAd.thumbnailUrl,
       clickThroughUrl: binomOfferResult.binomCampaignUrl,
       budget,
