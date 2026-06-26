@@ -51,13 +51,14 @@ const CAMPAIGN_PIXELS: string[] = [
 // === emits <article class="article-card"> with an <h1>, then alternating
 // === <h2>/<h3>/<p> children. RSOC needs title separately, an "intro" first
 // === paragraph (min 50 words) and the rest as body HTML.
-interface ParsedArticle { title: string; intro: string; body: string; }
+interface ParsedArticle { title: string; intro: string; body: string; references: string[]; }
 const parseArticle = (html: string): ParsedArticle => {
-  if (!html) return { title: '', intro: '', body: '' };
+  const empty: ParsedArticle = { title: '', intro: '', body: '', references: [] };
+  if (!html) return empty;
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const articleNode = doc.querySelector('article.article-card');
-    if (!articleNode) return { title: '', intro: '', body: '' };
+    if (!articleNode) return empty;
 
     const h1 = articleNode.querySelector('h1');
     const title = (h1?.textContent ?? '').trim();
@@ -80,10 +81,25 @@ const parseArticle = (html: string): ParsedArticle => {
       .slice(introIdx + 1)
       .map((el) => el.outerHTML)
       .join('\n');
-    return { title, intro: introHtml, body: bodyHtml };
+
+    // References live in a sibling <section class="article-card references"> —
+    // plain-text <li> entries, no anchor tags.
+    const references = Array.from(doc.querySelectorAll('section.article-card.references li'))
+      .map((li) => (li.textContent ?? '').trim())
+      .filter(Boolean);
+
+    return { title, intro: introHtml, body: bodyHtml, references };
   } catch {
-    return { title: '', intro: '', body: '' };
+    return empty;
   }
+};
+
+const buildReferencesHtml = (urls: string[]): string => {
+  if (!urls.length) return '';
+  // Plain-text URLs (per spec — no anchor tags, so users don't try to click).
+  const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const items = urls.map((u) => `  <li>${escape(u)}</li>`).join('\n');
+  return `<h2>References</h2>\n<ul>\n${items}\n</ul>`;
 };
 
 const wordCount = (s: string): number => {
@@ -164,7 +180,15 @@ export const OfferArticlePage = ({ onClose }: OfferArticlePageProps) => {
   const [amoDomain, setAmoDomain] = useState(DOMAINS_BY_TRAFFIC.facebook[0]);
   const [amoTitle, setAmoTitle] = useState(parsed.title);
   const [amoIntro, setAmoIntro] = useState(parsed.intro);
-  const [amoBody, setAmoBody] = useState(parsed.body);
+  // Only seed the References block into the offer body when the operator
+  // checked "Add References" on the Article tab — the article preview itself
+  // always shows references regardless of this flag.
+  const [amoBody, setAmoBody] = useState(() => {
+    if (articleInputs?.addReferences && parsed.references.length) {
+      return `${parsed.body}\n${buildReferencesHtml(parsed.references)}`;
+    }
+    return parsed.body;
+  });
   const [amoKeywordsRaw, setAmoKeywordsRaw] = useState(articleInputs?.topic ?? '');
   // Widened to `string` because the live options API can return layout codes
   // beyond the hardcoded TRACKER_LAYOUTS fallback list.

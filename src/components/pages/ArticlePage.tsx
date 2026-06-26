@@ -9,9 +9,9 @@ import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
 const KEY_COUNT = 3;
 
 const REFERENCES_HELP =
-  'Add a "References" section at the end of the article listing the source URLs '
-  + '(plain text, not hyperlinks). All SERP sources used to generate the article '
-  + 'are included — including .gov / official sites.';
+  'The generated article preview always shows a "References" section with the top 3 '
+  + 'source URLs (plain text, no hyperlinks). This checkbox decides whether that '
+  + 'section is also carried into the Offer Article body when you press Create Offer Article.';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -73,14 +73,20 @@ interface ArticlePageProps {
 }
 
 export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
-  // Three article-topic inputs (keys). Only the first is required; the n8n
-  // workflow scales SERP results per key (1→10, 2→5 each, 3→3 each).
-  const [keys, setKeys] = useState<string[]>(() => Array(KEY_COUNT).fill(''));
-  const [geo, setGeo] = useState('United States (US)');
-  const [language, setLanguage] = useState(() => adLanguagesForGeo('United States (US)')[0]);
-  const [addReferences, setAddReferences] = useState(false);
-  const [errors, setErrors] = useState<{ topic: boolean; geo: boolean; geoMsg?: string; language: boolean }>({
+  // Form state is lifted into the Zustand store so it survives navigating
+  // away from this tab. Local component state is only for ephemeral UI
+  // (errors, elapsed timer, copy feedback).
+  const form = useAppStore((s) => s.articleForm);
+  const setArticleForm = useAppStore((s) => s.setArticleForm);
+  const resetArticleForm = useAppStore((s) => s.resetArticleForm);
+  const { topic, keys, geo, language, addReferences } = form;
+  const setTopic = (v: string) => setArticleForm({ topic: v });
+  const setKeys = (v: string[]) => setArticleForm({ keys: v });
+  const setAddReferences = (v: boolean) => setArticleForm({ addReferences: v });
+
+  const [errors, setErrors] = useState<{ topic: boolean; keys: boolean; geo: boolean; geoMsg?: string; language: boolean }>({
     topic: false,
+    keys: false,
     geo: false,
     language: false,
   });
@@ -121,22 +127,30 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
 
   // When GEO changes, keep the language valid for the new country.
   const handleGeoChange = (v: string) => {
-    setGeo(v);
     if (errors.geo) setErrors((p) => ({ ...p, geo: false, geoMsg: undefined }));
     const allowed = adLanguagesForGeo(v);
-    if (!allowed.includes(language)) {
-      setLanguage(allowed[0]);
+    if (allowed.includes(language)) {
+      setArticleForm({ geo: v });
+    } else {
+      setArticleForm({ geo: v, language: allowed[0] });
       if (errors.language) setErrors((p) => ({ ...p, language: false }));
     }
   };
 
+  const handleReset = () => {
+    resetArticleForm();
+    setErrors({ topic: false, keys: false, geo: false, geoMsg: undefined, language: false });
+  };
+
   const handleGenerate = () => {
+    const trimmedTopic = topic.trim();
     const trimmedKeys = keys.map((k) => k.trim());
     const trimmedGeo = geo.trim();
     const trimmedLang = language.trim();
 
-    // Only the first key is required.
-    const topicErr = !trimmedKeys[0];
+    const topicErr = !trimmedTopic;
+    // At least one of the 3 key fields must be filled.
+    const keysErr = !trimmedKeys.some(Boolean);
     let geoErr = false;
     let geoMsg: string | undefined;
     if (!trimmedGeo) {
@@ -148,13 +162,13 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
     }
     const langErr = !trimmedLang;
 
-    setErrors({ topic: topicErr, geo: geoErr, geoMsg, language: langErr });
-    if (topicErr || geoErr || langErr) return;
+    setErrors({ topic: topicErr, keys: keysErr, geo: geoErr, geoMsg, language: langErr });
+    if (topicErr || keysErr || geoErr || langErr) return;
 
     setStartedAt(Date.now());
     setElapsedMs(0);
-    // The store filters empties and slices to max 3 — passing all 3 is safe.
     void generateArticle({
+      topic: trimmedTopic,
       keys: trimmedKeys,
       geo: trimmedGeo,
       language: trimmedLang,
@@ -194,38 +208,49 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
 
           <div className="space-y-3">
             <div>
+              <label className="text-xs font-medium uppercase text-slate-500">Article topic *</label>
+              <Input
+                value={topic}
+                onChange={(e) => {
+                  setTopic(e.target.value);
+                  if (errors.topic) setErrors((p) => ({ ...p, topic: false }));
+                }}
+                placeholder="e.g. Reverse mortgage calculators"
+                className={errors.topic ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                disabled={isLoading}
+              />
+              {errors.topic && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+              <p className="text-[10px] text-slate-400 mt-1">
+                Used verbatim as the article title when 5+ words long. Always pulls 5 source URLs.
+              </p>
+            </div>
+
+            <div>
               <label className="text-xs font-medium uppercase text-slate-500">
-                Article topic <span className="text-slate-400 normal-case">(up to 3, first required)</span>
+                Keywords <span className="text-slate-400 normal-case">(up to 3, at least one required)</span>
               </label>
               <div className="space-y-1.5">
-                {keys.map((value, idx) => {
-                  const isPrimary = idx === 0;
-                  const showError = isPrimary && errors.topic;
-                  return (
-                    <div key={idx}>
-                      <Input
-                        value={value}
-                        onChange={(e) => {
-                          const next = [...keys];
-                          next[idx] = e.target.value;
-                          setKeys(next);
-                          if (isPrimary && errors.topic) setErrors((p) => ({ ...p, topic: false }));
-                        }}
-                        placeholder={
-                          isPrimary
-                            ? 'Key 1 * — e.g. Reverse mortgage calculators'
-                            : `Key ${idx + 1} (optional)`
-                        }
-                        className={showError ? 'border-red-500 focus-visible:ring-red-500' : ''}
-                        disabled={isLoading}
-                      />
-                      {showError && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
-                    </div>
-                  );
-                })}
+                {keys.map((value, idx) => (
+                  <Input
+                    key={idx}
+                    value={value}
+                    onChange={(e) => {
+                      const next = [...keys];
+                      next[idx] = e.target.value;
+                      setKeys(next);
+                      if (errors.keys) setErrors((p) => ({ ...p, keys: false }));
+                    }}
+                    placeholder={`Keyword ${idx + 1}${idx === 0 ? ' *' : ' (optional)'}`}
+                    className={errors.keys ? 'border-red-500 focus-visible:ring-red-500' : ''}
+                    disabled={isLoading}
+                  />
+                ))}
               </div>
+              {errors.keys && (
+                <p className="text-[10px] text-red-500 mt-1">Fill at least one keyword</p>
+              )}
               <p className="text-[10px] text-slate-400 mt-1">
-                1 key → 10 source articles · 2 keys → 5 each · 3 keys → 3 each.
+                Per-keyword SERP results: 1 keyword → 5 each · 2 → 4 each · 3 → 3 each.
               </p>
             </div>
 
@@ -251,7 +276,7 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
               <Combobox
                 value={language}
                 onChange={(v) => {
-                  setLanguage(v);
+                  setArticleForm({ language: v });
                   if (errors.language) setErrors((p) => ({ ...p, language: false }));
                 }}
                 options={langOptions}
@@ -275,14 +300,29 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
                 <InfoTooltip text={REFERENCES_HELP} />
               </label>
               <p className="text-[10px] text-slate-400 mt-1">
-                Appends a plain-text list of source URLs at the end of the article.
+                Article preview always shows References (top 3). When checked, they
+                also get copied into the Offer Article body.
               </p>
             </div>
           </div>
 
-          <Button onClick={handleGenerate} className="mt-4" disabled={isLoading}>
-            {isLoading ? 'Generating…' : 'Generate Article'}
-          </Button>
+          <div className="mt-4 flex gap-2">
+            <Button
+              onClick={handleGenerate}
+              className="flex-1"
+              disabled={isLoading || !topic.trim() || !keys[0].trim()}
+            >
+              {isLoading ? 'Generating…' : 'Generate Article'}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleReset}
+              disabled={isLoading}
+              aria-label="Clear all input fields"
+            >
+              Reset
+            </Button>
+          </div>
         </div>
       </div>
 
