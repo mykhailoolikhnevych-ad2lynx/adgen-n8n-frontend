@@ -27,6 +27,31 @@ const START_DATE_OPTIONS = [
 
 type StartDate = 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
 
+// NB ad-creation field constraints. brandName 2-25 is confirmed by NB error
+// `creative.brandName length must be between 2 and 25`. Other limits are
+// conservative defaults — tighten as NB surfaces more validation messages.
+const NB_LIMITS = {
+  campaignName: { min: 1, max: 200 },
+  brandName: { min: 2, max: 25 },
+  headline: { min: 1, max: 80 },
+  description: { min: 1, max: 150 },
+} as const;
+type NbLimitKey = keyof typeof NB_LIMITS;
+
+const NB_CTA_OPTIONS = [
+  'Learn More', 'Sign Up', 'Shop Now', 'Download', 'Get Quote',
+  'Apply Now', 'See More', 'Get Offer', 'Subscribe', 'Contact Us',
+  'Book Now', 'Watch More',
+] as const;
+
+function lengthError(key: NbLimitKey, value: string): string | null {
+  const { min, max } = NB_LIMITS[key];
+  const n = value.trim().length;
+  if (n < min) return `Min ${min} chars (have ${n})`;
+  if (n > max) return `Max ${max} chars (have ${n})`;
+  return null;
+}
+
 interface Props {
   onClose: () => void;
 }
@@ -89,12 +114,30 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
     () => selectedFbAd?.creativeTitle || selectedFbAd?.adName || '',
     [selectedFbAd],
   );
+  const defaultHeadline = useMemo(() => selectedFbAd?.creativeTitle ?? '', [selectedFbAd]);
+  const defaultDescription = useMemo(() => selectedFbAd?.creativeBody ?? '', [selectedFbAd]);
+  const defaultBrandName = useMemo(
+    () => (selectedFbAd?.adName ?? '').slice(0, NB_LIMITS.brandName.max),
+    [selectedFbAd],
+  );
 
   const [selectedAccountName, setSelectedAccountName] = useState('');
   const [campaignName, setCampaignName] = useState(defaultCampaignName);
+  const [headline, setHeadline] = useState(defaultHeadline);
+  const [description, setDescription] = useState(defaultDescription);
+  const [brandName, setBrandName] = useState(defaultBrandName);
+  const [callToAction, setCallToAction] = useState<string>('Learn More');
   const [budget, setBudget] = useState(40);
   const [startDate, setStartDate] = useState<StartDate>('now');
   const [showRaw, setShowRaw] = useState(false);
+
+  const fieldErrors = {
+    campaignName: lengthError('campaignName', campaignName),
+    headline: lengthError('headline', headline),
+    description: lengthError('description', description),
+    brandName: lengthError('brandName', brandName),
+  };
+  const hasFieldErrors = Object.values(fieldErrors).some(Boolean);
 
   const isLoading = status === 'loading';
 
@@ -112,17 +155,17 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   }
 
   const selectedAccount = nbAccountsList.find((a) => a.name === selectedAccountName);
-  const canSubmit = !isLoading && !!selectedAccount && !!campaignName.trim() && budget >= 1;
+  const canSubmit = !isLoading && !!selectedAccount && !hasFieldErrors && budget >= 1;
 
   const handleSubmit = () => {
     if (!selectedAccount) return;
     void createNbCampaign({
       nbAccountId: selectedAccount.id,
       campaignName: campaignName.trim(),
-      headline: selectedFbAd.creativeTitle,
-      body: selectedFbAd.creativeBody,
-      callToAction: 'Learn More',
-      brandName: (selectedFbAd.adName || campaignName.trim() || 'Sponsored').slice(0, 40),
+      headline: headline.trim(),
+      body: description.trim(),
+      callToAction,
+      brandName: brandName.trim(),
       assetUrl: selectedFbAd.thumbnailUrl,
       clickThroughUrl: binomOfferResult.binomCampaignUrl,
       budget,
@@ -134,6 +177,10 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
     resetNbCampaign();
     setSelectedAccountName('');
     setCampaignName(defaultCampaignName);
+    setHeadline(defaultHeadline);
+    setDescription(defaultDescription);
+    setBrandName(defaultBrandName);
+    setCallToAction('Learn More');
     setBudget(40);
     setStartDate('now');
     setShowRaw(false);
@@ -209,12 +256,89 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
           </div>
 
           <div>
-            <label className="text-xs font-medium uppercase text-slate-500">Campaign Name *</label>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Campaign Name *</span>
+              <span className={`text-[10px] normal-case ${fieldErrors.campaignName ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>
+                {campaignName.trim().length}/{NB_LIMITS.campaignName.max}
+              </span>
+            </label>
             <Input
               value={campaignName}
               onChange={(e) => setCampaignName(e.target.value)}
               placeholder="Campaign name"
+              className={fieldErrors.campaignName ? 'border-red-500 focus-visible:ring-red-500' : ''}
             />
+            {fieldErrors.campaignName && (
+              <div className="mt-1 text-[10px] text-red-600">{fieldErrors.campaignName}</div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Headline *</span>
+              <span className={`text-[10px] normal-case ${fieldErrors.headline ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>
+                {headline.trim().length}/{NB_LIMITS.headline.max}
+              </span>
+            </label>
+            <Input
+              value={headline}
+              onChange={(e) => setHeadline(e.target.value)}
+              placeholder="Ad headline (shown to NB users)"
+              className={fieldErrors.headline ? 'border-red-500 focus-visible:ring-red-500' : ''}
+            />
+            {fieldErrors.headline && (
+              <div className="mt-1 text-[10px] text-red-600">{fieldErrors.headline}</div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Description *</span>
+              <span className={`text-[10px] normal-case ${fieldErrors.description ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>
+                {description.trim().length}/{NB_LIMITS.description.max}
+              </span>
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              placeholder="Ad description / body text"
+              className={`mt-1 w-full rounded-md border bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none ${fieldErrors.description ? 'border-red-500 focus:ring-red-500' : 'border-input'}`}
+            />
+            {fieldErrors.description && (
+              <div className="mt-1 text-[10px] text-red-600">{fieldErrors.description}</div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Brand Name *</span>
+              <span className={`text-[10px] normal-case ${fieldErrors.brandName ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>
+                {brandName.trim().length}/{NB_LIMITS.brandName.max} (min {NB_LIMITS.brandName.min})
+              </span>
+            </label>
+            <Input
+              value={brandName}
+              onChange={(e) => setBrandName(e.target.value)}
+              placeholder="Brand / advertiser name"
+              className={fieldErrors.brandName ? 'border-red-500 focus-visible:ring-red-500' : ''}
+            />
+            {fieldErrors.brandName && (
+              <div className="mt-1 text-[10px] text-red-600">{fieldErrors.brandName}</div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">Call To Action *</label>
+            <select
+              value={callToAction}
+              onChange={(e) => setCallToAction(e.target.value)}
+              className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {NB_CTA_OPTIONS.map((cta) => (
+                <option key={cta} value={cta}>{cta}</option>
+              ))}
+            </select>
           </div>
 
           <div>
