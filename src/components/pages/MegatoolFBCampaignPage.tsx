@@ -68,6 +68,20 @@ const pickCreativeImage = (creative: FbCreative): string | null => {
   return creative.image_url || creative.thumbnail_url || creative.object_story_spec?.link_data?.picture || null;
 };
 
+// What we ship to NB as the asset, plus the media kind for UI badges. Prefers
+// the resolved video source URL when present so NB classifies the creative as
+// VIDEO (its getCreativeType keys off the file extension). Falls back to the
+// thumbnail for image creatives or when video resolution failed.
+const pickCreativeAsset = (
+  creative: FbCreative,
+  thumbnailUrl: string,
+): { assetUrl: string; mediaKind: 'image' | 'video' } => {
+  if (creative.video_source_url) {
+    return { assetUrl: creative.video_source_url, mediaKind: 'video' };
+  }
+  return { assetUrl: thumbnailUrl, mediaKind: 'image' };
+};
+
 const extractTrackingUrl = (creative: FbCreative): string => {
   return (
     creative.link_url ||
@@ -83,10 +97,11 @@ interface AdCardProps {
   adset: FbAdset;
   campaign: FbCampaign;
   isSelected: boolean;
-  onSelect: (snapshot: SelectedFbAd) => void;
+  selectionIndex: number | null;
+  onToggle: (snapshot: SelectedFbAd) => void;
 }
 
-const AdCard = ({ ad, adset, campaign, isSelected, onSelect }: AdCardProps) => {
+const AdCard = ({ ad, adset, campaign, isSelected, selectionIndex, onToggle }: AdCardProps) => {
   const creative = ad.creative ?? ({} as FbCreative);
   const img = pickCreativeImage(creative);
   const title = creative.title || creative.object_story_spec?.link_data?.name || '';
@@ -95,6 +110,7 @@ const AdCard = ({ ad, adset, campaign, isSelected, onSelect }: AdCardProps) => {
   const link = extractTrackingUrl(creative);
   const hasLink = Boolean(link);
 
+  const { assetUrl, mediaKind } = pickCreativeAsset(creative, img ?? '');
   const handleClick = () => {
     const snapshot: SelectedFbAd = {
       adId: ad.id,
@@ -105,10 +121,12 @@ const AdCard = ({ ad, adset, campaign, isSelected, onSelect }: AdCardProps) => {
       campaignName: campaign.name,
       trackingUrl: link,
       thumbnailUrl: img ?? '',
+      assetUrl,
+      mediaKind,
       creativeTitle: title,
       creativeBody: body,
     };
-    onSelect(snapshot);
+    onToggle(snapshot);
   };
 
   return (
@@ -136,9 +154,17 @@ const AdCard = ({ ad, adset, campaign, isSelected, onSelect }: AdCardProps) => {
         ) : (
           <span>No image</span>
         )}
+        {mediaKind === 'video' && (
+          <span className="absolute top-1 left-1 bg-purple-600 text-white text-[10px] font-bold uppercase px-1.5 py-0.5 rounded flex items-center gap-1">
+            <span aria-hidden="true">▶</span> Video
+          </span>
+        )}
         {isSelected && (
-          <span className="absolute top-1 right-1 bg-amber-500 text-white text-[10px] font-bold uppercase px-1.5 py-0.5 rounded">
-            Selected
+          <span className="absolute top-1 right-1 flex items-center gap-1 bg-amber-500 text-white text-[10px] font-bold uppercase px-1.5 py-0.5 rounded">
+            <span className="bg-white text-amber-700 rounded-full h-4 min-w-4 px-1 inline-flex items-center justify-center text-[10px] leading-none">
+              {(selectionIndex ?? 0) + 1}
+            </span>
+            {selectionIndex === 0 ? 'Lead' : 'Selected'}
           </span>
         )}
       </div>
@@ -180,11 +206,11 @@ const AdCard = ({ ad, adset, campaign, isSelected, onSelect }: AdCardProps) => {
 interface AdsetBlockProps {
   adset: FbAdset;
   campaign: FbCampaign;
-  selectedAdId: string | null;
-  onSelect: (snapshot: SelectedFbAd) => void;
+  selectionIndexByAdId: Record<string, number>;
+  onToggle: (snapshot: SelectedFbAd) => void;
 }
 
-const AdsetBlock = ({ adset, campaign, selectedAdId, onSelect }: AdsetBlockProps) => {
+const AdsetBlock = ({ adset, campaign, selectionIndexByAdId, onToggle }: AdsetBlockProps) => {
   const dailyBudget = formatBudget(adset.daily_budget);
   const lifetimeBudget = formatBudget(adset.lifetime_budget);
   return (
@@ -198,16 +224,21 @@ const AdsetBlock = ({ adset, campaign, selectedAdId, onSelect }: AdsetBlockProps
         <span className="text-xs text-slate-500">{adset.ads.length} ad{adset.ads.length === 1 ? '' : 's'}</span>
       </header>
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
-        {adset.ads.map((ad) => (
-          <AdCard
-            key={ad.id}
-            ad={ad}
-            adset={adset}
-            campaign={campaign}
-            isSelected={selectedAdId === ad.id}
-            onSelect={onSelect}
-          />
-        ))}
+        {adset.ads.map((ad) => {
+          const idx = selectionIndexByAdId[ad.id];
+          const isSelected = idx !== undefined;
+          return (
+            <AdCard
+              key={ad.id}
+              ad={ad}
+              adset={adset}
+              campaign={campaign}
+              isSelected={isSelected}
+              selectionIndex={isSelected ? idx : null}
+              onToggle={onToggle}
+            />
+          );
+        })}
       </div>
     </section>
   );
@@ -226,9 +257,15 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
   const data = useAppStore((s) => s.fbCampaignData);
   const error = useAppStore((s) => s.fbCampaignError);
   const fetchFbCampaign = useAppStore((s) => s.fetchFbCampaign);
-  const selectedFbAd = useAppStore((s) => s.selectedFbAd);
-  const setSelectedFbAd = useAppStore((s) => s.setSelectedFbAd);
+  const selectedFbAds = useAppStore((s) => s.selectedFbAds);
+  const toggleSelectedFbAd = useAppStore((s) => s.toggleSelectedFbAd);
   const clearSelectedFbAd = useAppStore((s) => s.clearSelectedFbAd);
+  const selectedFbAd = selectedFbAds[0] ?? null;
+  const selectionIndexByAdId = useMemo(() => {
+    const m: Record<string, number> = {};
+    selectedFbAds.forEach((ad, i) => { m[ad.adId] = i; });
+    return m;
+  }, [selectedFbAds]);
   const closeBinomOffer = useAppStore((s) => s.closeBinomOffer);
   const resetBinomOffer = useAppStore((s) => s.resetBinomOffer);
   const closeNbCampaign = useAppStore((s) => s.closeNbCampaign);
@@ -345,12 +382,18 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
                 />
               )}
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-amber-900">
-                  <span className="font-semibold">Selected:</span>{' '}
+                <div className="text-xs text-amber-900 flex items-center gap-2">
+                  <span className="font-semibold">
+                    {selectedFbAds.length > 1
+                      ? `${selectedFbAds.length} selected — lead:`
+                      : 'Selected:'}
+                  </span>
                   <span className="truncate" title={selectedFbAd.adName}>{selectedFbAd.adName}</span>
                 </div>
                 <div className="text-[10px] text-amber-800/70 truncate" title={selectedFbAd.trackingUrl}>
-                  {selectedFbAd.trackingUrl || 'no tracking URL'}
+                  {selectedFbAd.trackingUrl
+                    ? `${selectedFbAd.trackingUrl} (lead drives Binom Offer)`
+                    : 'no tracking URL'}
                 </div>
               </div>
               <Button
@@ -365,8 +408,9 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
               <button
                 type="button"
                 onClick={clearSelectedFbAd}
-                aria-label="Clear selected ad"
+                aria-label="Clear all selected ads"
                 className="text-amber-700 hover:text-amber-900 text-lg leading-none px-1 shrink-0"
+                title="Clear all"
               >
                 ×
               </button>
@@ -438,8 +482,8 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
                         key={a.id}
                         adset={a}
                         campaign={campaign}
-                        selectedAdId={selectedFbAd?.adId ?? null}
-                        onSelect={setSelectedFbAd}
+                        selectionIndexByAdId={selectionIndexByAdId}
+                        onToggle={toggleSelectedFbAd}
                       />
                     ))}
                   </div>
@@ -453,8 +497,8 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
                         key={a.id}
                         adset={a}
                         campaign={campaign}
-                        selectedAdId={selectedFbAd?.adId ?? null}
-                        onSelect={setSelectedFbAd}
+                        selectionIndexByAdId={selectionIndexByAdId}
+                        onToggle={toggleSelectedFbAd}
                       />
                     ))}
                   </div>

@@ -178,6 +178,11 @@ export interface FbCreative {
   name?: string;
   thumbnail_url?: string;
   image_url?: string;
+  /** Playable .mp4 URL resolved by the FB Campaign Reader for video creatives.
+   *  Set when object_story_spec.video_data.video_id was present and the Graph
+   *  API returned a `source`. Short-lived — only valid while the reader's
+   *  downstream consumers (NB upload) are still active. */
+  video_source_url?: string;
   title?: string;
   body?: string;
   call_to_action_type?: string;
@@ -235,7 +240,14 @@ export interface SelectedFbAd {
   campaignId: string;
   campaignName: string;
   trackingUrl: string;
+  /** Always an image — used for thumbnail rendering in the UI. */
   thumbnailUrl: string;
+  /** What we ship to NB as the ad's asset. For video creatives this is the
+   *  resolved FB video source URL (.mp4); for image creatives it's the same
+   *  as thumbnailUrl. NB's getCreativeType auto-detects VIDEO from the
+   *  extension. */
+  assetUrl: string;
+  mediaKind: 'image' | 'video';
   creativeTitle: string;
   creativeBody: string;
 }
@@ -259,30 +271,51 @@ export interface CreateBinomOfferInput {
   newAmoDomain: string;
   newAmoChannel: string;
   newBinomGroup: string;
+  tracker: string;
   isRoas?: boolean;
 }
 
 // MEGATOOL — Create NB Campaign response shape (success branch).
+// Multi-ad / multi-adset: arrays for adsetIds and adIds, parallel to input
+// ads. Singular `adsetId` and `adId` are kept as `[0]` for back-compat with
+// older response viewers.
 export interface NbCampaignResult {
   nbAccountId: string;
   campaignId: string;
   adsetId: string;
+  adsetIds: string[];
   adId: string;
+  adIds: string[];
   campaignName: string;
+  assetUrl: string;
+  assetUrls: string[];
+}
+
+// Per-FB-ad payload inside CreateNbCampaignInput.ads. One of these becomes one
+// NB ad — headline / body / assetUrl differ per ad; brandName, CTA, and
+// click-through URL are shared at the campaign level.
+export interface CreateNbCampaignAd {
+  headline: string;
+  body: string;
   assetUrl: string;
 }
 
 export interface CreateNbCampaignInput {
   nbAccountId: string;
   campaignName: string;
-  headline: string;
-  body: string;
   callToAction: string;
   brandName: string;
-  assetUrl: string;
   clickThroughUrl: string;
+  /** Per-adset budget in USD/day. Each adset gets this; total spend is
+   *  budget * adsetSizes.length. */
   budget: number;
   startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+  /** Ads to create. Order matters — they're distributed left-to-right across
+   *  adsets per `adsetSizes`. */
+  ads: CreateNbCampaignAd[];
+  /** Adset shape — e.g. [4, 3] means 7 ads split into adset1=4, adset2=3.
+   *  Must sum to ads.length. Derived client-side via splitIntoAdsets. */
+  adsetSizes: number[];
   trackingId?: string;
   roas?: number | null;
 }
@@ -377,7 +410,12 @@ interface AppState {
   fbCampaignStatus: ArticleStatus;
   fbCampaignData: FbCampaignData | null;
   fbCampaignError: string | null;
-  // MEGATOOL — Selected ad (from FB Campaign Reader) + Create Binom Offer flow.
+  // MEGATOOL — Selected ad(s) from FB Campaign Reader. Multi-select drives the
+  // NB Campaign tab's per-ad cards; the lead (selectedFbAds[0]) drives the
+  // Binom Offer flow (which still creates ONE Binom campaign per run).
+  // `selectedFbAd` remains as a computed convenience field = selectedFbAds[0]
+  // so legacy consumers keep working.
+  selectedFbAds: SelectedFbAd[];
   selectedFbAd: SelectedFbAd | null;
   binomOfferOpen: boolean;
   binomOfferStatus: ArticleStatus;
@@ -412,6 +450,11 @@ interface AppState {
   resetFbCampaign: () => void;
   setSelectedFbAd: (ad: SelectedFbAd | null) => void;
   clearSelectedFbAd: () => void;
+  /** Toggle one FB ad in selectedFbAds. Adding a new ad sets it as the lead
+   *  ONLY if the list was empty before; otherwise the existing lead stays. */
+  toggleSelectedFbAd: (ad: SelectedFbAd) => void;
+  /** Replace the entire selection (used by "Clear all"). */
+  setSelectedFbAds: (ads: SelectedFbAd[]) => void;
   openBinomOffer: () => void;
   closeBinomOffer: () => void;
   resetBinomOffer: () => void;
@@ -832,6 +875,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   articleTranslatedHtml: null, articleIsTranslating: false, articleShowTranslation: false,
   keywordHtml: null, keywordStatus: 'idle', keywordError: null,
   fbCampaignStatus: 'idle', fbCampaignData: null, fbCampaignError: null,
+  selectedFbAds: [],
   selectedFbAd: null,
   binomOfferOpen: false,
   binomOfferStatus: 'idle', binomOfferResult: null, binomOfferError: null,
@@ -1219,8 +1263,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   resetFbCampaign: () => set({ fbCampaignStatus: 'idle', fbCampaignData: null, fbCampaignError: null }),
 
   // MEGATOOL — Selected ad (from FB Campaign Reader).
-  setSelectedFbAd: (ad) => set({ selectedFbAd: ad }),
-  clearSelectedFbAd: () => set({ selectedFbAd: null }),
+  setSelectedFbAd: (ad) => set({
+    selectedFbAd: ad,
+    selectedFbAds: ad ? [ad] : [],
+  }),
+  clearSelectedFbAd: () => set({ selectedFbAd: null, selectedFbAds: [] }),
+  toggleSelectedFbAd: (ad) => set((state) => {
+    const existingIdx = state.selectedFbAds.findIndex((x) => x.adId === ad.adId);
+    if (existingIdx >= 0) {
+      const next = state.selectedFbAds.filter((_, i) => i !== existingIdx);
+      return { selectedFbAds: next, selectedFbAd: next[0] ?? null };
+    }
+    const next = [...state.selectedFbAds, ad];
+    return { selectedFbAds: next, selectedFbAd: next[0] };
+  }),
+  setSelectedFbAds: (ads) => set({
+    selectedFbAds: ads,
+    selectedFbAd: ads[0] ?? null,
+  }),
 
   // MEGATOOL — Create Binom Offer sub-tab visibility + run state.
   openBinomOffer: () => set({ binomOfferOpen: true }),
@@ -1238,6 +1298,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       newAmoDomain: input.newAmoDomain,
       newAmoChannel: input.newAmoChannel,
       newBinomGroup: input.newBinomGroup,
+      tracker: input.tracker,
       isRoas: input.isRoas ?? false,
     };
     if (!WEBHOOKS.binomOfferCreator) {
@@ -1254,6 +1315,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         newAmoDomain: input.newAmoDomain,
         newAmoChannel: input.newAmoChannel,
         newBinomGroup: input.newBinomGroup,
+        tracker: input.tracker,
         isRoas: input.isRoas ?? false,
       };
       console.log('[createBinomOffer] request payload:', payload);
@@ -1314,13 +1376,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: outer, errorMessage: full });
         return;
       }
+      const adsetIds: string[] = Array.isArray(outer.adsetIds)
+        ? outer.adsetIds.map((x: unknown) => String(x))
+        : (outer.adsetId ? [String(outer.adsetId)] : []);
+      const adIds: string[] = Array.isArray(outer.adIds)
+        ? outer.adIds.map((x: unknown) => String(x))
+        : (outer.adId ? [String(outer.adId)] : []);
+      const assetUrls: string[] = Array.isArray(outer.assetUrls)
+        ? outer.assetUrls.map((x: unknown) => String(x))
+        : (outer.assetUrl ? [String(outer.assetUrl)] : []);
       const result: NbCampaignResult = {
         nbAccountId: String(outer.nbAccountId ?? ''),
         campaignId: String(outer.campaignId ?? ''),
-        adsetId: String(outer.adsetId ?? ''),
-        adId: String(outer.adId ?? ''),
+        adsetId: adsetIds[0] ?? '',
+        adsetIds,
+        adId: adIds[0] ?? '',
+        adIds,
         campaignName: String(outer.campaignName ?? ''),
-        assetUrl: String(outer.assetUrl ?? ''),
+        assetUrl: assetUrls[0] ?? '',
+        assetUrls,
       };
       set({ nbCampaignStatus: 'success', nbCampaignResult: result, nbCampaignError: null });
       logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: result });

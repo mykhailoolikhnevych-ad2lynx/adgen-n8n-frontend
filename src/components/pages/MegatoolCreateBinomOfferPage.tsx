@@ -1,9 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
 import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
-import { BINOM_GROUP_NAMES, BINOM_AMO_DOMAINS } from '@/lib/binomGroups';
+import {
+  BINOM_AMO_DOMAINS,
+  BINOM_TRACKERS,
+  DEFAULT_BINOM_TRACKER,
+  getGroupNamesForTracker,
+  getTrackerFromTrackingUrl,
+} from '@/lib/binomGroups';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -75,11 +81,29 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const createBinomOffer = useAppStore((s) => s.createBinomOffer);
   const resetBinomOffer = useAppStore((s) => s.resetBinomOffer);
 
+  const detectedTracker = useMemo(
+    () => getTrackerFromTrackingUrl(selectedFbAd?.trackingUrl),
+    [selectedFbAd?.trackingUrl],
+  );
+  const [tracker, setTracker] = useState<string>(detectedTracker ?? DEFAULT_BINOM_TRACKER);
+  const [trackerAutoSet, setTrackerAutoSet] = useState<boolean>(detectedTracker !== null);
   const [newAmoDomain, setNewAmoDomain] = useState<string>('same');
   const [newAmoChannel, setNewAmoChannel] = useState('same');
   const [newBinomGroup, setNewBinomGroup] = useState<string>('same');
   const [isRoas, setIsRoas] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
+
+  // When the source ad changes (and the URL maps cleanly to a tracker), snap
+  // the dropdown to that tracker and reset the group. User can still override.
+  useEffect(() => {
+    if (detectedTracker && detectedTracker !== tracker) {
+      setTracker(detectedTracker);
+      setTrackerAutoSet(true);
+      setNewBinomGroup('same');
+    }
+  }, [detectedTracker]);
+
+  const binomGroupOptions = useMemo(() => getGroupNamesForTracker(tracker), [tracker]);
 
   const isLoading = status === 'loading';
 
@@ -103,12 +127,15 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
       newAmoDomain,
       newAmoChannel: newAmoChannel.trim() || 'same',
       newBinomGroup,
+      tracker,
       isRoas,
     });
   };
 
   const handleReset = () => {
     resetBinomOffer();
+    setTracker(detectedTracker ?? DEFAULT_BINOM_TRACKER);
+    setTrackerAutoSet(detectedTracker !== null);
     setNewAmoDomain('same');
     setNewAmoChannel('same');
     setNewBinomGroup('same');
@@ -163,6 +190,35 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
         {/* Form */}
         <section className="space-y-4">
           <div>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Binom Tracker *</span>
+              {trackerAutoSet && detectedTracker === tracker && (
+                <span className="text-[10px] normal-case text-green-700 font-semibold">
+                  auto-detected
+                </span>
+              )}
+            </label>
+            <select
+              value={tracker}
+              onChange={(e) => {
+                setTracker(e.target.value);
+                setTrackerAutoSet(false);
+                setNewBinomGroup('same');
+              }}
+              className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              {BINOM_TRACKERS.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-slate-500 mt-1">
+              {detectedTracker
+                ? <>Picked from the source AMO domain → <code>{detectedTracker}</code>. Override if needed.</>
+                : <>AMO domain didn't match a known tracker — pick manually.</>}
+            </p>
+          </div>
+
+          <div>
             <label className="text-xs font-medium uppercase text-slate-500">New AMO Domain *</label>
             <Combobox
               value={newAmoDomain}
@@ -189,16 +245,21 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           </div>
 
           <div>
-            <label className="text-xs font-medium uppercase text-slate-500">New Binom Group *</label>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>New Binom Group *</span>
+              <span className="text-[10px] normal-case text-slate-400">
+                {binomGroupOptions.length - 1} on <code>{tracker}</code>
+              </span>
+            </label>
             <Combobox
               value={newBinomGroup}
               onChange={setNewBinomGroup}
-              options={[...BINOM_GROUP_NAMES]}
+              options={binomGroupOptions}
               placeholder="Click to choose or type…"
               inputClassName="text-sm rounded-md bg-white px-2"
             />
             <p className="text-[10px] text-slate-500 mt-1">
-              Group name (resolved server-side), raw UUID, or <code>same</code>.
+              Filtered to groups on <code>{tracker}</code>. Use <code>same</code> to keep the source group.
             </p>
           </div>
 
