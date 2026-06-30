@@ -68,6 +68,20 @@ const pickCreativeImage = (creative: FbCreative): string | null => {
   return creative.image_url || creative.thumbnail_url || creative.object_story_spec?.link_data?.picture || null;
 };
 
+// What we ship to NB as the asset, plus the media kind for UI badges. Prefers
+// the resolved video source URL when present so NB classifies the creative as
+// VIDEO (its getCreativeType keys off the file extension). Falls back to the
+// thumbnail for image creatives or when video resolution failed.
+const pickCreativeAsset = (
+  creative: FbCreative,
+  thumbnailUrl: string,
+): { assetUrl: string; mediaKind: 'image' | 'video' } => {
+  if (creative.video_source_url) {
+    return { assetUrl: creative.video_source_url, mediaKind: 'video' };
+  }
+  return { assetUrl: thumbnailUrl, mediaKind: 'image' };
+};
+
 const extractTrackingUrl = (creative: FbCreative): string => {
   return (
     creative.link_url ||
@@ -96,6 +110,7 @@ const AdCard = ({ ad, adset, campaign, isSelected, selectionIndex, onToggle }: A
   const link = extractTrackingUrl(creative);
   const hasLink = Boolean(link);
 
+  const { assetUrl, mediaKind } = pickCreativeAsset(creative, img ?? '');
   const handleClick = () => {
     const snapshot: SelectedFbAd = {
       adId: ad.id,
@@ -106,6 +121,8 @@ const AdCard = ({ ad, adset, campaign, isSelected, selectionIndex, onToggle }: A
       campaignName: campaign.name,
       trackingUrl: link,
       thumbnailUrl: img ?? '',
+      assetUrl,
+      mediaKind,
       creativeTitle: title,
       creativeBody: body,
     };
@@ -136,6 +153,11 @@ const AdCard = ({ ad, adset, campaign, isSelected, selectionIndex, onToggle }: A
           <img src={img} alt={ad.name} className="w-full h-full object-cover" loading="lazy" />
         ) : (
           <span>No image</span>
+        )}
+        {mediaKind === 'video' && (
+          <span className="absolute top-1 left-1 bg-purple-600 text-white text-[10px] font-bold uppercase px-1.5 py-0.5 rounded flex items-center gap-1">
+            <span aria-hidden="true">▶</span> Video
+          </span>
         )}
         {isSelected && (
           <span className="absolute top-1 right-1 flex items-center gap-1 bg-amber-500 text-white text-[10px] font-bold uppercase px-1.5 py-0.5 rounded">

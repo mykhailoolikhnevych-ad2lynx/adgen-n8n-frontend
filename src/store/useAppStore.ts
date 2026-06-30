@@ -178,6 +178,11 @@ export interface FbCreative {
   name?: string;
   thumbnail_url?: string;
   image_url?: string;
+  /** Playable .mp4 URL resolved by the FB Campaign Reader for video creatives.
+   *  Set when object_story_spec.video_data.video_id was present and the Graph
+   *  API returned a `source`. Short-lived — only valid while the reader's
+   *  downstream consumers (NB upload) are still active. */
+  video_source_url?: string;
   title?: string;
   body?: string;
   call_to_action_type?: string;
@@ -235,7 +240,14 @@ export interface SelectedFbAd {
   campaignId: string;
   campaignName: string;
   trackingUrl: string;
+  /** Always an image — used for thumbnail rendering in the UI. */
   thumbnailUrl: string;
+  /** What we ship to NB as the ad's asset. For video creatives this is the
+   *  resolved FB video source URL (.mp4); for image creatives it's the same
+   *  as thumbnailUrl. NB's getCreativeType auto-detects VIDEO from the
+   *  extension. */
+  assetUrl: string;
+  mediaKind: 'image' | 'video';
   creativeTitle: string;
   creativeBody: string;
 }

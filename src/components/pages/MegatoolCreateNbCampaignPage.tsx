@@ -225,7 +225,9 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
     const ads = adStates.map((a, i) => ({
       headline: a.headline.trim(),
       body: a.description.trim(),
-      assetUrl: selectedFbAds[i]?.thumbnailUrl ?? '',
+      // Use the resolved asset URL (video .mp4 when source ad is a video,
+      // otherwise the thumbnail). NB's getCreativeType auto-detects VIDEO.
+      assetUrl: selectedFbAds[i]?.assetUrl || selectedFbAds[i]?.thumbnailUrl || '',
     }));
     void createNbCampaign({
       nbAccountId: selectedAccount.id,
@@ -412,6 +414,9 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
                   </span>
                   {fbAd?.thumbnailUrl && (
                     <img src={fbAd.thumbnailUrl} alt="" className="h-8 w-8 rounded object-cover shrink-0" />
+                  )}
+                  {fbAd?.mediaKind === 'video' && (
+                    <span className="bg-purple-600 text-white text-[10px] font-bold uppercase px-1.5 py-0.5 rounded shrink-0">▶ Video</span>
                   )}
                   <span className="text-slate-700 font-medium truncate flex-1 min-w-0" title={fbAd?.adName}>
                     {fbAd?.adName ?? '(removed)'}
