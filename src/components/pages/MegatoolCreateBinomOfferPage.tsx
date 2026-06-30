@@ -111,9 +111,9 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     return (
       <div className="flex h-full w-full items-center justify-center bg-slate-100 p-6">
         <div className="bg-white rounded-xl border p-6 shadow-sm text-slate-600 text-sm max-w-md text-center">
-          Please select an ad first in FB Campaign Reader.
+          Спочатку обери оголошення у FB Campaign Reader.
           <div className="mt-4">
-            <Button variant="outline" size="sm" onClick={onClose}>← Back to FB Campaign Reader</Button>
+            <Button variant="outline" size="sm" onClick={onClose}>← Назад до FB Campaign Reader</Button>
           </div>
         </div>
       </div>
@@ -149,7 +149,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
       <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-xl">→ Create Binom Offer</h2>
-          <Button variant="outline" size="sm" onClick={onClose}>← Back</Button>
+          <Button variant="outline" size="sm" onClick={onClose}>← Назад</Button>
         </div>
 
         {/* Selected ad summary */}
@@ -193,8 +193,8 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
               <span>Binom Tracker *</span>
               {trackerAutoSet && detectedTracker === tracker && (
-                <span className="text-[10px] normal-case text-green-700 font-semibold">
-                  auto-detected
+                <span className="text-xs normal-case text-green-700 font-semibold">
+                  визначено автоматично
                 </span>
               )}
             </label>
@@ -211,10 +211,10 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
                 <option key={t} value={t}>{t}</option>
               ))}
             </select>
-            <p className="text-[10px] text-slate-500 mt-1">
+            <p className="text-xs text-slate-600 mt-1">
               {detectedTracker
-                ? <>Picked from the source AMO domain → <code>{detectedTracker}</code>. Override if needed.</>
-                : <>AMO domain didn't match a known tracker — pick manually.</>}
+                ? <>Визначено за AMO-доменом джерела → <code>{detectedTracker}</code>. За потреби можна змінити вручну.</>
+                : <>AMO-домен не знайдено серед відомих трекерів — обери вручну.</>}
             </p>
           </div>
 
@@ -224,11 +224,11 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               value={newAmoDomain}
               onChange={setNewAmoDomain}
               options={[...BINOM_AMO_DOMAINS]}
-              placeholder="Click to choose or type…"
+              placeholder="Клікни, щоб обрати, або введи…"
               inputClassName="text-sm rounded-md bg-white px-2"
             />
-            <p className="text-[10px] text-slate-500 mt-1">
-              <code>same</code> keeps the original domain from the source ad.
+            <p className="text-xs text-slate-600 mt-1">
+              <code>same</code> залишає AMO-домен як в оригінальному оголошенні.
             </p>
           </div>
 
@@ -237,29 +237,29 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             <Input
               value={newAmoChannel}
               onChange={(e) => setNewAmoChannel(e.target.value)}
-              placeholder="e.g. ch12345 or 'same'"
+              placeholder="напр. ch12345 або 'same'"
             />
-            <p className="text-[10px] text-slate-500 mt-1">
-              <code>same</code> keeps the original channel from the source ad.
+            <p className="text-xs text-slate-600 mt-1">
+              <code>same</code> залишає channel як в оригінальному оголошенні.
             </p>
           </div>
 
           <div>
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
               <span>New Binom Group *</span>
-              <span className="text-[10px] normal-case text-slate-400">
-                {binomGroupOptions.length - 1} on <code>{tracker}</code>
+              <span className="text-xs normal-case text-slate-500">
+                {binomGroupOptions.length - 1} на <code>{tracker}</code>
               </span>
             </label>
             <Combobox
               value={newBinomGroup}
               onChange={setNewBinomGroup}
               options={binomGroupOptions}
-              placeholder="Click to choose or type…"
+              placeholder="Клікни, щоб обрати, або введи…"
               inputClassName="text-sm rounded-md bg-white px-2"
             />
-            <p className="text-[10px] text-slate-500 mt-1">
-              Filtered to groups on <code>{tracker}</code>. Use <code>same</code> to keep the source group.
+            <p className="text-xs text-slate-600 mt-1">
+              Відфільтровано до груп на <code>{tracker}</code>. <code>same</code> залишить групу з оригінального оголошення.
             </p>
           </div>
 
@@ -269,7 +269,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               checked={isRoas}
               onChange={(e) => setIsRoas(e.target.checked)}
             />
-            ROAS campaign
+ROAS кампанія
           </label>
 
           <div className="flex gap-2 pt-2">
@@ -317,7 +317,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             </div>
           )}
           {status === 'loading' && (
-            <div className="text-slate-600 text-sm">Creating Binom offer & campaign — usually 5–30s.</div>
+            <div className="text-slate-600 text-sm">Creating Binom offer &amp; campaign — usually 5–30s.</div>
           )}
           {status === 'error' && (
             <div className="border border-red-300 bg-red-50 text-red-700 text-xs p-2 rounded-md whitespace-pre-wrap">
