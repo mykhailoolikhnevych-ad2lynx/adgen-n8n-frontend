@@ -1,7 +1,15 @@
 import { useMemo, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { useAppStore, type ArticleStatus, type FbAd, type FbAdset, type FbCampaign, type FbCreative, type SelectedFbAd } from '@/store/useAppStore';
+
+const CAMPAIGN_TREE_HELP =
+  'Як обирати оголошення:\n' +
+  '• Клік по картці — додає оголошення у вибірку. Повторний клік — забирає.\n' +
+  '• Перше обране = ЛІД. З нього створюється Binom Offer (звідки беремо tracking URL і landing).\n' +
+  '• Обрано 1 → Binom Offer + NB Campaign з одним оголошенням.\n' +
+  '• Обрано 2+ → той самий Binom Offer (за лідом) + NB Campaign, у якій усі обрані стають окремими оголошеннями та розкидаються по адсетах (макс. 4 на адсет: 5→3+2, 6→3+3, 7→4+3, 8→4+4).';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -177,8 +185,8 @@ const AdCard = ({ ad, adset, campaign, isSelected, selectionIndex, onToggle }: A
         {title && <div className="text-sm font-medium text-slate-900">{title}</div>}
         <TruncatedBody text={body} />
         {!hasLink && (
-          <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-            no tracking URL — Binom flow unavailable
+          <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+            немає tracking URL — Binom flow недоступний
           </div>
         )}
         {(cta || link) && (
@@ -338,7 +346,7 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
                 disabled={isLoading}
                 onKeyDown={(e) => { if (e.key === 'Enter') handleFetch(); }}
               />
-              {idError && <p className="text-[10px] text-red-500 mt-1">Required field</p>}
+              {idError && <p className="text-xs text-red-500 mt-1">Required field</p>}
             </div>
           </div>
 
@@ -346,9 +354,10 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
             {isLoading ? 'Fetching…' : 'Fetch'}
           </Button>
 
-          <p className="text-[11px] text-slate-500 leading-snug mt-2">
-            Reads the full campaign tree — adsets and ads with creatives — by Source FB Campaign ID.
-            FB tokens are rotated server-side.
+          <p className="text-xs text-slate-600 leading-snug mt-2">
+            Встав ID кампанії з FB Ads Manager і натисни <strong>Fetch</strong>.
+            Побачиш усі активні оголошення з картинками та текстом — обери ті,
+            з яких хочеш зробити Binom Offer і NB Campaign.
           </p>
         </div>
       </div>
@@ -357,7 +366,10 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
       <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
         <div className="flex flex-col gap-4 flex-1 min-h-0">
           <div className="flex items-center justify-between mb-2 shrink-0">
-            <h2 className="font-bold text-xl">2. Campaign Tree</h2>
+            <h2 className="flex items-center gap-1.5 font-bold text-xl">
+              2. Campaign Tree
+              <InfoTooltip text={CAMPAIGN_TREE_HELP} />
+            </h2>
             <Button
               onClick={handleCopyJson}
               disabled={status !== 'success' || !data}
@@ -385,15 +397,15 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
                 <div className="text-xs text-amber-900 flex items-center gap-2">
                   <span className="font-semibold">
                     {selectedFbAds.length > 1
-                      ? `${selectedFbAds.length} selected — lead:`
-                      : 'Selected:'}
+                      ? `Обрано ${selectedFbAds.length} — лід:`
+                      : 'Обрано:'}
                   </span>
                   <span className="truncate" title={selectedFbAd.adName}>{selectedFbAd.adName}</span>
                 </div>
-                <div className="text-[10px] text-amber-800/70 truncate" title={selectedFbAd.trackingUrl}>
+                <div className="text-xs text-amber-800/80 truncate" title={selectedFbAd.trackingUrl}>
                   {selectedFbAd.trackingUrl
-                    ? `${selectedFbAd.trackingUrl} (lead drives Binom Offer)`
-                    : 'no tracking URL'}
+                    ? `${selectedFbAd.trackingUrl} (лід запускає Binom Offer)`
+                    : 'немає tracking URL'}
                 </div>
               </div>
               <Button
@@ -401,16 +413,16 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
                 disabled={!selectedFbAd.trackingUrl}
                 onClick={() => onOpenBinomOffer?.()}
                 className="bg-amber-600 hover:bg-amber-700 text-white shrink-0"
-                title={selectedFbAd.trackingUrl ? '' : 'Selected ad has no tracking URL — Binom flow unavailable'}
+                title={selectedFbAd.trackingUrl ? '' : 'У обраного оголошення немає tracking URL — Binom flow недоступний'}
               >
                 → Create Binom Offer
               </Button>
               <button
                 type="button"
                 onClick={clearSelectedFbAd}
-                aria-label="Clear all selected ads"
+                aria-label="Очистити обрані оголошення"
                 className="text-amber-700 hover:text-amber-900 text-lg leading-none px-1 shrink-0"
-                title="Clear all"
+                title="Очистити все"
               >
                 ×
               </button>
@@ -476,7 +488,7 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
 
                 {activeAdsets.length > 0 && (
                   <div className="flex flex-col gap-3">
-                    <h3 className="text-sm font-bold uppercase tracking-wide text-green-700">Active</h3>
+                    <h3 className="text-sm font-bold uppercase tracking-wide text-green-700">Активні</h3>
                     {activeAdsets.map((a) => (
                       <AdsetBlock
                         key={a.id}
@@ -491,7 +503,7 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
 
                 {inactiveAdsets.length > 0 && (
                   <div className="flex flex-col gap-3">
-                    <h3 className="text-sm font-bold uppercase tracking-wide text-slate-500">Inactive / Paused</h3>
+                    <h3 className="text-sm font-bold uppercase tracking-wide text-slate-500">Неактивні / На паузі</h3>
                     {inactiveAdsets.map((a) => (
                       <AdsetBlock
                         key={a.id}
@@ -505,7 +517,7 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
                 )}
 
                 {activeAdsets.length === 0 && inactiveAdsets.length === 0 && (
-                  <div className="text-slate-500 text-sm italic">Campaign has no adsets.</div>
+                  <div className="text-slate-500 text-sm italic">У кампанії немає адсетів.</div>
                 )}
               </div>
             )}
