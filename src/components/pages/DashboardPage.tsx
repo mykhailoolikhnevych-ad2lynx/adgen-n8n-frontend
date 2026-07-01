@@ -742,16 +742,29 @@ const ACTION_PALETTE = [
   'bg-teal-500',   'bg-lime-500',    'bg-cyan-500',   'bg-fuchsia-500',
   'bg-red-500',    'bg-yellow-500',  'bg-blue-500',   'bg-purple-500',
 ];
-const TAB_OPTIONS = ['creatives', 'creative_gen', 'creative-edit', 'keywords', 'angles', 'article'] as const;
+// Each pill maps to one-or-more raw `tab` values from usage_log. Plain entries
+// are 1:1 (label === the tab string); "FB-NB" is a grouped pill that bundles
+// the three Megatool pipeline pages (FB Campaign Reader → Create Binom Offer →
+// Create NB Campaign) into a single filter so the operator doesn't have to
+// select each one individually.
+const TAB_OPTIONS: { label: string; tabs: string[] }[] = [
+  { label: 'creatives',     tabs: ['creatives'] },
+  { label: 'creative_gen',  tabs: ['creative_gen'] },
+  { label: 'creative-edit', tabs: ['creative-edit'] },
+  { label: 'keywords',      tabs: ['keywords'] },
+  { label: 'angles',        tabs: ['angles'] },
+  { label: 'article',       tabs: ['article'] },
+  { label: 'FB-NB',         tabs: ['megatool-fb', 'megatool-binom', 'megatool-nb'] },
+];
 
 const GraphView = ({ rows }: { rows: UsageRow[] }) => {
   const [selectedTabs, setSelectedTabs] = useState<Set<string>>(new Set());
   const [selectedActions, setSelectedActions] = useState<Set<string>>(new Set());
 
-  const toggleTab = (tab: string) => {
+  const toggleTab = (label: string) => {
     setSelectedTabs((prev) => {
       const next = new Set(prev);
-      if (next.has(tab)) next.delete(tab); else next.add(tab);
+      if (next.has(label)) next.delete(label); else next.add(label);
       return next;
     });
   };
@@ -763,10 +776,18 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
     });
   };
 
+  // Selected pill labels expand to the union of raw `tab` values they cover.
+  const activeTabValues = useMemo(() => {
+    if (selectedTabs.size === 0) return null;
+    const s = new Set<string>();
+    for (const opt of TAB_OPTIONS) if (selectedTabs.has(opt.label)) opt.tabs.forEach((t) => s.add(t));
+    return s;
+  }, [selectedTabs]);
+
   // Tab filter narrows the input set first; legend & aggregations all flow from this.
   const tabFiltered = useMemo(
-    () => (selectedTabs.size === 0 ? rows : rows.filter((r) => selectedTabs.has(r.tab))),
-    [rows, selectedTabs],
+    () => (activeTabValues === null ? rows : rows.filter((r) => activeTabValues.has(r.tab))),
+    [rows, activeTabValues],
   );
 
   // Legend reflects whatever survived the tab filter — selecting an action that no
@@ -833,20 +854,20 @@ const GraphView = ({ rows }: { rows: UsageRow[] }) => {
         >
           All
         </button>
-        {TAB_OPTIONS.map((t) => {
-          const active = selectedTabs.has(t);
+        {TAB_OPTIONS.map((opt) => {
+          const active = selectedTabs.has(opt.label);
           return (
             <button
-              key={t}
+              key={opt.label}
               type="button"
-              onClick={() => toggleTab(t)}
+              onClick={() => toggleTab(opt.label)}
               className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                 active
                   ? 'bg-slate-900 text-white'
                   : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
               }`}
             >
-              {t}
+              {opt.label}
             </button>
           );
         })}
