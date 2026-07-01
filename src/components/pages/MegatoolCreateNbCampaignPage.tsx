@@ -32,7 +32,7 @@ type StartTimezone = 'PDT' | 'EEST';
 // Flip to true when the n8n workflow supports body.startTimezone again. The
 // dropdown + payload field are ready to go — this flag just gates visibility
 // and whether we ship the field over the wire.
-const TIMEZONE_PICKER_ENABLED = false;
+const TIMEZONE_PICKER_ENABLED = true;
 
 const TIMEZONE_OPTIONS: Array<{ value: StartTimezone; label: string }> = [
   { value: 'PDT', label: 'PDT (Los Angeles, UTC-7)' },
@@ -419,7 +419,11 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
                 </select>
                 {startDate !== 'now' && (
                   <p className="text-xs text-slate-600 mt-1">
-                    Старт о <strong>01:00 {startTimezone}</strong> обраного дня.
+                    {startTimezone === 'PDT' ? (
+                      <>Старт о <strong>00:00 PDT</strong> обраного дня (≈ 10:00 Kyiv того ж дня).</>
+                    ) : (
+                      <>Старт о <strong>14:00 PDT</strong> обраного дня (≈ 00:00 Kyiv наступного дня).</>
+                    )}
                   </p>
                 )}
               </div>
