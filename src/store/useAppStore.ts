@@ -295,6 +295,10 @@ export interface NbCampaignResult {
 // NB ad — headline / body / assetUrl differ per ad; brandName, CTA, and
 // click-through URL are shared at the campaign level.
 export interface CreateNbCampaignAd {
+  /** Mirrors the source FB ad name so NB ads stay searchable by the operator's
+   *  original naming convention. Falls back to the campaign name + index on
+   *  the backend if empty. */
+  adName: string;
   headline: string;
   body: string;
   assetUrl: string;
@@ -310,6 +314,11 @@ export interface CreateNbCampaignInput {
    *  budget * adsetSizes.length. */
   budget: number;
   startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+  /** Timezone the 01:00 start hour is anchored to. `PDT` = Pacific Daylight
+   *  Time (matches NB's own timezone). `EEST` = Eastern European Summer Time
+   *  (Kyiv). Ignored when startDate = 'now'. Optional because the UI picker
+   *  is currently gated off — the workflow defaults to PDT server-side. */
+  startTimezone?: 'PDT' | 'EEST';
   /** Ads to create. Order matters — they're distributed left-to-right across
    *  adsets per `adsetSizes`. */
   ads: CreateNbCampaignAd[];
@@ -1354,7 +1363,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   createNbCampaign: async (input) => {
-    const logMeta = { nbAccountId: input.nbAccountId, campaignName: input.campaignName, budget: input.budget, startDate: input.startDate };
+    const logMeta = { nbAccountId: input.nbAccountId, campaignName: input.campaignName, budget: input.budget, startDate: input.startDate, startTimezone: input.startTimezone };
     if (!WEBHOOKS.nbCampaignCreator) {
       const msg = 'PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL is not set in .env';
       set({ nbCampaignStatus: 'error', nbCampaignError: msg, nbCampaignResult: null });
