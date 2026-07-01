@@ -27,6 +27,17 @@ const START_DATE_OPTIONS = [
 ] as const;
 
 type StartDate = 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+type StartTimezone = 'PDT' | 'EEST';
+
+// Flip to true when the n8n workflow supports body.startTimezone again. The
+// dropdown + payload field are ready to go — this flag just gates visibility
+// and whether we ship the field over the wire.
+const TIMEZONE_PICKER_ENABLED = false;
+
+const TIMEZONE_OPTIONS: Array<{ value: StartTimezone; label: string }> = [
+  { value: 'PDT', label: 'PDT (Los Angeles, UTC-7)' },
+  { value: 'EEST', label: 'EEST (Kyiv, UTC+3)' },
+];
 
 // NB ad-creation field constraints. brandName 2-25 is confirmed by NB error
 // `creative.brandName length must be between 2 and 25`. Other limits are
@@ -155,6 +166,7 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   const [callToAction, setCallToAction] = useState<string>('Learn More');
   const [budget, setBudget] = useState(10);
   const [startDate, setStartDate] = useState<StartDate>('now');
+  const [startTimezone, setStartTimezone] = useState<StartTimezone>('PDT');
   const [showRaw, setShowRaw] = useState(false);
   const [adStates, setAdStates] = useState<AdFormState[]>(defaultAdStates);
 
@@ -238,6 +250,9 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
       clickThroughUrl: binomOfferResult.binomCampaignUrl,
       budget,
       startDate,
+      // Only include when the picker is enabled — old n8n workflow doesn't
+      // read this field and shouldn't get a spurious default.
+      ...(TIMEZONE_PICKER_ENABLED ? { startTimezone } : {}),
       ads,
       adsetSizes,
     });
@@ -251,6 +266,7 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
     setCallToAction('Learn More');
     setBudget(10);
     setStartDate('now');
+    setStartTimezone('PDT');
     setAdStates(defaultAdStates);
     setShowRaw(false);
   };
@@ -375,17 +391,39 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
             </p>
           </div>
 
-          <div>
-            <label className="text-xs font-medium uppercase text-slate-500">Start Date</label>
-            <select
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value as StartDate)}
-              className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {START_DATE_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
+          <div className={TIMEZONE_PICKER_ENABLED ? 'flex gap-2' : ''}>
+            <div className={TIMEZONE_PICKER_ENABLED ? 'flex-1' : ''}>
+              <label className="text-xs font-medium uppercase text-slate-500">Start Date</label>
+              <select
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value as StartDate)}
+                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {START_DATE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            {TIMEZONE_PICKER_ENABLED && (
+              <div className="flex-1">
+                <label className="text-xs font-medium uppercase text-slate-500">Timezone</label>
+                <select
+                  value={startTimezone}
+                  onChange={(e) => setStartTimezone(e.target.value as StartTimezone)}
+                  disabled={startDate === 'now'}
+                  className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  {TIMEZONE_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                {startDate !== 'now' && (
+                  <p className="text-xs text-slate-600 mt-1">
+                    Старт о <strong>01:00 {startTimezone}</strong> обраного дня.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </section>
 
