@@ -275,6 +275,23 @@ export interface CreateBinomOfferInput {
   isRoas?: boolean;
 }
 
+// MEGATOOL — NB conversion event (from GET /event/getList/{adAccountId}).
+// Displayed on the NB Campaign page under the account picker; the picked
+// event's `id` gets shipped as trackingId on ad-set/create.
+export interface NbEvent {
+  id: string;
+  name: string;
+  type?: string;         // e.g. 'PIXEL', 'POSTBACK'
+  eventType?: string;    // e.g. 'click_button', 'complete_payment'
+  url?: string;
+  orgId?: string;
+  adAccountId?: string;
+  version?: number;
+  appEvent?: boolean;
+  createTime?: number;
+  updateTime?: number;
+}
+
 // MEGATOOL — Create NB Campaign response shape (success branch).
 // Multi-ad / multi-adset: arrays for adsetIds and adIds, parallel to input
 // ads. Singular `adsetId` and `adId` are kept as `[0]` for back-compat with
@@ -438,6 +455,13 @@ interface AppState {
   nbAccountsStatus: ArticleStatus;
   nbAccountsList: { name: string; id: string }[];
   nbAccountsError: string | null;
+  /** Cache of the currently-fetched NB conversion-event list keyed by
+   *  adAccountId — only the last-fetched account is kept (the picker only
+   *  shows the current selection). */
+  nbEvents: NbEvent[] | null;
+  nbEventsAccountId: string | null;
+  nbEventsStatus: ArticleStatus;
+  nbEventsError: string | null;
   rsocBundle: RsocBundle | null;
   rsocAudiencesStatus: ArticleStatus;
   rsocAudiencesError: string | null;
@@ -473,6 +497,7 @@ interface AppState {
   resetNbCampaign: () => void;
   createNbCampaign: (input: CreateNbCampaignInput) => Promise<void>;
   fetchNbAccounts: () => Promise<void>;
+  fetchNbEvents: (adAccountId: string) => Promise<void>;
   generateRsocAudiences: (input: RsocAudiencesInput) => Promise<void>;
   generateRsocHeadlines: (pickedIds: string[]) => Promise<void>;
   toggleRsocAudienceTranslation: (segmentId: string) => Promise<void>;
@@ -560,6 +585,7 @@ const WEBHOOKS = {
   binomOfferCreator: import.meta.env.PUBLIC_WEBHOOK_BINOM_OFFER_CREATOR_URL,
   nbCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL,
   nbAccountsList: import.meta.env.PUBLIC_WEBHOOK_NB_ACCOUNTS_LIST_URL,
+  nbEventsList: import.meta.env.PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL,
 };
 
 export interface KeywordStudioInput {
@@ -891,6 +917,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   nbCampaignOpen: false,
   nbCampaignStatus: 'idle', nbCampaignResult: null, nbCampaignError: null,
   nbAccountsStatus: 'idle', nbAccountsList: [], nbAccountsError: null,
+  nbEvents: null, nbEventsAccountId: null, nbEventsStatus: 'idle', nbEventsError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
@@ -1474,6 +1501,57 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error('[fetchNbAccounts]', e);
       const msg = humanizeError(e);
       set({ nbAccountsStatus: 'error', nbAccountsError: msg, nbAccountsList: [] });
+    }
+  },
+
+  // Fetch NB conversion events for a single ad account. Backing endpoint is
+  // n8n's /webhook/megatool-fetch-nb-events → NB's GET /event/getList/{id}.
+  // Skips the network call if we already have events for this account.
+  fetchNbEvents: async (adAccountId: string) => {
+    const url = (WEBHOOKS as any).nbEventsList as string | undefined;
+    if (!url) {
+      const msg = 'PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL is not set in .env';
+      set({ nbEventsStatus: 'error', nbEventsError: msg, nbEvents: null, nbEventsAccountId: adAccountId });
+      return;
+    }
+    if (!adAccountId) return;
+    // Cached for this account — no need to re-fetch.
+    const state = get() as any;
+    if (state.nbEventsAccountId === adAccountId && state.nbEventsStatus === 'success') return;
+    set({ nbEventsStatus: 'loading', nbEventsError: null, nbEvents: null, nbEventsAccountId: adAccountId });
+    try {
+      const { data } = await axios.post(url, { adAccountId }, { timeout: 30_000 });
+      // n8n's "allIncomingItems" wraps NB's JSON in a top-level array of
+      // {json:{...}}; unwrap and pull `.list` (or `.data.list`) which holds
+      // the events themselves.
+      const first = Array.isArray(data) ? data[0] : data;
+      const unwrapped = first && typeof first === 'object' && 'json' in first ? (first as any).json : first;
+      const nbBody = unwrapped && typeof unwrapped === 'object' && 'data' in unwrapped ? (unwrapped as any).data : unwrapped;
+      const rawList: any[] = Array.isArray(nbBody?.list)
+        ? nbBody.list
+        : Array.isArray(nbBody)
+          ? nbBody
+          : [];
+      const events: NbEvent[] = rawList
+        .map((r) => ({
+          id: String(r?.id ?? ''),
+          name: String(r?.name ?? ''),
+          type: r?.type,
+          eventType: r?.eventType,
+          url: r?.url,
+          orgId: r?.orgId != null ? String(r.orgId) : undefined,
+          adAccountId: r?.adAccountId != null ? String(r.adAccountId) : undefined,
+          version: r?.version,
+          appEvent: r?.appEvent,
+          createTime: r?.createTime,
+          updateTime: r?.updateTime,
+        }))
+        .filter((e) => e.id);
+      set({ nbEventsStatus: 'success', nbEvents: events, nbEventsError: null, nbEventsAccountId: adAccountId });
+    } catch (e) {
+      console.error('[fetchNbEvents]', e);
+      const msg = humanizeError(e);
+      set({ nbEventsStatus: 'error', nbEventsError: msg, nbEvents: null, nbEventsAccountId: adAccountId });
     }
   },
 
