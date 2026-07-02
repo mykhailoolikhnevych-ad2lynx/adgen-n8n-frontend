@@ -139,10 +139,21 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   const nbAccountsStatus = useAppStore((s) => s.nbAccountsStatus);
   const nbAccountsError = useAppStore((s) => s.nbAccountsError);
   const fetchNbAccounts = useAppStore((s) => s.fetchNbAccounts);
+  const nbEvents = useAppStore((s) => s.nbEvents);
+  const nbEventsStatus = useAppStore((s) => s.nbEventsStatus);
+  const nbEventsError = useAppStore((s) => s.nbEventsError);
+  const nbEventsAccountId = useAppStore((s) => s.nbEventsAccountId);
+  const fetchNbEvents = useAppStore((s) => s.fetchNbEvents);
 
   useEffect(() => {
     if (nbAccountsStatus === 'idle') void fetchNbAccounts();
   }, [nbAccountsStatus, fetchNbAccounts]);
+
+  // ROAS is chosen upstream on the Binom Offer page; we detect it from the
+  // "ROAS |" prefix that the Binom workflow prepends to the campaign name.
+  // Determines which conversion event to auto-pick for trackingId.
+  const isRoas = binomOfferResult?.binomCampaignName?.startsWith('ROAS |') ?? false;
+  const wantedEventType = isRoas ? 'complete_payment' : 'click_button';
 
   const nbAccountNames = useMemo(() => nbAccountsList.map((a) => a.name), [nbAccountsList]);
 
@@ -165,6 +176,13 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   const [brandName, setBrandName] = useState(defaultBrandName);
   const [callToAction, setCallToAction] = useState<string>('Learn More');
   const [budget, setBudget] = useState(10);
+  // ROAS target as a percentage (120 → NB gets roas=1.2). Only used when
+  // the source Binom offer was flagged ROAS (isRoas === true).
+  const [roasPercent, setRoasPercent] = useState(120);
+  // Manual tracking-event override. When null, we use the auto-picked event
+  // (click_button / complete_payment). Reset whenever the operator switches
+  // NB account so we don't carry a stale id.
+  const [manualEventId, setManualEventId] = useState<string | null>(null);
   const [startDate, setStartDate] = useState<StartDate>('now');
   const [startTimezone, setStartTimezone] = useState<StartTimezone>('PDT');
   const [showRaw, setShowRaw] = useState(false);
@@ -224,6 +242,37 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   }
 
   const selectedAccount = nbAccountsList.find((a) => a.name === selectedAccountName);
+
+  // When the operator picks an account, pull that account's conversion
+  // events so we can auto-select the right trackingId (click_button vs
+  // complete_payment) based on ROAS. Fires only when the id actually changes.
+  useEffect(() => {
+    if (selectedAccount?.id && selectedAccount.id !== nbEventsAccountId) {
+      void fetchNbEvents(selectedAccount.id);
+      // New account → drop any manual override so the auto-pick takes over.
+      setManualEventId(null);
+    }
+  }, [selectedAccount?.id, nbEventsAccountId, fetchNbEvents]);
+
+  // Pick the event whose eventType matches the ROAS/non-ROAS choice.
+  // Fallback: first event returned by NB.
+  const autoPickedEvent = useMemo(() => {
+    if (!nbEvents || nbEvents.length === 0) return null;
+    const match = nbEvents.find((e) => e.eventType === wantedEventType);
+    return match ?? nbEvents[0] ?? null;
+  }, [nbEvents, wantedEventType]);
+
+  // Effective event = manual override if set (and still valid), else auto.
+  const pickedEvent = useMemo(() => {
+    if (manualEventId && nbEvents) {
+      const found = nbEvents.find((e) => e.id === manualEventId);
+      if (found) return found;
+    }
+    return autoPickedEvent;
+  }, [manualEventId, nbEvents, autoPickedEvent]);
+  const isManualOverride = !!manualEventId && pickedEvent?.id === manualEventId
+    && pickedEvent.id !== autoPickedEvent?.id;
+
   const canSubmit = !isLoading
     && !!selectedAccount
     && !hasFieldErrors
@@ -253,6 +302,12 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
       // Only include when the picker is enabled — old n8n workflow doesn't
       // read this field and shouldn't get a spurious default.
       ...(TIMEZONE_PICKER_ENABLED ? { startTimezone } : {}),
+      // Conversion event resolved from the account; workflow falls back to
+      // DEFAULT_TRACKING_ID when this is missing.
+      ...(pickedEvent?.id ? { trackingId: pickedEvent.id } : {}),
+      // ROAS: send double (percentage/100). Only when the offer is ROAS and
+      // the value is in-range; otherwise the workflow stays on MAX_CONVERSION.
+      ...(isRoas && roasPercent > 0 ? { roas: roasPercent / 100 } : {}),
       ads,
       adsetSizes,
     });
@@ -265,6 +320,8 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
     setBrandName(defaultBrandName);
     setCallToAction('Learn More');
     setBudget(10);
+    setRoasPercent(120);
+    setManualEventId(null);
     setStartDate('now');
     setStartTimezone('PDT');
     setAdStates(defaultAdStates);
@@ -324,6 +381,84 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
                 >
                   retry
                 </button>
+              </div>
+            )}
+
+            {selectedAccount && (
+              <div className="mt-2 border rounded-md bg-slate-50 p-2 text-xs">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-semibold uppercase tracking-wide text-slate-500">
+                    Tracking event
+                  </span>
+                  <span className="flex items-center gap-1">
+                    {isManualOverride && (
+                      <span className="text-[10px] font-semibold uppercase rounded px-1.5 py-0.5 bg-amber-100 text-amber-800">
+                        Manual
+                      </span>
+                    )}
+                    <span className={`text-[10px] font-semibold uppercase rounded px-1.5 py-0.5 ${isRoas ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'}`}>
+                      {isRoas ? 'ROAS → complete_payment' : 'click_button'}
+                    </span>
+                  </span>
+                </div>
+                {nbEventsStatus === 'loading' && (
+                  <div className="text-slate-500 italic">Завантажую події акаунту…</div>
+                )}
+                {nbEventsStatus === 'error' && (
+                  <div className="text-red-600">
+                    Не вдалося завантажити події: {nbEventsError ?? 'unknown'}{' '}
+                    <button
+                      type="button"
+                      onClick={() => void fetchNbEvents(selectedAccount.id)}
+                      className="underline hover:no-underline"
+                    >
+                      повторити
+                    </button>
+                  </div>
+                )}
+                {nbEventsStatus === 'success' && (!nbEvents || nbEvents.length === 0) && (
+                  <div className="text-amber-700">
+                    В акаунті немає подій — використаю fallback trackingId на сервері.
+                  </div>
+                )}
+                {nbEventsStatus === 'success' && nbEvents && nbEvents.length > 0 && (
+                  <div className="space-y-1">
+                    <select
+                      value={pickedEvent?.id ?? ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        // If they picked the auto-pick again, clear the manual
+                        // override so the badge goes back to blue/purple.
+                        setManualEventId(val === autoPickedEvent?.id ? null : val);
+                      }}
+                      className="w-full rounded-md border border-input bg-white px-2 py-1 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      {nbEvents.map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {e.name}
+                          {e.eventType ? ` · ${e.eventType}` : ''}
+                          {e.id === autoPickedEvent?.id ? ' (auto)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {pickedEvent && (
+                      <div className="font-mono text-[11px] text-slate-500 break-all">
+                        id: {pickedEvent.id}
+                        {pickedEvent.eventType && (
+                          <> · type: <code>{pickedEvent.eventType}</code></>
+                        )}
+                      </div>
+                    )}
+                    {pickedEvent && autoPickedEvent
+                      && pickedEvent.id === autoPickedEvent.id
+                      && autoPickedEvent.eventType !== wantedEventType && (
+                      <div className="text-[10px] text-amber-700">
+                        Fallback: в акаунті немає події з <code>{wantedEventType}</code>,
+                        обрано першу доступну.
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -390,6 +525,34 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
               Кожен з {adsetSizes.length} адсет{adsetSizes.length === 1 ? 'а' : 'ів'} отримує ${budget}/день → разом ${budget * adsetSizes.length}/день.
             </p>
           </div>
+
+          {isRoas && (
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+                <span>ROAS Target (%) *</span>
+                <span className="text-[10px] normal-case text-purple-700 font-semibold">
+                  bidType: TARGET_ROAS
+                </span>
+              </label>
+              <div className="relative">
+                <Input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  step={1}
+                  value={roasPercent}
+                  onChange={(e) => setRoasPercent(Number(e.target.value))}
+                  placeholder="120"
+                  className="pr-8"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">%</span>
+              </div>
+              <p className="text-xs text-slate-600 mt-1">
+                Цільовий ROAS у відсотках → NB отримає <code>roas={(roasPercent / 100).toFixed(2)}</code>.
+                Напр. <strong>120%</strong> = повертати $1.20 за кожен $1 витрати.
+              </p>
+            </div>
+          )}
 
           <div className={TIMEZONE_PICKER_ENABLED ? 'flex gap-2' : ''}>
             <div className={TIMEZONE_PICKER_ENABLED ? 'flex-1' : ''}>
