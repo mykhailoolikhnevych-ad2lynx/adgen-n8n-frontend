@@ -187,7 +187,20 @@ export const ArticlePage = ({ onCreateOffer }: ArticlePageProps = {}) => {
     if (!displayedHtml) return;
     const text = extractArticleText(displayedHtml);
     try {
-      await navigator.clipboard.writeText(text);
+      // Write both text/html and text/plain so paste targets that understand
+      // HTML (Docs, Notion, email) keep the heading/list/link formatting —
+      // matching what a manual "select all + copy" produces from the preview.
+      // text/plain is the fallback for plain-text sinks (terminals, code editors).
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            'text/html': new Blob([displayedHtml], { type: 'text/html' }),
+            'text/plain': new Blob([text], { type: 'text/plain' }),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
       setCopyState('copied');
     } catch {
       setCopyState('failed');
