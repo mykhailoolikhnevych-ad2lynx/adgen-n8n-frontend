@@ -20,10 +20,10 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 };
 
 const START_DATE_OPTIONS = [
-  { label: 'Now', value: 'now' },
-  { label: 'Tomorrow', value: 'tomorrow' },
-  { label: 'Tomorrow +1', value: 'tomorrow+1' },
-  { label: 'Tomorrow +2', value: 'tomorrow+2' },
+  { label: 'Зараз', value: 'now' },
+  { label: 'Завтра', value: 'tomorrow' },
+  { label: 'Післязавтра', value: 'tomorrow+1' },
+  { label: 'Через 3 дні', value: 'tomorrow+2' },
 ] as const;
 
 type StartDate = 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
@@ -45,8 +45,8 @@ const TIMEZONE_OPTIONS: Array<{ value: StartTimezone; label: string }> = [
 const NB_LIMITS = {
   campaignName: { min: 1, max: 200 },
   brandName: { min: 2, max: 25 },
-  headline: { min: 1, max: 80 },
-  description: { min: 1, max: 150 },
+  headline: { min: 1, max: 90 },
+  description: { min: 1, max: 90 },
 } as const;
 type NbLimitKey = keyof typeof NB_LIMITS;
 

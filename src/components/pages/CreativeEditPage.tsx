@@ -23,6 +23,8 @@ const LANGUAGE_TOOLTIP =
 
 const LANGUAGE_OPTIONS = ['Keep original language', ...AD_LANGUAGES];
 
+const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
+
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_EDIT_URL as string | undefined;
@@ -53,6 +55,7 @@ export const CreativeEditPage = () => {
   const [cta, setCta] = useState('');
   const [imagePrompt, setImagePrompt] = useState('');
   const [language, setLanguage] = useState('Keep original language');
+  const [aspectRatio, setAspectRatio] = useState('1:1');
   const [isLoading, setIsLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -213,6 +216,7 @@ export const CreativeEditPage = () => {
       cta: cta.trim(),
       imagePrompt: imagePrompt.trim(),
       language: language === 'Keep original language' ? '' : language,
+      aspectRatio,
     };
 
     if (!WEBHOOK) {
@@ -235,6 +239,7 @@ export const CreativeEditPage = () => {
         cta: cta.trim(),
         imagePrompt: imagePrompt.trim(),
         language: language === 'Keep original language' ? '' : language,
+        aspectRatio,
       });
       const data = response.data;
 
@@ -360,6 +365,20 @@ export const CreativeEditPage = () => {
               {isAnalyzing && (
                 <div className="text-[10px] uppercase text-blue-600 animate-pulse">Reading…</div>
               )}
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Aspect ratio
+              </label>
+              <select
+                value={aspectRatio}
+                onChange={(e) => setAspectRatio(e.target.value)}
+                className="w-full text-sm border rounded-md px-2 py-1 bg-white"
+              >
+                {ASPECT_RATIOS.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
