@@ -179,6 +179,9 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   // ROAS target as a percentage (120 → NB gets roas=1.2). Only used when
   // the source Binom offer was flagged ROAS (isRoas === true).
   const [roasPercent, setRoasPercent] = useState(120);
+  // Non-ROAS bidType. NB requires bidRate only for TARGET_CPA (in cents).
+  const [bidType, setBidType] = useState<'MAX_CONVERSION' | 'TARGET_CPA'>('MAX_CONVERSION');
+  const [targetCpaDollars, setTargetCpaDollars] = useState(5);
   // Manual tracking-event override. When null, we use the auto-picked event
   // (click_button / complete_payment). Reset whenever the operator switches
   // NB account so we don't carry a stale id.
