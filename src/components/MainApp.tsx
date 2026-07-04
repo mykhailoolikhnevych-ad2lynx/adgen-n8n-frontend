@@ -317,32 +317,9 @@ export default function MainApp() {
                               ×
                             </button>
                           </span>
-                          {nbCampaignOpen && (
-                            <span
-                              className={`ml-1 flex items-center rounded text-sm transition-colors ${
-                                isNbActive
-                                  ? 'bg-amber-400 text-black'
-                                  : 'text-white/80 hover:bg-white/10 hover:text-white'
-                              }`}
-                            >
-                              <button
-                                type="button"
-                                onClick={() => setMegatoolPage('create-nb-campaign')}
-                                className="pl-3 pr-1 py-1.5"
-                                aria-current={isNbActive ? 'page' : undefined}
-                              >
-                                Create NB Campaign
-                              </button>
-                              <button
-                                type="button"
-                                onClick={handleCloseNbCampaign}
-                                aria-label="Close Create NB Campaign tab"
-                                className="pr-2 pl-1 py-1.5 text-xs opacity-70 hover:opacity-100"
-                              >
-                                ×
-                              </button>
-                            </span>
-                          )}
+                          {/* Create NB Campaign is now embedded inside the
+                              Create Binom Offer tab (rendered inline once the
+                              Binom offer succeeds), so no separate nav item. */}
                         </span>
                       );
                     }
@@ -469,11 +446,8 @@ export default function MainApp() {
                 {megatoolPage === 'fb-campaign-reader' && (
                   <MegatoolFBCampaignPage onOpenBinomOffer={handleOpenBinomOffer} />
                 )}
-                {megatoolPage === 'create-binom-offer' && binomOfferOpen && (
-                  <MegatoolCreateBinomOfferPage onClose={handleCloseBinomOffer} onOpenNbCampaign={handleOpenNbCampaign} />
-                )}
-                {megatoolPage === 'create-nb-campaign' && nbCampaignOpen && (
-                  <MegatoolCreateNbCampaignPage onClose={handleCloseNbCampaign} />
+                {(megatoolPage === 'create-binom-offer' || megatoolPage === 'create-nb-campaign') && binomOfferOpen && (
+                  <MegatoolCreateBinomOfferPage onClose={handleCloseBinomOffer} />
                 )}
               </>
             )
