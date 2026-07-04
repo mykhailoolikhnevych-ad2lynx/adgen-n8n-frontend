@@ -10,6 +10,12 @@ import {
   getGroupNamesForTracker,
   getTrackerFromTrackingUrl,
 } from '@/lib/binomGroups';
+import { MegatoolCreateNbCampaignPage } from './MegatoolCreateNbCampaignPage';
+
+// Kept in sync with the NB page's own constant list. When the two pages merge
+// fully these will consolidate; for now duplicated so the pre-Binom bid-type
+// picker knows the labels without importing from the NB page.
+type NbBidType = 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -27,6 +33,9 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 
 interface MegatoolCreateBinomOfferPageProps {
   onClose: () => void;
+  /** Legacy prop from the old nav-based two-tab flow. Retained as optional so
+   *  older call sites still compile; the merged page renders the NB flow
+   *  inline once binomOfferResult is available. */
   onOpenNbCampaign?: () => void;
 }
 
@@ -85,12 +94,28 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     () => getTrackerFromTrackingUrl(selectedFbAd?.trackingUrl),
     [selectedFbAd?.trackingUrl],
   );
-  const [tracker, setTracker] = useState<string>(detectedTracker ?? DEFAULT_BINOM_TRACKER);
-  const [trackerAutoSet, setTrackerAutoSet] = useState<boolean>(detectedTracker !== null);
-  const [newAmoDomain, setNewAmoDomain] = useState<string>('same');
-  const [newAmoChannel, setNewAmoChannel] = useState('same');
-  const [newBinomGroup, setNewBinomGroup] = useState<string>('same');
-  const [isRoas, setIsRoas] = useState(false);
+  // Form state is stored globally so switching tabs mid-flow doesn't wipe
+  // the operator's group / channel / tracker / etc. picks.
+  const form = useAppStore((s) => s.megatoolBinomForm);
+  const setBinomForm = useAppStore((s) => s.setBinomForm);
+  const resetBinomForm = useAppStore((s) => s.resetBinomForm);
+  const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName } = form;
+  const setTracker = (v: string) => setBinomForm({ tracker: v });
+  const setTrackerAutoSet = (v: boolean) => setBinomForm({ trackerAutoSet: v });
+  const setNewAmoDomain = (v: string) => setBinomForm({ newAmoDomain: v });
+  const setNewAmoChannel = (v: string) => setBinomForm({ newAmoChannel: v });
+  const setNewBinomGroup = (v: string) => setBinomForm({ newBinomGroup: v });
+  const setIsRoas = (v: boolean) => setBinomForm({ isRoas: v });
+  const setBinomCampaignName = (v: string) => setBinomForm({ binomCampaignName: v });
+
+  // Seed tracker from auto-detect on first mount if nothing's been set.
+  useEffect(() => {
+    if (!trackerAutoSet && !tracker) {
+      setBinomForm({ tracker: detectedTracker ?? DEFAULT_BINOM_TRACKER });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [showRaw, setShowRaw] = useState(false);
 
   // When the source ad changes (and the URL maps cleanly to a tracker), snap
@@ -104,6 +129,107 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   }, [detectedTracker]);
 
   const binomGroupOptions = useMemo(() => getGroupNamesForTracker(tracker), [tracker]);
+
+  // ── NB pre-Binom state (Account + Tracking Event + Bid Type + CPA + ROAS)
+  // Lives in the shared store so the NB embedded section below reads the same
+  // values without duplication. bidType being TARGET_ROAS is the new single
+  // source of truth for "this is a ROAS run" — no more Binom checkbox.
+  const nbForm = useAppStore((s) => s.megatoolNbForm);
+  const setNbForm = useAppStore((s) => s.setNbForm);
+  const nbAccountsList = useAppStore((s) => s.nbAccountsList);
+  const nbAccountsStatus = useAppStore((s) => s.nbAccountsStatus);
+  const nbAccountsError = useAppStore((s) => s.nbAccountsError);
+  const fetchNbAccounts = useAppStore((s) => s.fetchNbAccounts);
+  const nbEvents = useAppStore((s) => s.nbEvents);
+  const nbEventsStatus = useAppStore((s) => s.nbEventsStatus);
+  const nbEventsError = useAppStore((s) => s.nbEventsError);
+  const nbEventsAccountId = useAppStore((s) => s.nbEventsAccountId);
+  const fetchNbEvents = useAppStore((s) => s.fetchNbEvents);
+  const {
+    selectedAccountName,
+    bidType,
+    targetCpaDollars,
+    roasPercent,
+    manualEventId,
+  } = nbForm;
+  const setSelectedAccountName = (v: string) => setNbForm({ selectedAccountName: v });
+  const setBidType = (v: NbBidType) => setNbForm({ bidType: v });
+  const setTargetCpaDollars = (v: number) => setNbForm({ targetCpaDollars: v });
+  const setRoasPercent = (v: number) => setNbForm({ roasPercent: v });
+  const setManualEventId = (v: string | null) => setNbForm({ manualEventId: v });
+
+  const nbAccountNames = useMemo(() => nbAccountsList.map((a) => a.name), [nbAccountsList]);
+  const selectedAccount = nbAccountsList.find((a) => a.name === selectedAccountName);
+
+  useEffect(() => {
+    if (nbAccountsStatus === 'idle') void fetchNbAccounts();
+  }, [nbAccountsStatus, fetchNbAccounts]);
+
+  // Fetch events for the chosen account; drop any manual override so the
+  // auto-pick kicks in for the new account.
+  useEffect(() => {
+    if (selectedAccount?.id && selectedAccount.id !== nbEventsAccountId) {
+      void fetchNbEvents(selectedAccount.id);
+      setNbForm({ manualEventId: null });
+    }
+  }, [selectedAccount?.id, nbEventsAccountId, fetchNbEvents]);
+
+  // Auto-pick preference depends on the current bid type — conversion-based
+  // strategies (TARGET_CPA, TARGET_ROAS) implicitly need a conversion event
+  // (complete_payment), while MAX_CONVERSION defaults to the lighter
+  // click_button. Operator can override via the dropdown below.
+  const wantedEventType =
+    bidType === 'TARGET_ROAS' || bidType === 'TARGET_CPA'
+      ? 'complete_payment'
+      : 'click_button';
+  const autoPickedEvent = useMemo(() => {
+    if (!nbEvents || nbEvents.length === 0) return null;
+    const match = nbEvents.find((e) => e.eventType === wantedEventType);
+    return match ?? nbEvents[0] ?? null;
+  }, [nbEvents, wantedEventType]);
+  const pickedEvent = useMemo(() => {
+    if (manualEventId && nbEvents) {
+      const found = nbEvents.find((e) => e.id === manualEventId);
+      if (found) return found;
+    }
+    return autoPickedEvent;
+  }, [manualEventId, nbEvents, autoPickedEvent]);
+  const pickedEventSupportsRoas = pickedEvent?.eventType === 'complete_payment';
+
+  // Downgrade to MAX_CONVERSION if the picked event no longer supports ROAS.
+  useEffect(() => {
+    if (!pickedEventSupportsRoas && bidType === 'TARGET_ROAS') {
+      setNbForm({ bidType: 'MAX_CONVERSION' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedEventSupportsRoas]);
+
+  // Derived: ROAS run iff bid type is TARGET_ROAS. Replaces the old checkbox.
+  const derivedIsRoas = bidType === 'TARGET_ROAS';
+
+  // Auto-prefill for the editable Binom campaign name field.
+  // Format: "[ROAS | ]<base> | NB | <NB account> | MEGATOOL | DD.MM.YYYY".
+  //  - ROAS prefix only when the bid type is TARGET_ROAS.
+  //  - Base name = NB campaign name (if filled) else the source FB creative
+  //    title / ad name.
+  //  - "| NB |" marker sits between base and the account so tracker listings
+  //    stay self-describing even for cross-account operators.
+  const binomCampaignNameDefault = useMemo(() => {
+    const nbName = nbForm.campaignName.trim();
+    const fbFallback = selectedFbAd?.creativeTitle || selectedFbAd?.adName || '';
+    const base = nbName || fbFallback;
+    if (!base) return '';
+    const roasPrefix = derivedIsRoas ? 'ROAS | ' : '';
+    const acctPart = selectedAccountName
+      ? ` | NB | ${selectedAccountName}`
+      : ' | NB';
+    const now = new Date();
+    const dd = String(now.getDate()).padStart(2, '0');
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const datePart = `${dd}.${mm}.${now.getFullYear()}`;
+    return `${roasPrefix}${base}${acctPart} | MEGATOOL | ${datePart}`;
+  }, [nbForm.campaignName, selectedFbAd, selectedAccountName, derivedIsRoas]);
+  const binomCampaignNameEffective = binomCampaignName || binomCampaignNameDefault;
 
   const isLoading = status === 'loading';
 
@@ -128,67 +254,245 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
       newAmoChannel: newAmoChannel.trim() || 'same',
       newBinomGroup,
       tracker,
-      isRoas,
+      // isRoas now derives from the bid-type picker in the pre-Binom section
+      // above. TARGET_ROAS → true, everything else → false. The old checkbox
+      // is gone; the workflow keeps its existing isRoas-driven URL logic.
+      isRoas: derivedIsRoas,
+      // Send the effective name (user override or auto-derived MEGATOOL prefix).
+      // Empty string only if there's no FB context yet, which shouldn't happen.
+      binomCampaignName: binomCampaignNameEffective,
+      // Tracking event picked above drives the click URL's `event=` param.
+      // Independent from isRoas so complete_payment + MAX_CONVERSION works.
+      ...(pickedEvent?.eventType ? { nbEventType: pickedEvent.eventType } : {}),
     });
   };
 
   const handleReset = () => {
     resetBinomOffer();
-    setTracker(detectedTracker ?? DEFAULT_BINOM_TRACKER);
-    setTrackerAutoSet(detectedTracker !== null);
-    setNewAmoDomain('same');
-    setNewAmoChannel('same');
-    setNewBinomGroup('same');
-    setIsRoas(false);
+    resetBinomForm();
+    // Preserve auto-detect on reset — trackers should re-derive from the ad.
+    if (detectedTracker) {
+      setBinomForm({ tracker: detectedTracker, trackerAutoSet: true });
+    }
     setShowRaw(false);
   };
 
   return (
-    <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
+    <div className="flex flex-col h-full w-full gap-4 p-4 bg-slate-100 overflow-y-auto">
+      <div className="flex w-full gap-4">
       {/* LEFT — form */}
-      <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-bold text-xl">→ Create Binom Offer</h2>
+      <div className="flex-1 bg-white rounded-xl border p-3 shadow-sm">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-bold text-lg">→ Create Binom Offer</h2>
           <Button variant="outline" size="sm" onClick={onClose}>← Назад</Button>
         </div>
 
-        {/* Selected ad summary */}
-        <section className="mb-5 border rounded-lg bg-slate-50 p-3 flex gap-3">
+        {/* Selected ad summary — compact single row */}
+        <section className="mb-3 border rounded-lg bg-slate-50 p-2 flex gap-2 items-center">
           {selectedFbAd.thumbnailUrl ? (
             <img
               src={selectedFbAd.thumbnailUrl}
               alt=""
-              className="h-16 w-16 rounded object-cover shrink-0"
+              className="h-10 w-10 rounded object-cover shrink-0"
             />
           ) : (
-            <div className="h-16 w-16 rounded bg-slate-200 shrink-0 flex items-center justify-center text-[10px] text-slate-500">
-              no image
+            <div className="h-10 w-10 rounded bg-slate-200 shrink-0 flex items-center justify-center text-[10px] text-slate-500">
+              no img
             </div>
           )}
-          <div className="flex-1 min-w-0 text-xs space-y-0.5">
+          <div className="flex-1 min-w-0 text-xs">
             <div className="font-semibold text-slate-800 truncate" title={selectedFbAd.adName}>
               {selectedFbAd.adName}
             </div>
-            <div className="text-slate-600 truncate" title={selectedFbAd.adsetName}>
-              <span className="text-slate-400">Adset:</span> {selectedFbAd.adsetName}
-            </div>
-            <div className="text-slate-600 truncate" title={selectedFbAd.campaignName}>
-              <span className="text-slate-400">Campaign:</span> {selectedFbAd.campaignName}
+            <div className="text-slate-500 truncate">
+              <span className="text-slate-400">Adset:</span> {selectedFbAd.adsetName} · <span className="text-slate-400">Campaign:</span> {selectedFbAd.campaignName}
             </div>
             <a
               href={selectedFbAd.trackingUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:underline truncate block font-mono text-[11px]"
+              className="text-blue-600 hover:underline truncate block font-mono text-[10px]"
               title={selectedFbAd.trackingUrl}
             >
-              {selectedFbAd.trackingUrl || '(no tracking URL)'}
+              {selectedFbAd.trackingUrl
+                ? selectedFbAd.trackingUrl.split('&')[0]
+                : '(no tracking URL)'}
             </a>
           </div>
         </section>
 
         {/* Form */}
-        <section className="space-y-4">
+        <section className="space-y-2">
+          {/* ── Pre-Binom NB choices — Account → Event → Bid Type. The bid
+              type here drives whether the resulting Binom URL is a ROAS URL
+              (event=complete_payment + _roas suffix). No more Binom checkbox. */}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">
+              NB Account *
+              {nbAccountsStatus === 'loading' && <span className="ml-2 text-xs text-blue-600 normal-case">loading accounts…</span>}
+              {nbAccountsStatus === 'success' && <span className="ml-2 text-xs text-slate-400 normal-case">({nbAccountsList.length})</span>}
+            </label>
+            <Combobox
+              value={selectedAccountName}
+              onChange={setSelectedAccountName}
+              options={nbAccountNames}
+              placeholder={nbAccountsStatus === 'loading' ? 'Loading NB accounts…' : 'Type to search 428+ accounts…'}
+              inputClassName="text-sm rounded-md bg-white px-2"
+              minSearchChars={1}
+            />
+            {nbAccountsStatus === 'error' && (
+              <div className="mt-1 flex items-center gap-2 text-xs text-red-600">
+                <span>Failed to load NB accounts: {nbAccountsError ?? 'unknown'}</span>
+                <button
+                  type="button"
+                  onClick={() => void fetchNbAccounts()}
+                  className="underline hover:no-underline"
+                >
+                  retry
+                </button>
+              </div>
+            )}
+
+            {selectedAccount && (
+              <div className="mt-2 border rounded-md bg-slate-50 p-2 text-xs">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-semibold uppercase tracking-wide text-slate-500">Tracking event</span>
+                  <span className={`text-[10px] font-semibold uppercase rounded px-1.5 py-0.5 ${pickedEventSupportsRoas ? 'bg-purple-100 text-purple-800' : 'bg-blue-100 text-blue-800'}`}>
+                    {pickedEvent?.eventType ?? '—'}
+                  </span>
+                </div>
+                {nbEventsStatus === 'loading' && (
+                  <div className="text-slate-500 italic">Завантажую події акаунту…</div>
+                )}
+                {nbEventsStatus === 'error' && (
+                  <div className="text-red-600">
+                    Не вдалося завантажити події: {nbEventsError ?? 'unknown'}{' '}
+                    <button
+                      type="button"
+                      onClick={() => void fetchNbEvents(selectedAccount.id)}
+                      className="underline hover:no-underline"
+                    >
+                      повторити
+                    </button>
+                  </div>
+                )}
+                {nbEventsStatus === 'success' && (!nbEvents || nbEvents.length === 0) && (
+                  <div className="text-amber-700">
+                    В акаунті немає подій — використаю fallback trackingId на сервері.
+                  </div>
+                )}
+                {nbEventsStatus === 'success' && nbEvents && nbEvents.length > 0 && (
+                  <div className="space-y-1">
+                    <select
+                      value={pickedEvent?.id ?? ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setManualEventId(val === autoPickedEvent?.id ? null : val);
+                      }}
+                      className="w-full rounded-md border border-input bg-white px-2 py-1 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                    >
+                      {nbEvents.map((e) => (
+                        <option key={e.id} value={e.id}>
+                          {e.name}{e.eventType ? ` · ${e.eventType}` : ''}{e.id === autoPickedEvent?.id ? ' (auto)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {pickedEvent && (
+                      <div className="font-mono text-[11px] text-slate-500 break-all">
+                        id: {pickedEvent.id}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Bid Type *</span>
+              {!pickedEventSupportsRoas && (
+                <span className="text-[10px] normal-case text-slate-400">
+                  TARGET_ROAS доступний лише для <code>complete_payment</code>
+                </span>
+              )}
+            </label>
+            <div className="mt-1 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setBidType('MAX_CONVERSION')}
+                className={`rounded-md border px-4 py-1.5 text-sm transition min-w-[7rem] ${
+                  bidType === 'MAX_CONVERSION'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
+              >
+                Max Conversions
+              </button>
+              <button
+                type="button"
+                onClick={() => setBidType('TARGET_CPA')}
+                className={`rounded-md border px-4 py-1.5 text-sm transition min-w-[7rem] ${
+                  bidType === 'TARGET_CPA'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
+              >
+                Target CPA
+              </button>
+              {pickedEventSupportsRoas && (
+                <button
+                  type="button"
+                  onClick={() => setBidType('TARGET_ROAS')}
+                  className={`rounded-md border px-4 py-1.5 text-sm transition min-w-[7rem] ${
+                    bidType === 'TARGET_ROAS'
+                      ? 'border-purple-600 bg-purple-50 text-purple-900 font-semibold'
+                      : 'border-input bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  Target ROAS
+                </button>
+              )}
+            </div>
+          </div>
+
+          {bidType === 'TARGET_CPA' && (
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">Bid Rate (Target CPA, USD) *</label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
+                <Input
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={targetCpaDollars}
+                  onChange={(e) => setTargetCpaDollars(Number(e.target.value))}
+                  placeholder="5"
+                  className="pl-6"
+                />
+              </div>
+            </div>
+          )}
+
+          {bidType === 'TARGET_ROAS' && (
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">ROAS Target (%) *</label>
+              <div className="relative">
+                <Input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  step={1}
+                  value={roasPercent}
+                  onChange={(e) => setRoasPercent(Number(e.target.value))}
+                  placeholder="120"
+                  className="pr-8"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">%</span>
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
               <span>Binom Tracker *</span>
@@ -211,36 +515,32 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
                 <option key={t} value={t}>{t}</option>
               ))}
             </select>
-            <p className="text-xs text-slate-600 mt-1">
-              {detectedTracker
-                ? <>Визначено за AMO-доменом джерела → <code>{detectedTracker}</code>. За потреби можна змінити вручну.</>
-                : <>AMO-домен не знайдено серед відомих трекерів — обери вручну.</>}
-            </p>
+            {!detectedTracker && (
+              <p className="text-xs text-amber-700 mt-1">AMO-домен не знайдено — обери вручну.</p>
+            )}
           </div>
 
-          <div>
-            <label className="text-xs font-medium uppercase text-slate-500">New AMO Domain *</label>
-            <Combobox
-              value={newAmoDomain}
-              onChange={setNewAmoDomain}
-              options={[...BINOM_AMO_DOMAINS]}
-              placeholder="Клікни, щоб обрати, або введи…"
-              inputClassName="text-sm rounded-md bg-white px-2"
-            />
-            <p className="text-xs text-slate-600 mt-1">
-              <code>same</code> залишає AMO-домен як в оригінальному оголошенні.
-            </p>
-          </div>
-
-          <div>
-            <label className="text-xs font-medium uppercase text-slate-500">New AMO Channel *</label>
-            <Input
-              value={newAmoChannel}
-              onChange={(e) => setNewAmoChannel(e.target.value)}
-              placeholder="напр. ch12345 або 'same'"
-            />
-            <p className="text-xs text-slate-600 mt-1">
-              <code>same</code> залишає channel як в оригінальному оголошенні.
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">New AMO Domain *</label>
+              <Combobox
+                value={newAmoDomain}
+                onChange={setNewAmoDomain}
+                options={[...BINOM_AMO_DOMAINS]}
+                placeholder="Клікни або введи…"
+                inputClassName="text-sm rounded-md bg-white px-2"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">New AMO Channel *</label>
+              <Input
+                value={newAmoChannel}
+                onChange={(e) => setNewAmoChannel(e.target.value)}
+                placeholder="напр. ch12345 або 'same'"
+              />
+            </div>
+            <p className="text-xs text-slate-600 col-span-2 -mt-1">
+              <code>same</code> залишає AMO-домен / channel як в оригінальному оголошенні.
             </p>
           </div>
 
@@ -258,19 +558,32 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               placeholder="Клікни, щоб обрати, або введи…"
               inputClassName="text-sm rounded-md bg-white px-2"
             />
-            <p className="text-xs text-slate-600 mt-1">
-              Відфільтровано до груп на <code>{tracker}</code>. <code>same</code> залишить групу з оригінального оголошення.
-            </p>
           </div>
 
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={isRoas}
-              onChange={(e) => setIsRoas(e.target.checked)}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Binom Campaign Name</span>
+              {!binomCampaignName && (
+                <span className="text-[10px] normal-case text-slate-400">
+                  auto: <code>MEGATOOL | …</code>
+                </span>
+              )}
+            </label>
+            <Input
+              value={binomCampaignNameEffective}
+              onChange={(e) => setBinomCampaignName(e.target.value)}
+              placeholder="MEGATOOL | Housing Help 2"
             />
-ROAS кампанія
-          </label>
+          </div>
+
+          {/* ROAS is derived from the Bid Type picker above (TARGET_ROAS).
+              A read-only indicator here mirrors that so operators see the
+              same context next to the submit button. */}
+          {derivedIsRoas && (
+            <div className="text-xs font-semibold uppercase tracking-wide rounded px-2 py-1 bg-purple-100 text-purple-800 inline-block">
+              ROAS run (Binom URL матиме _roas + event=complete_payment)
+            </div>
+          )}
 
           <div className="flex gap-2 pt-2">
             <Button
@@ -353,21 +666,21 @@ ROAS кампанія
                 )}
               </div>
 
-              {onOpenNbCampaign && (
-                <div className="pt-1">
-                  <Button
-                    onClick={onOpenNbCampaign}
-                    disabled={!selectedFbAd}
-                    className="w-full"
-                  >
-                    → Create NB Campaign
-                  </Button>
-                </div>
-              )}
             </>
           )}
         </div>
       </div>
+      </div>
+
+      {/* Embedded NB Campaign flow — appears below the Binom section once the
+          Binom offer has been created. Shares the same store-backed form state,
+          so this is a single continuous workflow across two ordered actions. */}
+      {result && (
+        <MegatoolCreateNbCampaignPage
+          embedded
+          onClose={onClose}
+        />
+      )}
     </div>
   );
 };

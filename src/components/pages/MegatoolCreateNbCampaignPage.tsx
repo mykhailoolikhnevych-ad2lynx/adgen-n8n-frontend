@@ -77,6 +77,10 @@ function extractBinomCampaignBase(name: string | null | undefined): string {
 
 interface Props {
   onClose: () => void;
+  /** When true, render only the form + result columns (no outer bg-slate-100
+   *  wrapper, no back button, no h2). Used when the Binom page embeds this
+   *  page inline so the operator sees both flows on one screen. */
+  embedded?: boolean;
 }
 
 interface AdFormState {
@@ -126,7 +130,7 @@ function buildInitialAdStates(ads: SelectedFbAd[]): AdFormState[] {
   }));
 }
 
-export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
+export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Props) => {
   const selectedFbAds = useAppStore((s) => s.selectedFbAds);
   const selectedFbAd = selectedFbAds[0] ?? null;
   const binomOfferResult = useAppStore((s) => s.binomOfferResult);
@@ -171,25 +175,43 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   }, [binomCampaignBase, selectedFbAd]);
   const defaultAdStates = useMemo(() => buildInitialAdStates(selectedFbAds), [selectedFbAds]);
 
-  const [selectedAccountName, setSelectedAccountName] = useState('');
-  const [campaignName, setCampaignName] = useState(defaultCampaignName);
-  const [brandName, setBrandName] = useState(defaultBrandName);
-  const [callToAction, setCallToAction] = useState<string>('Learn More');
-  const [budget, setBudget] = useState(10);
-  // ROAS target as a percentage (120 → NB gets roas=1.2). Only used when
-  // the source Binom offer was flagged ROAS (isRoas === true).
-  const [roasPercent, setRoasPercent] = useState(120);
-  // Non-ROAS bidType. NB requires bidRate only for TARGET_CPA (in cents).
-  const [bidType, setBidType] = useState<'MAX_CONVERSION' | 'TARGET_CPA'>('MAX_CONVERSION');
-  const [targetCpaDollars, setTargetCpaDollars] = useState(5);
-  // Manual tracking-event override. When null, we use the auto-picked event
-  // (click_button / complete_payment). Reset whenever the operator switches
-  // NB account so we don't carry a stale id.
-  const [manualEventId, setManualEventId] = useState<string | null>(null);
-  const [startDate, setStartDate] = useState<StartDate>('now');
-  const [startTimezone, setStartTimezone] = useState<StartTimezone>('PDT');
+  // Form state hoisted to the store so tab-switches don't wipe user picks.
+  // Empty-string campaignName/brandName means "not yet touched" — we fall
+  // back to the derived defaults below at render time and seed on first mount.
+  const nbForm = useAppStore((s) => s.megatoolNbForm);
+  const setNbForm = useAppStore((s) => s.setNbForm);
+  const resetNbForm = useAppStore((s) => s.resetNbForm);
+  const selectedAccountName = nbForm.selectedAccountName;
+  const campaignName = nbForm.campaignName || defaultCampaignName;
+  const brandName = nbForm.brandName || defaultBrandName;
+  const callToAction = nbForm.callToAction;
+  const budget = nbForm.budget;
+  const roasPercent = nbForm.roasPercent;
+  const bidType = nbForm.bidType;
+  const targetCpaDollars = nbForm.targetCpaDollars;
+  const manualEventId = nbForm.manualEventId;
+  const startDate = nbForm.startDate;
+  const startTimezone = nbForm.startTimezone;
+  const adStates = nbForm.adStates;
+  const setSelectedAccountName = (v: string) => setNbForm({ selectedAccountName: v });
+  const setCampaignName = (v: string) => setNbForm({ campaignName: v });
+  const setBrandName = (v: string) => setNbForm({ brandName: v });
+  const setCallToAction = (v: string) => setNbForm({ callToAction: v });
+  const setBudget = (v: number) => setNbForm({ budget: v });
+  const setRoasPercent = (v: number) => setNbForm({ roasPercent: v });
+  const setBidType = (v: 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS') => setNbForm({ bidType: v });
+  const setTargetCpaDollars = (v: number) => setNbForm({ targetCpaDollars: v });
+  const setManualEventId = (v: string | null) => setNbForm({ manualEventId: v });
+  const setStartDate = (v: StartDate) => setNbForm({ startDate: v });
+  const setStartTimezone = (v: StartTimezone) => setNbForm({ startTimezone: v });
+  const setAdStates = (
+    updater: AdFormState[] | ((prev: AdFormState[]) => AdFormState[]),
+  ) => setNbForm({
+    adStates: typeof updater === 'function'
+      ? (updater as (p: AdFormState[]) => AdFormState[])(nbForm.adStates)
+      : updater,
+  });
   const [showRaw, setShowRaw] = useState(false);
-  const [adStates, setAdStates] = useState<AdFormState[]>(defaultAdStates);
 
   // Resync per-ad state if the selection changes after mount (e.g. user added
   // or removed an ad in the FB picker and came back). Keeps already-edited
@@ -232,6 +254,10 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   const isLoading = status === 'loading';
 
   if (!selectedFbAd || !binomOfferResult) {
+    // In embedded mode the parent Binom page already handles the "no result
+    // yet" case (it hides this component until binomOfferResult exists), so
+    // we render nothing to avoid a duplicate empty-state card.
+    if (embedded) return null;
     return (
       <div className="flex h-full w-full items-center justify-center bg-slate-100 p-6">
         <div className="bg-white rounded-xl border p-6 shadow-sm text-slate-600 text-sm max-w-md text-center">
@@ -276,6 +302,18 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
   const isManualOverride = !!manualEventId && pickedEvent?.id === manualEventId
     && pickedEvent.id !== autoPickedEvent?.id;
 
+  // Bid type ↔ event coupling. TARGET_ROAS is only valid when the picked event
+  // supports revenue signals (complete_payment). If the operator switches to a
+  // click-only event while TARGET_ROAS was selected, downgrade to MAX_CONVERSION
+  // rather than silently sending an invalid combination to NB.
+  const pickedEventSupportsRoas = pickedEvent?.eventType === 'complete_payment';
+  useEffect(() => {
+    if (!pickedEventSupportsRoas && bidType === 'TARGET_ROAS') {
+      setBidType('MAX_CONVERSION');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickedEventSupportsRoas]);
+
   const canSubmit = !isLoading
     && !!selectedAccount
     && !hasFieldErrors
@@ -308,9 +346,16 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
       // Conversion event resolved from the account; workflow falls back to
       // DEFAULT_TRACKING_ID when this is missing.
       ...(pickedEvent?.id ? { trackingId: pickedEvent.id } : {}),
-      // ROAS: send double (percentage/100). Only when the offer is ROAS and
-      // the value is in-range; otherwise the workflow stays on MAX_CONVERSION.
-      ...(isRoas && roasPercent > 0 ? { roas: roasPercent / 100 } : {}),
+      // Bid strategy is now driven entirely by the local bidType picker (no
+      // more Binom-side isRoas coupling). Workflow priority: TARGET_ROAS if
+      // roas > 0, else TARGET_CPA if bidRate > 0, else MAX_CONVERSION.
+      bidType,
+      ...(bidType === 'TARGET_ROAS' && roasPercent > 0
+        ? { roas: roasPercent / 100 }
+        : {}),
+      ...(bidType === 'TARGET_CPA' && targetCpaDollars > 0
+        ? { bidRate: Math.round(targetCpaDollars * 100) }
+        : {}),
       ads,
       adsetSizes,
     });
@@ -318,26 +363,28 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
 
   const handleReset = () => {
     resetNbCampaign();
-    setSelectedAccountName('');
-    setCampaignName(defaultCampaignName);
-    setBrandName(defaultBrandName);
-    setCallToAction('Learn More');
-    setBudget(10);
-    setRoasPercent(120);
-    setManualEventId(null);
-    setStartDate('now');
-    setStartTimezone('PDT');
-    setAdStates(defaultAdStates);
+    resetNbForm();
+    // Re-seed the per-ad rows from the current FB selection so the form is
+    // immediately usable after reset.
+    setNbForm({ adStates: defaultAdStates });
     setShowRaw(false);
   };
 
   return (
-    <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
+    <div className={embedded
+      ? 'flex w-full gap-4'
+      : 'flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden'}
+    >
       {/* LEFT — form */}
-      <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+      <div className={embedded
+        ? 'flex-1 bg-white rounded-xl border p-4 shadow-sm'
+        : 'flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm'}
+      >
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-xl">→ Create NB Campaign</h2>
-          <Button variant="outline" size="sm" onClick={onClose}>← Назад</Button>
+          {!embedded && (
+            <Button variant="outline" size="sm" onClick={onClose}>← Назад</Button>
+          )}
         </div>
 
         {/* Adset split preview */}
@@ -360,6 +407,7 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
 
         {/* Shared campaign fields */}
         <section className="space-y-4">
+          {!embedded && (
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
               NB Account *
@@ -465,6 +513,7 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
               </div>
             )}
           </div>
+          )}
 
           <div>
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
@@ -529,7 +578,89 @@ export const MegatoolCreateNbCampaignPage = ({ onClose }: Props) => {
             </p>
           </div>
 
-          {isRoas && (
+          {!embedded && (
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+              <span>Bid Type *</span>
+              {!pickedEventSupportsRoas && (
+                <span className="text-[10px] normal-case text-slate-400">
+                  TARGET_ROAS доступний лише для <code>complete_payment</code>
+                </span>
+              )}
+            </label>
+            <div className="mt-1 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setBidType('MAX_CONVERSION')}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                  bidType === 'MAX_CONVERSION'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
+              >
+                Max Conversions
+              </button>
+              <button
+                type="button"
+                onClick={() => setBidType('TARGET_CPA')}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                  bidType === 'TARGET_CPA'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
+              >
+                Target CPA
+              </button>
+              {pickedEventSupportsRoas && (
+                <button
+                  type="button"
+                  onClick={() => setBidType('TARGET_ROAS')}
+                  className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                    bidType === 'TARGET_ROAS'
+                      ? 'border-purple-600 bg-purple-50 text-purple-900 font-semibold'
+                      : 'border-input bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  Target ROAS
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-slate-600 mt-1">
+              <code>MAX_CONVERSION</code> — NB сам обирає ставку.{' '}
+              <code>TARGET_CPA</code> — задаєш ціну за конверсію.{' '}
+              {pickedEventSupportsRoas && <><code>TARGET_ROAS</code> — задаєш цільовий ROAS у %.</>}
+            </p>
+          </div>
+          )}
+
+          {!embedded && bidType === 'TARGET_CPA' && (
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
+                <span>Bid Rate (Target CPA, USD) *</span>
+                <span className="text-[10px] normal-case text-blue-700 font-semibold">
+                  NB отримає bidRate у центах
+                </span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
+                <Input
+                  type="number"
+                  min={0.01}
+                  step={0.01}
+                  value={targetCpaDollars}
+                  onChange={(e) => setTargetCpaDollars(Number(e.target.value))}
+                  placeholder="5"
+                  className="pl-6"
+                />
+              </div>
+              <p className="text-xs text-slate-600 mt-1">
+                Цільова ціна за одну конверсію. Напр. <strong>$5.00</strong> → NB отримає{' '}
+                <code>bidRate={Math.round(targetCpaDollars * 100)}</code> (центи).
+              </p>
+            </div>
+          )}
+
+          {!embedded && bidType === 'TARGET_ROAS' && (
             <div>
               <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
                 <span>ROAS Target (%) *</span>

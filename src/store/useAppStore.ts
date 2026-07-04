@@ -273,6 +273,15 @@ export interface CreateBinomOfferInput {
   newBinomGroup: string;
   tracker: string;
   isRoas?: boolean;
+  /** Operator-provided override for the resulting Binom campaign name.
+   *  When omitted or empty, the workflow synthesizes from template.name +
+   *  MEGATOOL suffix + today's date (legacy behaviour). */
+  binomCampaignName?: string;
+  /** Selected NB tracking event's eventType (e.g. 'click_button',
+   *  'complete_payment'). Drives the `event=` URL param on the generated
+   *  Binom campaign click URL. When omitted, workflow falls back to isRoas
+   *  (true → complete_payment, false → click_button). */
+  nbEventType?: string;
 }
 
 // MEGATOOL — NB conversion event (from GET /event/getList/{adAccountId}).
@@ -344,6 +353,11 @@ export interface CreateNbCampaignInput {
   adsetSizes: number[];
   trackingId?: string;
   roas?: number | null;
+  /** Non-ROAS bid type. When ROAS is on the workflow ignores this and uses
+   *  TARGET_ROAS. Defaults to MAX_CONVERSION on the workflow side. */
+  bidType?: 'MAX_CONVERSION' | 'TARGET_CPA';
+  /** Required only when bidType = TARGET_CPA. Value in NB API is cents. */
+  bidRate?: number | null;
 }
 
 interface AppState {
@@ -462,6 +476,40 @@ interface AppState {
   nbEventsAccountId: string | null;
   nbEventsStatus: ArticleStatus;
   nbEventsError: string | null;
+  /** Persistent Binom-offer form state. Hoisted out of the page so switching
+   *  tabs mid-flow doesn't reset the operator's picks. Reset only via the
+   *  page's Reset button or when a new FB ad is selected. */
+  megatoolBinomForm: {
+    tracker: string;
+    trackerAutoSet: boolean;
+    newAmoDomain: string;
+    newAmoChannel: string;
+    newBinomGroup: string;
+    isRoas: boolean;
+    /** Operator-editable Binom campaign name. Empty string means "use the
+     *  default derivation" (frontend prefills `MEGATOOL | <FB ad name>`).
+     *  When present, sent through as a verbatim override — the workflow
+     *  uses it instead of synthesizing from the cloned template. */
+    binomCampaignName: string;
+  };
+  /** Persistent NB-campaign form state. Same rationale as megatoolBinomForm.
+   *  campaignName / brandName default from binomOfferResult; empty string means
+   *  "not yet touched by user, use default". Per-ad edits stored in adStates
+   *  keyed by adId so they survive re-orderings in the FB picker. */
+  megatoolNbForm: {
+    selectedAccountName: string;
+    campaignName: string;
+    brandName: string;
+    callToAction: string;
+    budget: number;
+    roasPercent: number;
+    bidType: 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
+    targetCpaDollars: number;
+    manualEventId: string | null;
+    startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+    startTimezone: 'PDT' | 'EEST';
+    adStates: { adId: string; headline: string; description: string }[];
+  };
   rsocBundle: RsocBundle | null;
   rsocAudiencesStatus: ArticleStatus;
   rsocAudiencesError: string | null;
@@ -498,6 +546,10 @@ interface AppState {
   createNbCampaign: (input: CreateNbCampaignInput) => Promise<void>;
   fetchNbAccounts: () => Promise<void>;
   fetchNbEvents: (adAccountId: string) => Promise<void>;
+  setBinomForm: (patch: Partial<AppState['megatoolBinomForm']>) => void;
+  resetBinomForm: () => void;
+  setNbForm: (patch: Partial<AppState['megatoolNbForm']>) => void;
+  resetNbForm: () => void;
   generateRsocAudiences: (input: RsocAudiencesInput) => Promise<void>;
   generateRsocHeadlines: (pickedIds: string[]) => Promise<void>;
   toggleRsocAudienceTranslation: (segmentId: string) => Promise<void>;
@@ -918,6 +970,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   nbCampaignStatus: 'idle', nbCampaignResult: null, nbCampaignError: null,
   nbAccountsStatus: 'idle', nbAccountsList: [], nbAccountsError: null,
   nbEvents: null, nbEventsAccountId: null, nbEventsStatus: 'idle', nbEventsError: null,
+  megatoolBinomForm: {
+    // Defaults mirror the previous page-local useState values so first-time
+    // behaviour is unchanged; the page's own auto-detect useEffect still
+    // overwrites `tracker` from the source ad's URL when possible.
+    tracker: 'ilab.nnctrack.com',
+    trackerAutoSet: false,
+    newAmoDomain: 'same',
+    newAmoChannel: 'same',
+    newBinomGroup: 'same',
+    isRoas: false,
+    binomCampaignName: '',
+  },
+  megatoolNbForm: {
+    selectedAccountName: '',
+    campaignName: '',
+    brandName: '',
+    callToAction: 'Learn More',
+    budget: 10,
+    roasPercent: 120,
+    bidType: 'MAX_CONVERSION',
+    targetCpaDollars: 5,
+    manualEventId: null,
+    startDate: 'now',
+    startTimezone: 'PDT',
+    adStates: [],
+  },
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
@@ -1322,6 +1400,39 @@ export const useAppStore = create<AppState>((set, get) => ({
   openBinomOffer: () => set({ binomOfferOpen: true }),
   closeBinomOffer: () => set({ binomOfferOpen: false }),
   resetBinomOffer: () => set({ binomOfferStatus: 'idle', binomOfferResult: null, binomOfferError: null }),
+  setBinomForm: (patch) => set((state) => ({
+    megatoolBinomForm: { ...state.megatoolBinomForm, ...patch },
+  })),
+  resetBinomForm: () => set({
+    megatoolBinomForm: {
+      tracker: 'ilab.nnctrack.com',
+      trackerAutoSet: false,
+      newAmoDomain: 'same',
+      newAmoChannel: 'same',
+      newBinomGroup: 'same',
+      isRoas: false,
+      binomCampaignName: '',
+    },
+  }),
+  setNbForm: (patch) => set((state) => ({
+    megatoolNbForm: { ...state.megatoolNbForm, ...patch },
+  })),
+  resetNbForm: () => set({
+    megatoolNbForm: {
+      selectedAccountName: '',
+      campaignName: '',
+      brandName: '',
+      callToAction: 'Learn More',
+      budget: 10,
+      roasPercent: 120,
+      bidType: 'MAX_CONVERSION',
+      targetCpaDollars: 5,
+      manualEventId: null,
+      startDate: 'now',
+      startTimezone: 'PDT',
+      adStates: [],
+    },
+  }),
 
   // MEGATOOL — Create NB Campaign sub-tab visibility + run state.
   openNbCampaign: () => set({ nbCampaignOpen: true }),
@@ -1353,6 +1464,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         newBinomGroup: input.newBinomGroup,
         tracker: input.tracker,
         isRoas: input.isRoas ?? false,
+        // Empty string means "no override" — the workflow keeps its
+        // template-based default when this is missing/blank.
+        ...(input.binomCampaignName && input.binomCampaignName.trim()
+          ? { binomCampaignName: input.binomCampaignName.trim() }
+          : {}),
+        ...(input.nbEventType ? { nbEventType: input.nbEventType } : {}),
       };
       console.log('[createBinomOffer] request payload:', payload);
       const { data } = await axios.post(WEBHOOKS.binomOfferCreator, payload, { timeout: 180_000 });
