@@ -281,7 +281,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     <div className="flex flex-col h-full w-full gap-4 p-4 bg-slate-100 overflow-y-auto">
       <div className="flex w-full gap-4">
       {/* LEFT — form */}
-      <div className="flex-1 max-w-3xl bg-white rounded-xl border p-3 shadow-sm">
+      <div className="flex-1 bg-white rounded-xl border p-3 shadow-sm">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-bold text-lg">→ Create Binom Offer</h2>
           <Button variant="outline" size="sm" onClick={onClose}>← Назад</Button>
