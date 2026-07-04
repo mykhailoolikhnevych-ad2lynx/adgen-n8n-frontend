@@ -314,7 +314,9 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               className="text-blue-600 hover:underline truncate block font-mono text-[10px]"
               title={selectedFbAd.trackingUrl}
             >
-              {selectedFbAd.trackingUrl || '(no tracking URL)'}
+              {selectedFbAd.trackingUrl
+                ? selectedFbAd.trackingUrl.split('&')[0]
+                : '(no tracking URL)'}
             </a>
           </div>
         </section>
