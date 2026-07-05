@@ -215,14 +215,19 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   //  - "| NB |" marker sits between base and the account so tracker listings
   //    stay self-describing even for cross-account operators.
   const binomCampaignNameDefault = useMemo(() => {
+    // Prefer the source FB campaign name (e.g. "Amo | Centrelink Home Buying
+    // Programs | AU | 25.06 AddToCart") — that's what operators recognize in
+    // Binom listings. Fall back through NB campaign name → creative headline
+    // → ad name only if the FB campaign name is empty.
+    const fbCampaign = selectedFbAd?.campaignName?.trim() || '';
     const nbName = nbForm.campaignName.trim();
     const fbFallback = selectedFbAd?.creativeTitle || selectedFbAd?.adName || '';
-    const base = nbName || fbFallback;
+    const base = fbCampaign || nbName || fbFallback;
     if (!base) return '';
     const roasPrefix = derivedIsRoas ? 'ROAS | ' : '';
     const acctPart = selectedAccountName
-      ? ` | NB | ${selectedAccountName}`
-      : ' | NB';
+      ? ` | US | NB | ${selectedAccountName}`
+      : ' | US | NB';
     const now = new Date();
     const dd = String(now.getDate()).padStart(2, '0');
     const mm = String(now.getMonth() + 1).padStart(2, '0');
@@ -465,8 +470,11 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
                   type="number"
                   min={0.01}
                   step={0.01}
-                  value={targetCpaDollars}
-                  onChange={(e) => setTargetCpaDollars(Number(e.target.value))}
+                  value={targetCpaDollars === 0 ? '' : targetCpaDollars}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setTargetCpaDollars(raw === '' ? 0 : Number(raw));
+                  }}
                   placeholder="5"
                   className="pl-6"
                 />
@@ -483,8 +491,11 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
                   min={1}
                   max={1000}
                   step={1}
-                  value={roasPercent}
-                  onChange={(e) => setRoasPercent(Number(e.target.value))}
+                  value={roasPercent === 0 ? '' : roasPercent}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    setRoasPercent(raw === '' ? 0 : Number(raw));
+                  }}
                   placeholder="120"
                   className="pr-8"
                 />
