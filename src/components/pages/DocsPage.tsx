@@ -16,7 +16,7 @@ type Section = 'kb' | 'prompts';
 // Knowledge Base — typed content model + renderer.
 // ---------------------------------------------------------------------------
 
-type ModuleId = 'keywords' | 'angles' | 'article' | 'creatives';
+type ModuleId = 'keywords' | 'angles' | 'article' | 'creatives' | 'creative-gen' | 'creative-edit' | 'fb-to-nb';
 
 type Block =
   | { kind: 'p'; text: string }
@@ -1602,7 +1602,744 @@ Examine ONLY the image and text rendered on it.`,
   ],
 };
 
-const MODULES: KBModule[] = [KEYWORDS_MODULE, ANGLES_MODULE, ARTICLE_MODULE, CREATIVES_MODULE];
+// ---------- CREATIVE GEN module ----------
+
+const CREATIVE_GEN_MODULE: KBModule = {
+  id: 'creative-gen',
+  label: 'Creative Gen',
+  tagline: 'Швидка генерація креативів без пайплайна: вручну впиши Hook / Accent / CTA, обери модель і пресети — і одразу отримай батч банерів. Ідеально під готові тексти або A/B по візуалу.',
+  sections: [
+    {
+      id: 'cg-overview',
+      label: 'Огляд',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Creative Gen — це shortcut повного пайплайна Creatives. Ти пропускаєш Keywords → Angles → Concepts і одразу віддаєш моделі готові Hook / Accent / CTA. За кулісами працює той самий Visual Director + рендер у 4 пресети, але без верхньої частини (без Marketing Analyst, без Strategist, без Copywriter). Немає article, немає angle — лише текст, який ти написав.',
+        },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'Fill Hook / Accent / CTA', text: 'Впиши три рядки вручну. Hook — обов\'язковий (кнопка згасне, якщо порожній). Accent / CTA — опційні.' },
+            { title: 'Pick image settings', text: 'Той самий Image Gen Settings, що у вкладці Creatives: модель (Nano banana / GPT-image / Seedream), aspect ratio, ad language, і які пресети зі списку A/B/C/D + Custom + Saved запускати.' },
+            { title: 'Generate Creative Batch', text: 'Кнопка каже, скільки пресетів у батчі: наприклад "Generate Creative Batch (4)". Тиснеш — n8n workflow починає рендер.' },
+            { title: 'Отримуєш батч', text: 'Той самий формат, що у вкладці Creatives: набір креативних варіантів під кожен активний пресет. ZIP / Telegram / lightbox — усе стандартне.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'Файли позначаються «creativeonly»',
+          text: 'У імені файлу креативу сегмент, який у повному пайплайні містить назву кампанії / кут / формулу, замінюється на «creativeonly». Так у Ads Manager і Dashboard видно, що батч зроблений через Creative Gen, а не через повний потік.',
+        },
+        {
+          kind: 'warn',
+          title: 'Що Creative Gen НЕ робить',
+          text: 'Не пропонує тобі кути, не пише хуки за тебе, не перевіряє тексти на compliance перед рендером. Це саме інструмент виконавця, не стратега. Якщо треба ідеї — йди у вкладку Creatives (4 колонки).',
+        },
+      ],
+    },
+    {
+      id: 'cg-inputs',
+      label: 'Поля, які ти заповнюєш',
+      blocks: [
+        { kind: 'h3', text: 'Creative text (обов\'язкова частина)' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Hook *', v: 'Головний рядок банера, 40–55 символів (макс 60). Обов\'язковий — без нього кнопка Generate згасне.' },
+            { k: 'Accent', v: 'Другий, менший рядок під хуком. 25–35 символів (макс 40). Опційний.' },
+            { k: 'CTA', v: 'Кнопка / підпис-заклик: Learn More / Read More / Discover More / Find Out / Explore. 8–12 символів. Опційний.' },
+          ],
+        },
+        { kind: 'h3', text: 'Image Gen Settings (спільна панель)' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Модель', v: 'Nano banana 2 / pro (gemini-3.1-flash-image / gemini-3-pro-image-preview), GPT-image2 (gpt-5.4-image-2) або Seedream 4.5 (bytedance-seed).' },
+            { k: 'Aspect ratio', v: '1:1 / 16:9 / 9:16 / 4:5. Той самий вибір, що у Creatives.' },
+            { k: 'Ad language', v: 'Мова тексту на банері. Якщо мова відрізняється від мови вхідних Hook/Accent/CTA — пайплайн додатково перекладає їх перед рендером.' },
+            { k: 'Пресети', v: 'A / B / C / D базові + Custom + Saved. Мінімум один має бути активним, інакше кнопка згасне.' },
+          ],
+        },
+        {
+          kind: 'tip',
+          title: 'Ідеальний use-case',
+          text: 'Готовий копірайтерський хук з іншого джерела (Angles-вкладка, Slack, Notion) — і треба швидко зробити 4 візуальні варіанти на A/B у Meta. Тут economics найкращий: тексти вже вивірені, кошти йдуть тільки на візуал.',
+        },
+      ],
+    },
+    {
+      id: 'cg-pipeline',
+      label: 'Що робить бекенд',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'За кнопкою стоїть окремий n8n workflow (не той самий, що у Creatives — там повний ланцюг з 4 агентами). CreativeOnly-Image Generator має тільки два основні AI-кроки: Visual Director і рендер зображення на моделі. Все інше — механіка (translate, filter, aggregate, cost log).',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Endpoint', v: 'POST /generate_creatives_only' },
+            { k: 'Payload', v: 'chosen_creative = {banner_hook, banner_accent, banner_cta, meta_ad_title (порожньо), meta_ad_copy (порожньо)}. Плюс параметри рендеру (модель, aspect, presets, ad_language).' },
+            { k: 'Async pattern', v: 'Одразу після старту webhook повертає execution_id (202-подібна поведінка). Фронт полить статус, як для звичайного батча Creatives.' },
+          ],
+        },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'Respond to FE with execution_id', text: 'Одразу зафайлити job у стані, віддати ID фронту. Далі — асинхронно.' },
+            { title: 'Visual Director (Agent 4)', text: 'Claude Opus 4.7 читає ТІЛЬКИ хук (accent / cta — довідково). Виводить hero, композицію, сцену, реквізит, настрій. Це той самий Agent 4, який у повному пайплайні, але тепер без upstream-контексту від Analyst / Strategist / Copywriter.' },
+            { title: 'Filter Active Presets', text: 'З UI-налаштувань беруться активні пресети — A/B/C/D + Custom + Saved. Fanout на N паралельних гілок.' },
+            { title: 'OpenRouter Image (для кожного пресета)', text: 'Виклик обраної image-моделі з відповідним стилем-обгорткою пресета. Тексти хука/акценту/CTA передаються дослівно як overlay-інструкції.' },
+            { title: 'Compliance gate (Custom + Saved only)', text: 'Для Custom і Saved пресетів згенероване зображення проганяється через vision-агента. Базові A/B/C/D мають whitelist-стилі і навмисно пропускають цей крок.' },
+            { title: 'Aggregate Images', text: 'Об\'єднання результатів всіх пресетів у один response. Кожна картинка тегається (variant, style, meta_title, meta_copy, banner_cta, compliant).' },
+            { title: 'Cost log', text: 'Паралельна гілка пише вартість (Build Cost — Image + Build Cost — Compliance) у cost_log datatable для Dashboard → Costs.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'Візуал під хук — з чого модель це бере',
+          text: 'У повному пайплайні Agent 4 бачить keyword intent, audience clusters, content anchors, обраний angle і chosen creative. У Creative Gen вона бачить лише хук. Це навмисно: якщо хук написаний добре, він сам несе інформацію про аудиторію, тон, тему. Якщо хук розмитий — і візуал буде розмитим. Пропорційна відповідальність.',
+        },
+      ],
+    },
+    {
+      id: 'cg-visual-director',
+      label: 'Visual Director — як він читає хук',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Agent 4 отримує на вхід лише твої три рядки і має вивести повний visual brief. Він робить це за детермінованою методикою: спочатку відповідає собі на три питання по хуку (хто, що, який register), далі мапить це у композицію та engagement mode за формулою mode_index = base_index % 4.',
+        },
+        { kind: 'h3', text: '4 engagement modes (детермінована ротація)' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: '0 · Indoor-contemplative', v: 'Герой за столом з документами. Використовується обережно — легко скотитися в депресивну атмосферу.' },
+            { k: '1 · Threshold-arrival', v: 'Герой у дверях, тримає один предмет. Сигнал «щойно прибув / щойно дістав».' },
+            { k: '2 · Outdoor-transition', v: 'Герой надворі біля будівлі, з телефоном чи конвертом. Сигнал «дорогою до відкриття».' },
+            { k: '3 · Exchange-social-light', v: 'Герой біля стійки з помічником, який показує на бланк. Людський масштаб допомоги.' },
+          ],
+        },
+        { kind: 'h3', text: 'Що виходить з Visual Director' },
+        {
+          kind: 'list',
+          items: [
+            'vertical (housing / health / finance / lifestyle / other)',
+            'composition_type — SUBJECT_WITH_REACTION / SUBJECT_CENTERED / OBJECT_HEAVY / DUAL_COMPOSITION',
+            'hero_element — subject, subject_matter_type, engagement_mode, pose_and_expression',
+            'scene_context — setting, props_in_frame, background',
+            'visual_mood — emotional_tone, color_direction, lighting_style',
+            'Variant C swap — якщо у brief є люди, для пресета C (Highlight Block) окремо будується object-only flat-lay',
+          ],
+        },
+        {
+          kind: 'prompt',
+          label: 'Visual Director — hook-only prompt (abridged)',
+          model: 'Claude Opus 4.7',
+          body: `You are the Visual Director for the creative-only banner
+pipeline.
+
+YOUR TASK: Read the operator-approved creative texts
+(banner_hook / banner_accent / banner_cta) and produce a VISUAL
+BRIEF as ONE JSON object. There is NO upstream research, NO chosen
+angle and NO article in this pipeline — the hook text itself is
+your ONLY source of audience and topic context.
+
+STEP 0 — READ THE HOOK
+Answer:
+- WHO is this hook talking to (age, situation, identity marker)?
+- WHAT concrete thing is it about (product, program, event)?
+- WHAT register does it use (institutional / casual / journalistic
+  / conversational)?
+
+engagement_mode = base_index % 4:
+  0 = indoor-contemplative (hero at table with documents)
+  1 = threshold-arrival (hero at doorway, one prop)
+  2 = outdoor-transition (hero outdoors, phone/envelope)
+  3 = exchange-social-light (hero at counter with helper)
+
+composition_type — one of:
+  SUBJECT_WITH_REACTION | SUBJECT_CENTERED |
+  OBJECT_HEAVY | DUAL_COMPOSITION
+
+Variant C swap: if hero_element has people, for preset C
+(Highlight Block) generate an object-only flat-lay instead.
+
+OUTPUT — STRICT JSON with: vertical, composition_type,
+hero_element {subject, subject_matter_type, engagement_mode,
+pose_and_expression}, scene_context {setting, props_in_frame,
+background}, visual_mood {emotional_tone, color_direction,
+lighting_style}.`,
+        },
+      ],
+    },
+    {
+      id: 'cg-presets',
+      label: '4 пресети — той самий контракт, що у Creatives',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Пресети A / B / C / D — це ті самі стилі, що у вкладці Creatives. Один Visual Director brief → чотири рендери у чотирьох estilos. Кастомні пресети (Custom, Saved) підтримуються, і для них вмикається image compliance gate.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'A · YT Thumbnail', v: 'YouTube-style clickbait: висока насиченість, сильний контраст, жирний хук + кнопка CTA.' },
+            { k: 'B · Organic Social', v: 'UGC-стиль: великий хук з обводкою, декоративні пастельні стікери, курсивний CTA без кнопки.' },
+            { k: 'C · Highlight Block', v: 'Повнокадрове фото + один однотонний блок з хуком. Без акценту, без CTA. Якщо у brief є люди — Visual Director автоматично випльовує object-only flat-lay для цього пресета.' },
+            { k: 'D · Illustrated', v: 'Native-ad стиль (Outbrain/Taboola): редакторська ілюстрація, жовтий курсивний хук + біла картка + pill-CTA.' },
+            { k: 'Custom / Saved', v: 'Твої пресети. Проходять image compliance gate — vision-агент перевіряє verbatim рендер тексту, заборонені UI, adult / medical / brand порушення.' },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'cg-response',
+      label: 'Що повертається',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Фінальна відповідь — плоский об\'єкт з полями image_{a|b|c|d}_url і супутньою метою для кожного варіанта. Це та сама форма, яку споживає Column4 (компонент батчів), тому Creative Gen і Creatives рендеряться однаково.',
+        },
+        {
+          kind: 'example',
+          label: 'Форма відповіді (укорочено)',
+          body: `{
+  "images": ["url1", "url2", "url3", "url4"],
+  "image_count": 4,
+
+  "image_a_url": "https://.../batch_<id>_a.jpg",
+  "style_a": "YT Thumbnail",
+  "meta_title_a": "",
+  "meta_copy_a": "",
+  "banner_cta_a": "Learn More",
+  "compliant_a": true,
+
+  "image_b_url": "...",
+  ...
+}`,
+        },
+        {
+          kind: 'note',
+          text: 'meta_title / meta_copy у Creative Gen лишаються порожніми — Copywriter у пайплайні не запускався, тож нема з чого їх сформувати. Якщо тобі треба Meta Ad Manager поля — пиши їх руками або запускай повний пайплайн Creatives.',
+        },
+      ],
+    },
+    {
+      id: 'cg-vs',
+      label: 'Creative Gen vs Creatives vs Creative Edit',
+      blocks: [
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Creatives (4 колонки)', v: 'Повний RSOC-пайплайн. Ти даєш URL статті + ключі, AI видає angles → concepts → creatives → images. Використовуй, коли треба стратегічно розкрити нішу з нуля.' },
+            { k: 'Creative Gen (ця вкладка)', v: 'Хуки вже готові — просто перетвори їх у 4 візуальні варіанти. Пропускає Analyst / Strategist / Copywriter. ~10–20 сек замість 30–60.' },
+            { k: 'Creative Edit', v: 'У тебе вже є банер, треба лише замінити тексти / перекласти / прибрати логотип. Image-to-image edit, зберігає композицію оригіналу.' },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+// ---------- CREATIVE EDIT module ----------
+
+const CREATIVE_EDIT_MODULE: KBModule = {
+  id: 'creative-edit',
+  label: 'Creative Edit',
+  tagline: 'Хірургічне редагування вже готового банера: заміна Hook / Accent / CTA, переклад тексту і опційні візуальні коригування — з збереженням композиції і стилю оригіналу.',
+  sections: [
+    {
+      id: 'ce-overview',
+      label: 'Огляд',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Creative Edit — це НЕ регенерація з нуля. Вкидаєш існуючий банер, кажеш, що змінити (тексти, мова, дрібні візуальні правки) — і отримуєш той самий банер із хірургічно змінені частинами. Композиція, фон, логотипи, реквізит, освітлення, шрифт, стиль тексту — усе лишається пиксельно ідентичним оригіналу. Змінюється тільки те, що ти явно назвав.',
+        },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'Upload creative', text: 'PNG / JPG / WebP. Тільки статичні зображення. Файл летить у бекенд як base64 data URL (не multipart) — так надійніше через Cloudflare + n8n.' },
+            { title: 'Analyze image (опційно)', text: 'Vision-модель читає банер і повертає поточні Hook / Accent / CTA — щоб не переписувати їх вручну.' },
+            { title: 'Fill Hook / Accent / CTA', text: 'Замінюй тільки те, що треба. Порожнє поле = стерти цей напис зовсім. Незачеплене поле = лишити оригінал.' },
+            { title: 'Aspect ratio + Language', text: '1:1 / 16:9 / 9:16 / 4:5 — розмір виводу. Language керує перекладом; за замовчуванням «Keep original language».' },
+            { title: 'Image prompt (опційно)', text: 'Дрібні правки візуалу: «зміни фон на синій», «прибери логотип», «зроби CTA-кнопку червоною». Порожнє = тільки тексти.' },
+            { title: 'Generate', text: 'Gemini 3-pro-image-preview працює в режимі image-to-image edit — оригінал у виводі, зміни тільки там, де ти сказав.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'Дві окремі кнопки — дві окремі кінцеві точки',
+          text: 'Analyze image і Generate Edited Creative — це РІЗНІ вебхуки: /creative_edit_analyze і /creative_edit_generate. Analyze — швидко, використовується для попереднього заповнення полів. Generate — саме редагування. Analyze не змінює зображення, лише читає його.',
+        },
+      ],
+    },
+    {
+      id: 'ce-inputs',
+      label: 'Поля, які ти заповнюєш',
+      blocks: [
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Creative image *', v: 'PNG / JPG / WebP. Drag & drop або кліком. Показується прев\'ю прямо у формі.' },
+            { k: 'Aspect ratio *', v: '1:1 (дефолт) / 16:9 / 9:16 / 4:5. Керує розмірами виходу — модель не збереже пропорції оригіналу автоматично, обирай відповідне.' },
+            { k: 'Language', v: '«Keep original language» (дефолт) або одна з 40+ мов зі списку. Якщо не «Keep original», перекладачик перекладає Hook / Accent / CTA перед рендером.' },
+            { k: 'Hook', v: 'Головний рядок банера, 40–55 символів. Порожній Hook = стерти оригінальний. Обов\'язковий, якщо збираєшся генерувати.' },
+            { k: 'Accent', v: 'Другий, менший рядок під хуком. 25–35 символів. Порожній = стерти.' },
+            { k: 'CTA', v: 'Кнопка / підпис-заклик. Порожній = стерти CTA з банера.' },
+            { k: 'Image prompt adjustments', v: 'Опційне вільне поле англійською. Приклади: «зміни фон на синій», «прибери логотип у нижньому куті», «зроби CTA-кнопку червоною». Не пиши сюди повний рерайт стилю — Gemini інтерпретує це як «додаткова хірургічна правка», не як директиву перемалювати банер.' },
+          ],
+        },
+        {
+          kind: 'tip',
+          title: 'Порожнє поле ≠ «залиш як є»',
+          text: 'Якщо не хочеш чіпати CTA — просто НЕ проходь Analyze і не заповнюй CTA. Тоді напис лишається на банері. Але якщо ти явно очистив поле (Analyze заповнив, а ти стер) — модель СТЕРЕ CTA з зображення. Порожнє = «прибери».',
+        },
+      ],
+    },
+    {
+      id: 'ce-analyze',
+      label: 'Крок 1 — Analyze image (опційно)',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Кнопка «Analyze image» шле банер у vision-агента, який повертає три поля: hook, accent, cta. Порожні поля лишаються порожніми (модель не вигадує текст на місці, де його нема). Тоді ти можеш підредагувати їх у формі, а не набирати з нуля.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Endpoint', v: 'POST /creative_edit_analyze' },
+            { k: 'Model', v: 'google/gemini-3.1-pro-preview (з fallback на gemini-2.5-pro або claude-opus-4.7 через OpenRouter)' },
+            { k: 'Temperature', v: '0 — детермінований вивід' },
+            { k: 'Response format', v: 'json_object — модель зобов\'язана повернути валідний JSON {hook, accent, cta}' },
+          ],
+        },
+        {
+          kind: 'prompt',
+          label: 'Vision LLM Analyze — system prompt',
+          model: 'google/gemini-3.1-pro-preview',
+          body: `Extract three banner text fields from this creative image:
+(1) hook = the largest/most prominent headline line,
+(2) accent = the secondary supporting line if present,
+(3) cta = the call-to-action button text if present.
+
+Return ONLY a JSON object with keys hook, accent, cta —
+empty string for missing fields.
+No prose, no markdown fences.`,
+        },
+        {
+          kind: 'note',
+          text: 'Analyze нічого не зберігає і не змінює зображення. Просто читає. Викликаєш стільки разів, скільки треба — це швидкий і дешевий крок.',
+        },
+      ],
+    },
+    {
+      id: 'ce-translate',
+      label: 'Крок 2 — Переклад (опційно)',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Якщо у полі Language обрано конкретну мову (не «Keep original») — перед рендером тексти проходять через окремий переклад Claude Opus. Переклад маркетинговий, а не дослівний: зберігає intent, ідіоматику, характер копірайтингу.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Translate Texts — system prompt',
+          model: 'anthropic/claude-opus-4.7',
+          body: `You translate three banner text fields into a target language.
+
+## INPUT FORMAT
+Target language: <language_name OR a directive in parentheses>
+Texts to translate: <JSON object with keys hook, accent, cta>
+
+## OUTPUT
+Return ONLY a JSON object with keys hook, accent, cta.
+No markdown fences, no commentary, no preamble.
+
+## TRANSLATION RULES
+1. If "Target language" is empty, blank, starts with "(", or says
+   "keep original", return the input JSON UNCHANGED.
+2. Otherwise, translate each NON-EMPTY field into the target
+   language. Preserve marketing intent and tone — these are ads.
+   Make them natural, persuasive, and idiomatic. NOT word-for-word.
+3. Keep numbers, ages, currency, and proper nouns intact
+   ("62+", "$5,000", brand names).
+4. EMPTY input fields STAY EMPTY in the output. NEVER invent text
+   to fill an empty field. An empty hook stays an empty hook.
+5. Preserve punctuation that carries emotional weight (!, ?, …).
+6. Maintain capitalization style appropriate to the target language.
+7. If target language matches source language, return unchanged.
+
+## CRITICAL CONSTRAINTS
+- Output keys are exactly hook, accent, cta.
+- NEVER wrap output in \`\`\`json fences.
+- NEVER include any text before or after the JSON object.
+- Preserve data types (empty strings stay empty strings).
+- If you cannot confidently translate a field, return it unchanged.`,
+        },
+        {
+          kind: 'warn',
+          title: 'Числа, %, брендові назви — не перекладаються',
+          text: '«$5,000» лишається «$5,000», «62+» лишається «62+», «Medicare» лишається «Medicare» навіть у польській версії. Це виключення з правила «маркетинговий переклад» — цифри і бренди дослівно.',
+        },
+      ],
+    },
+    {
+      id: 'ce-generate',
+      label: 'Крок 3 — Хірургічний рендер',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Основний крок: Gemini 3-pro-image-preview працює в режимі image-to-image edit. Промт побудований жорстко навколо ідеї «це НЕ регенерація». Модель отримує ERASE LIST (позиції, які треба стерти) і RENDER LIST (позиції + верним текст для рендеру), і має право змінювати ТІЛЬКИ ці області плюс те, що явно вказано у Image prompt adjustments.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Endpoint', v: 'POST /creative_edit_generate' },
+            { k: 'Model', v: 'google/gemini-3-pro-image-preview (vision + generation, OpenRouter)' },
+            { k: 'Temperature', v: '1 — креативний, з рандомним seed для різноманіття варіантів' },
+            { k: 'Image size', v: '1K, aspect_ratio з поля форми' },
+          ],
+        },
+        { kind: 'h3', text: 'Чотири жорсткі правила editing-промта' },
+        {
+          kind: 'list',
+          items: [
+            'RULE 1 — ERASE ALL ORIGINAL TEXT FIRST. Спершу стирається весь оригінальний напис у зазначених позиціях. Без цього новий текст ляже поверх старого і буде каша.',
+            'RULE 2 — RENDER ONLY THE STRINGS ON THE Text-to-render LINES. Модель ЗОБОВ\'ЯЗАНА рендерити рядки verbatim — той самий регістр, та сама пунктуація, той самий порядок слів. Ніякого «покращення».',
+            'RULE 3 — POSITIONS IN THE ERASE LIST HAVE NO TEXT. Якщо поле порожнє — область стається порожньою. Модель не має права заповнити її іншим текстом «щоб було симетрично».',
+            'RULE 4 — CHANGE ONLY WHAT IS NAMED. Усе поза ERASE / RENDER / Image adjustments лишається пиксельно однаковим з оригіналом. Фон, логотипи, реквізит, шрифт, тіні, обводки, освітлення — не чіпати.',
+          ],
+        },
+        {
+          kind: 'example',
+          label: 'Як формується editing-промт',
+          body: `You are performing a SURGICAL EDIT on the attached banner
+image. This is an EDIT, not a regeneration — preserve the input
+pixel-faithfully except for the specific changes named below.
+
+TEXT-TO-RENDER (verbatim, exact):
+- HOOK position: "<new hook or empty>"
+- ACCENT position: "<new accent or empty>"
+- CTA position: "<new cta or empty>"
+
+ERASE LIST (positions with empty text-to-render):
+- <positions with empty inputs>
+
+RENDER LIST (positions with non-empty text-to-render):
+- <positions with populated inputs>
+
+ADDITIONAL VISUAL ADJUSTMENTS:
+<user-provided imagePrompt, or "none">
+
+RULE 1 — ERASE ALL ORIGINAL TEXT FIRST
+RULE 2 — RENDER ONLY THE STRINGS ON THE Text-to-render LINES
+RULE 3 — POSITIONS IN THE ERASE LIST HAVE NO TEXT
+RULE 4 — CHANGE ONLY WHAT IS NAMED`,
+        },
+      ],
+    },
+    {
+      id: 'ce-output',
+      label: 'Що повертається',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Відповідь — JSON з масивом images. Один запит зазвичай = одне зображення. url — це data:image/... base64 (можна відкрити напряму або зберегти), fileName — стандартизоване ім\'я, яке треба скопіювати у Facebook «Ad name» для трекінгу.',
+        },
+        {
+          kind: 'example',
+          label: 'Успішна відповідь',
+          body: `{
+  "images": [
+    {
+      "url": "data:image/png;base64,....",
+      "fileName": "creative_edit_<execution_id>.png"
+    }
+  ]
+}`,
+        },
+        {
+          kind: 'example',
+          label: 'Помилка',
+          body: `{
+  "images": [],
+  "error": "<human-readable error>",
+  "raw": "<first 500 chars of upstream API response>"
+}`,
+        },
+        {
+          kind: 'note',
+          title: 'Cost logging',
+          text: 'Аналіз і рендер логуються у cost_log (n8n datatable) паралельно з відповіддю — не блокують юзера. Дивитись поточну вартість генерацій можна у Dashboard → Costs.',
+        },
+      ],
+    },
+    {
+      id: 'ce-patterns',
+      label: 'Коли Edit кращий за нову генерацію',
+      blocks: [
+        {
+          kind: 'list',
+          items: [
+            'Ідеальний банер з попередньої кампанії — а треба перекласти під новий GEO. Edit зберігає весь стиль, лише перекладає тексти.',
+            'A/B на текстах — та сама композиція, різні хуки. Швидше і дешевше, ніж запускати весь Creatives-пайплайн з нуля.',
+            'Дрібна візуальна правка — прибрати логотип, змінити колір кнопки, замінити фон — коли решта банера підходить.',
+            'Рефреш креативу — коли банер вигорів у стрічці, але концепція жива. Edit «оновлює» його з мінімальним ризиком.',
+          ],
+        },
+        {
+          kind: 'warn',
+          title: 'Коли Edit не спрацює',
+          text: 'Якщо тобі треба кардинально перекомпонувати банер — інша сцена, інший persona, інша ідея кута — Edit тебе не порятує. Модель триматиметься за оригінал. У таких випадках йди у Creative Gen (генерувати з нуля) або в повний Creatives-пайплайн (з angle → concept).',
+        },
+      ],
+    },
+  ],
+};
+
+// ---------- FB → NB module (Megatool) ----------
+
+const FB_TO_NB_MODULE: KBModule = {
+  id: 'fb-to-nb',
+  label: 'FB → NB',
+  tagline: 'Мегатул для перенесення робочого оголошення з Facebook у Newsbreak: FB Campaign Reader → Binom Offer → NB Campaign, три кліки, один Binom URL і жива NB-кампанія на виході.',
+  sections: [
+    {
+      id: 'fbnb-overview',
+      label: 'Огляд',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Megatool — це окремий режим інтерфейсу (жовтий значок ⚡ у шапці). Він ховає звичайну навігацію (Keywords / Angles / Article / Creatives) і відкриває три послідовні вкладки, які разом виконують один сценарій: узяти живе оголошення з Facebook і перенести його у Newsbreak як окрему кампанію з правильним Binom-трекінгом.',
+        },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'FB Campaign Reader', text: 'Вставляєш FB Campaign ID → бачиш усі активні адсети і оголошення з картинками, заголовками, tracking URL. Обираєш ті, з яких робимо NB-кампанію (перше = ЛІД для Binom).' },
+            { title: 'Create Binom Offer', text: 'На основі trackingUrl обраного оголошення пайплайн клонує Binom-кампанію і всі її офери, переписує URL під NB (utm-и, event, макроси), реєструє офери у Newsbreak group. Отримуєш Binom Campaign URL — це click-through URL для NB.' },
+            { title: 'Create NB Campaign', text: 'Готова секція під Binom-відповіддю. Обираєш NB account, bid strategy, розмір адсетів. Пайплайн завантажує креативи у NB, будує campaign → adsets → ads і повертає ID нової живої NB-кампанії.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'Три вкладки — один flow, один state',
+          text: 'Обраний FB-ад лежить у глобальному store. Форма Binom Offer і форма NB Campaign теж — тому можна перемикатися між вкладками, не втрачаючи поля. Fetch нової FB-кампанії скидає всю вибірку, Binom і NB state, щоб не сплутати дані.',
+        },
+      ],
+    },
+    {
+      id: 'fbnb-fb-reader',
+      label: 'Крок 1 — FB Campaign Reader',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Даєш ID кампанії з FB Ads Manager, натискаєш Fetch. Бекенд обходить Facebook Graph API v21.0 і повертає ієрархію campaign → adsets (тільки active за замовчуванням) → ads → creative.',
+        },
+        { kind: 'h3', text: 'Що бачиш у дереві' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Campaign header', v: 'Ім\'я, ID, objective, account, daily / lifetime budget, effective_status як бейдж.' },
+            { k: 'Adsets', v: 'Розбиті на «Активні» і «Неактивні / На паузі». Кожен блок — optimization goal, бюджет, кількість оголошень.' },
+            { k: 'Ads', v: 'Картки: превʼю (image / thumbnail / video source), title, body (з more/less), CTA type, tracking URL. Video-креативи мають бейдж ▶ Video.' },
+            { k: 'Tracking URL', v: 'Витягається з link_url → object_story_spec.link_data.link → …call_to_action.value.link. Якщо жоден не дав ULR — картка позначається «немає tracking URL — Binom flow недоступний».' },
+          ],
+        },
+        { kind: 'h3', text: 'Як обирати оголошення' },
+        {
+          kind: 'list',
+          items: [
+            'Клік по картці — додає в вибірку. Повторний клік — забирає.',
+            'ПЕРШЕ обране = ЛІД. Саме з його trackingUrl створюється Binom Offer (звідти беремо ключ, landing, tracker).',
+            'Обрано 1 → Binom Offer + NB Campaign з одним оголошенням.',
+            'Обрано 2+ → той самий Binom Offer (за лідом) + NB Campaign, де всі обрані стають окремими оголошеннями і розкидаються по адсетах (макс 4 на адсет: 5→3+2, 6→3+3, 7→4+3, 8→4+4).',
+          ],
+        },
+        { kind: 'h3', text: 'Що робить бекенд' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Endpoint', v: 'POST /megatool-fb-campaign-reader' },
+            { k: 'API', v: 'Facebook Graph API v21.0 (graph.facebook.com)' },
+            { k: 'Token probe', v: 'Пул access-токенів — пробує дешевий ID-lookup на кожному, перший, що працює, — використовується для всього обходу.' },
+            { k: 'Retry', v: 'Exponential backoff (2^n) для rate-limit кодів 4, 17, 32, 613 і subcode 2446079.' },
+            { k: 'Video resolution', v: 'Для video creatives підтягуємо .mp4 URL через video_id → video_source_url. Живе кілька хвилин — саме тому Create NB Campaign завантажує його одразу, а не «на потім».' },
+          ],
+        },
+        {
+          kind: 'tip',
+          title: 'Кнопка Copy raw JSON',
+          text: 'Праворуч зверху — «Copy raw JSON». Дає повний dump відповіді, який можна вкинути у скрипт або debug — корисно, якщо треба руками витягти якесь поле, або якщо на картці чогось не видно, а в API воно є.',
+        },
+      ],
+    },
+    {
+      id: 'fbnb-binom',
+      label: 'Крок 2 — Create Binom Offer',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Кнопка «→ Create Binom Offer» відкриває другу вкладку. Тут ти вказуєш параметри для NB-кампанії (NB account, tracking event, bid strategy) і Binom-специфічні опції (AMO домен, канал, група). При натисканні Submit бекенд клонує ВСЮ Binom-кампанію оригінального оголошення і переписує URL під Newsbreak.',
+        },
+        { kind: 'h3', text: 'Поля форми' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'NB Account *', v: 'Комбобокс з ~430+ NB акаунтів (з датетаблиці nb_accounts). Обирається один — далі під нього тягнеться список events.' },
+            { k: 'Tracking event', v: 'Auto-pick: complete_payment для TARGET_ROAS / TARGET_CPA, click_button для MAX_CONVERSION. Можна перевизначити вручну. event= у Binom-URL береться саме звідси.' },
+            { k: 'Bid Type *', v: 'MAX_CONVERSION (дефолт), TARGET_CPA (з полем Bid Rate у $), TARGET_ROAS (з полем ROAS Target %). TARGET_ROAS доступний ТІЛЬКИ коли event = complete_payment.' },
+            { k: 'New AMO domain', v: 'Новий landing-домен. «same» = лишити оригінальний. Якщо змінюєш — Binom викликає AMO API (amo-p.com), клонує статтю на новий домен і підмінює URL офера.' },
+            { k: 'New AMO channel', v: 'Опційний label каналу — просто додається до імені офера, не до URL.' },
+            { k: 'New Binom group', v: 'До якої групи Binom кинути нові офери. Комбобокс тягне з датетаблиці binom_groups за поточним tracker\'ом. «same» = лишити.' },
+            { k: 'Tracker', v: 'ilab.nnctrack.com / jaguars.nnctrack.com / sharks.nnctrack.com. Автовизначається з домена оригінального trackingUrl, можна перевизначити.' },
+            { k: 'Binom Campaign Name', v: 'Автоскладене: [ROAS | ]<base> | US | NB | <NB account> | MEGATOOL | DD.MM.YYYY. Base = ім\'я оригінальної FB-кампанії (або NB campaign name, якщо вже введено). Можна редагувати руками.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'binom_groups і amo_domains — де вони живуть',
+          text: 'Це n8n datatables на n8n.nnctrack.com (проєкт Eq7a31TbjRZLdTAw). binom_groups — назва → UUID → tracker (та сама назва може існувати у різних трекерів з різними UUID). amo_domains — відомі AMO домени, використовуються для очистки старих суфіксів у назві офера перед додаванням нового «| New AMO <domain>».',
+        },
+        { kind: 'h3', text: 'Що робить бекенд' },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'Read binom_groups', text: 'Тягне всю таблицю — для lookup «name → UUID» за обраним tracker.' },
+            { title: 'Probe Binom API keys', text: 'Оригінальний trackingUrl містить key — пайплайн пробує всі відомі Binom API-ключі поспіль, перший, що може прочитати кампанію по цьому key, — правильний.' },
+            { title: 'Clone campaign + offers', text: 'GET /campaign/<id>/clone і для кожного офера GET /offer/<id>/clone. На виході — шаблон з новими UUID.' },
+            { title: 'Rewrite offer URL', text: 'Стирає старі query-параметри і вкидає NB-параметри: m=og, part=bol, utm_source=newsbreak, utm_medium=gs, newsbreak_cid={t10}, term1={clickid}_{campaign_id}[_roas], term2={campaign_domain}, ad_id={t2}. Підклад для ROAS-варіанта — суфікс _roas.' },
+            { title: 'Rewrite offer name', text: 'Стирає відомі AMO-доменні мітки з imya, додає «New CH = <channel>» і «New AMO <domain>» якщо ти вказав.' },
+            { title: 'AMO domain swap (якщо потрібно)', text: 'GET /articles/<id> → POST /articles на новий домен → підміна article URL у офері.' },
+            { title: 'Create offers on Binom', text: 'POST /offer для кожного трансформованого офера. Далі POST /offer/change_group переносить їх у hardcoded Newsbreak group UUID (окремий для кожного tracker\'а).' },
+            { title: 'Find NB traffic source', text: 'GET /traffic_source/list/filtered → пошук за назвою «newsbreak» / «nb». ID cwapується у шаблон кампанії.' },
+            { title: 'Create campaign', text: 'POST /campaign з новим key, ім\'ям (з MEGATOOL міткою), remapped offer ID, NB traffic source. Повертає binomCampaignId + binomCampaignUrl.' },
+          ],
+        },
+        { kind: 'h3', text: 'Що повертається' },
+        {
+          kind: 'example',
+          label: 'Успішна відповідь (укорочено)',
+          body: `{
+  "ok": true,
+  "tracker": "ilab.nnctrack.com",
+  "binomCampaignId": "<uuid>",
+  "binomCampaignUrl": "https://ilab.com/click.php?key=...&creative_name=__CREATIVE_NAME__&...",
+  "binomCampaignName": "ROAS | Original | US | NB | acct | MEGATOOL | 05.07.2026",
+  "binomOfferIds": ["<uuid1>", "<uuid2>"],
+  "offerGroupChange": { "attempted": true, "ok": true, ... }
+}`,
+        },
+        {
+          kind: 'warn',
+          title: 'Макроси у click URL — __DOUBLE_UNDERSCORE__, а не {curly}',
+          text: 'На відміну від Binom-контекстів, де стандарт — {clickid} / {t1}, click URL для NB використовує __CREATIVE_NAME__, __CAMPAIGN_ID__, __FLIGHT_ID__, __OS__, __PLACEMENT__ тощо. Це формат макросів самого Newsbreak. Якщо переставляєш URL руками — не «виправляй» подвійні підкреслення на кучеряві дужки.',
+        },
+      ],
+    },
+    {
+      id: 'fbnb-nb',
+      label: 'Крок 3 — Create NB Campaign',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Секція «Create NB Campaign» рендериться прямо в цій же вкладці, під результатом Binom. Більшість полів уже підтягнулися з попередніх кроків (NB account, click-through URL = Binom Campaign URL, ad-контент з обраних FB-оголошень). Тобі лишається задати budget, start date і структуру адсетів.',
+        },
+        { kind: 'h3', text: 'Поля форми' },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Campaign Name', v: 'Ім\'я NB-кампанії — за замовчуванням наслідує Binom, можна редагувати.' },
+            { k: 'Budget (daily USD)', v: 'Daily budget адсету. Пайплайн множить на 100 для NB (мінорні одиниці).' },
+            { k: 'Start Date', v: 'now / tomorrow / tomorrow+1 / tomorrow+2. Пайплайн обчислює startTime з урахуванням timezone.' },
+            { k: 'Start Timezone', v: 'PDT (00:00 PDT) або EEST (14:00 PDT — це той самий момент, що ранок EEST).' },
+            { k: 'Bid Type + Bid Rate / ROAS', v: 'Успадковуються з Binom Offer форми. TARGET_ROAS має пріоритет — якщо roas > 0, він виграє над TARGET_CPA. Trackingid все одно передається у всіх режимах.' },
+            { k: 'Adset sizes', v: 'Масив цифр, який каже, як розкидати обрані оголошення по адсетах. Приклад: 4 обраних + adsetSizes=[2,2] → 2 адсети по 2 оголошення. Сума має дорівнювати кількості обраних оголошень.' },
+            { k: 'Brand name / CTA', v: 'Успадковуються з FB creative, можна перевизначити. NB вимагає brandName і callToAction на кожному ad.' },
+          ],
+        },
+        { kind: 'h3', text: 'Що робить бекенд' },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'Validate & Prepare', text: 'Перевіряє все — nbAccountId у датетаблиці, clickThroughUrl, ads[], сума adsetSizes == ads.length, кожен ad має headline+body+assetUrl. Далі виникає один item на кожен ad для fanout.' },
+            { title: 'Download Asset', text: 'HTTP GET на assetUrl кожного ad (це FB CDN URL / video_source_url). У пам\'ять як binary.' },
+            { title: 'Upload Asset to NB', text: 'POST /ad/uploadAssets — multipart, 3 retry по 2s. Повертає CDN URL Newsbreak, який далі йде у creative.assetUrl. Тип: IMAGE / VIDEO (за розширенням) / GIF.' },
+            { title: 'Create Chain', text: 'Chain оркеструє все: POST /campaign/create (objective=WEB_CONVERSION), потім POST /ad-set/create по одному на кожен бакет з adsetSizes (bid strategy, budget*100, targeting all/all/all, platforms=[NEWSBREAK]), потім POST /ad/create по одному на кожне оголошення з відповідним uploaded assetUrl.' },
+            { title: 'Respond', text: 'Повертає campaignId, adsetIds[], adIds[], assetUrls[]. Помилка на будь-якому кроці — повертає step: input/validateAccount/pairAssets/uploadAsset/createCampaign/createAdset/createAd, щоб було зрозуміло, де впало.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'Targeting завжди all/all/all',
+          text: 'Newsbreak-кампанії, які створює megatool, ідуть без таргетингу: gender/age/interest/location/deviceLocation/language/os/manufacturer/carrier/network = all. Platform: тільки NEWSBREAK. Якщо треба інше — редагуй кампанію вже у NB UI після створення; megatool навмисно не лізе у targeting, щоб не приймати рішень за байєра.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Endpoint', v: 'POST /megatool-create-nb-campaign' },
+            { k: 'Datatable', v: 'nb_accounts (k3d1smfnWc9VP0cq) — Account Name → Account ID' },
+            { k: 'Aux endpoints', v: 'POST /megatool-list-nb-accounts (dropdown), POST /megatool-fetch-nb-events (event picker)' },
+            { k: 'NB API base', v: 'https://business.newsbreak.com/business-api/v1' },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'fbnb-data',
+      label: 'Дані, які ходять між кроками',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Три вкладки — це не три ізольовані інструменти. Один state дає більше зчеплення, ніж може здатися. Ось що саме перетікає з кроку в крок:',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'FB Reader → Binom', v: 'trackingUrl (з обраного ad), campaignName / adName / creativeTitle (для авто-імені Binom-кампанії), thumbnailUrl і adsetName / campaignName (для summary-картки в Binom формі).' },
+            { k: 'Binom form → Binom pipeline', v: 'newAmoDomain, newAmoChannel, newBinomGroup, tracker, isRoas (derived з bidType===TARGET_ROAS), binomCampaignName, nbEventType (з event picker).' },
+            { k: 'Binom result → NB form', v: 'binomCampaignUrl → clickThroughUrl. binomCampaignName → NB campaignName default.' },
+            { k: 'FB Reader → NB form', v: 'Обрані ads → ads[] масив (adName, headline=creativeTitle, body=creativeBody, assetUrl=asset URL з відео resolution або thumbnail).' },
+            { k: 'NB form → NB pipeline', v: 'nbAccountId, campaignName, budget, startDate, startTimezone, bidType/bidRate/roas, trackingId, ads[], adsetSizes[].' },
+          ],
+        },
+        {
+          kind: 'warn',
+          title: 'Fetch нової FB-кампанії = повний reset',
+          text: 'Коли ти вставляєш інший Campaign ID і тиснеш Fetch — clearSelectedFbAd + closeBinomOffer + resetBinomOffer + closeNbCampaign + resetNbCampaign. Це навмисно: інакше в NB-форму заповзуть tracker / offer / creative з попередньої кампанії. Якщо хочеш зберегти проміжок — скопіюй Binom URL кудись у нотатки перед fetch.',
+        },
+      ],
+    },
+    {
+      id: 'fbnb-troubleshoot',
+      label: 'Типові збої і що з ними робити',
+      blocks: [
+        {
+          kind: 'kv',
+          rows: [
+            { k: '«немає tracking URL»', v: 'У FB creative не витягся link. Найчастіше — CBO-кампанія без прямого лінку. Обери інше оголошення або зайди у FB Ads Manager і перевір, чи у ad є Website URL.' },
+            { k: 'Binom offer clone впав', v: 'Ключ, який пробували, не пасує до цього tracker\'а. Пайплайн повертає {ok:false, error:...}. Перевір, чи tracker у формі відповідає домену tracking URL.' },
+            { k: '«В акаунті немає подій»', v: 'У NB акаунті просто нема жодного tracking event. Пайплайн падає на fallback (перший available у списку). Ти можеш обрати інший акаунт або одразу створити event у NB UI.' },
+            { k: 'TARGET_ROAS сірий', v: 'Обраний event ≠ complete_payment. Або перевибери event, або опустися до MAX_CONVERSION / TARGET_CPA.' },
+            { k: 'NB Upload asset впав', v: 'Іконка Video-креативу — video_source_url з FB живе кілька хвилин. Якщо ти обрав ad, а потім кілька хвилин думав — може протухнути. Fetch кампанії ще раз і одразу шли у NB.' },
+            { k: 'Кампанія створена, але без ads', v: 'Дивись step у відповіді. Найчастіше — createAd впав з {step:"createAd"}. Кампанія і адсети вже живі у NB — треба або доробити ads руками у NB UI, або видалити кампанію і повторити.' },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+const MODULES: KBModule[] = [
+  KEYWORDS_MODULE,
+  ANGLES_MODULE,
+  ARTICLE_MODULE,
+  CREATIVES_MODULE,
+  CREATIVE_GEN_MODULE,
+  CREATIVE_EDIT_MODULE,
+  FB_TO_NB_MODULE,
+];
 
 // ---------------------------------------------------------------------------
 // Renderer for a single block.

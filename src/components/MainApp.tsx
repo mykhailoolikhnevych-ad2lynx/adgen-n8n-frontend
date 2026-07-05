@@ -112,6 +112,14 @@ export default function MainApp() {
   const [megatool, setMegatool] = useState(false);
   const [megatoolPage, setMegatoolPage] = useState<MegatoolPage>('fb-campaign-reader');
 
+  // Selecting a megatool tab must also clear a lingering `page === 'docs'`,
+  // otherwise the Docs override in the main render keeps showing after the
+  // operator navigates away from Docs via the megatool nav.
+  const selectMegatoolPage = (mp: MegatoolPage) => {
+    setMegatoolPage(mp);
+    if (page === 'docs') setPage('keywords');
+  };
+
   // If the operator closes the Offer Article tab while it's the active page,
   // bounce them back to the Article tab so we don't render an empty page.
   useEffect(() => {
@@ -273,7 +281,7 @@ export default function MainApp() {
                       <button
                         key={item.value}
                         type="button"
-                        onClick={() => setMegatoolPage(item.value)}
+                        onClick={() => selectMegatoolPage(item.value)}
                         className={`rounded px-3 py-1.5 text-sm transition-colors ${
                           isActive
                             ? 'bg-amber-400 text-black'
@@ -302,7 +310,7 @@ export default function MainApp() {
                           >
                             <button
                               type="button"
-                              onClick={() => setMegatoolPage('create-binom-offer')}
+                              onClick={() => selectMegatoolPage('create-binom-offer')}
                               className="pl-3 pr-1 py-1.5"
                               aria-current={isBinomActive ? 'page' : undefined}
                             >
