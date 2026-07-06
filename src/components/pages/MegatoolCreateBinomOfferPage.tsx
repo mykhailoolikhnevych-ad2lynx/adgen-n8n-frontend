@@ -468,15 +468,15 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
                 <Input
                   type="number"
-                  min={0.01}
+                  min={0}
                   step={0.01}
-                  value={targetCpaDollars === 0 ? '' : targetCpaDollars}
+                  value={targetCpaDollars}
                   onChange={(e) => {
                     const raw = e.target.value;
                     setTargetCpaDollars(raw === '' ? 0 : Number(raw));
                   }}
                   placeholder="5"
-                  className="pl-6"
+                  className="pl-6 no-spinner"
                 />
               </div>
             </div>
@@ -497,7 +497,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
                     setRoasPercent(raw === '' ? 0 : Number(raw));
                   }}
                   placeholder="120"
-                  className="pr-8"
+                  className="pr-8 no-spinner"
                 />
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">%</span>
               </div>
