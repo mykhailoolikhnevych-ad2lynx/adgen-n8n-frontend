@@ -158,6 +158,28 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const setRoasPercent = (v: number) => setNbForm({ roasPercent: v });
   const setManualEventId = (v: string | null) => setNbForm({ manualEventId: v });
 
+  // Local text state for CPA/ROAS so operators can type both "." and ","
+  // as decimal separators. HTML type="number" rejects commas, so these
+  // inputs use type="text" + inputMode="decimal"; the string is normalized
+  // to a dot before parsing to the store's number.
+  const [cpaText, setCpaText] = useState<string>(String(targetCpaDollars));
+  const [roasText, setRoasText] = useState<string>(
+    roasPercent === 0 ? '' : String(roasPercent),
+  );
+  // Re-sync local text when the store changes from outside (e.g. form reset).
+  useEffect(() => {
+    if (Number((cpaText || '0').replace(',', '.')) !== targetCpaDollars) {
+      setCpaText(String(targetCpaDollars));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetCpaDollars]);
+  useEffect(() => {
+    if (Number((roasText || '0').replace(',', '.')) !== roasPercent) {
+      setRoasText(roasPercent === 0 ? '' : String(roasPercent));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roasPercent]);
+
   const nbAccountNames = useMemo(() => nbAccountsList.map((a) => a.name), [nbAccountsList]);
   const selectedAccount = nbAccountsList.find((a) => a.name === selectedAccountName);
 
@@ -174,19 +196,14 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     }
   }, [selectedAccount?.id, nbEventsAccountId, fetchNbEvents]);
 
-  // Auto-pick preference depends on the current bid type — conversion-based
-  // strategies (TARGET_CPA, TARGET_ROAS) implicitly need a conversion event
-  // (complete_payment), while MAX_CONVERSION defaults to the lighter
-  // click_button. Operator can override via the dropdown below.
-  const wantedEventType =
-    bidType === 'TARGET_ROAS' || bidType === 'TARGET_CPA'
-      ? 'complete_payment'
-      : 'click_button';
+  // Initial default: click_button (lightweight event) if the account exposes
+  // one, else the first event. Only used until the operator (or the ROAS
+  // effect below) sets a manual override.
   const autoPickedEvent = useMemo(() => {
     if (!nbEvents || nbEvents.length === 0) return null;
-    const match = nbEvents.find((e) => e.eventType === wantedEventType);
+    const match = nbEvents.find((e) => e.eventType === 'click_button');
     return match ?? nbEvents[0] ?? null;
-  }, [nbEvents, wantedEventType]);
+  }, [nbEvents]);
   const pickedEvent = useMemo(() => {
     if (manualEventId && nbEvents) {
       const found = nbEvents.find((e) => e.id === manualEventId);
@@ -195,6 +212,20 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     return autoPickedEvent;
   }, [manualEventId, nbEvents, autoPickedEvent]);
   const pickedEventSupportsRoas = pickedEvent?.eventType === 'complete_payment';
+
+  // TARGET_ROAS requires complete_payment by workflow. Force it via a manual
+  // override so the pick sticks when the operator later switches bid types.
+  // TARGET_CPA and MAX_CONVERSION intentionally do NOT touch the event —
+  // whatever's picked stays until the operator changes it themselves.
+  useEffect(() => {
+    if (bidType !== 'TARGET_ROAS') return;
+    if (!nbEvents || nbEvents.length === 0) return;
+    const cp = nbEvents.find((e) => e.eventType === 'complete_payment');
+    if (cp && manualEventId !== cp.id) {
+      setNbForm({ manualEventId: cp.id });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bidType, nbEvents]);
 
   // Downgrade to MAX_CONVERSION if the picked event no longer supports ROAS.
   useEffect(() => {
@@ -467,13 +498,15 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
                 <Input
-                  type="number"
-                  min={0.01}
-                  step={0.01}
-                  value={targetCpaDollars === 0 ? '' : targetCpaDollars}
+                  type="text"
+                  inputMode="decimal"
+                  value={cpaText}
                   onChange={(e) => {
-                    const raw = e.target.value;
-                    setTargetCpaDollars(raw === '' ? 0 : Number(raw));
+                    const raw = e.target.value.replace(',', '.');
+                    if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
+                    setCpaText(raw);
+                    const num = raw === '' || raw === '.' ? 0 : Number(raw);
+                    setTargetCpaDollars(Number.isFinite(num) ? num : 0);
                   }}
                   placeholder="5"
                   className="pl-6"
@@ -487,14 +520,15 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               <label className="text-xs font-medium uppercase text-slate-500">ROAS Target (%) *</label>
               <div className="relative">
                 <Input
-                  type="number"
-                  min={1}
-                  max={1000}
-                  step={1}
-                  value={roasPercent === 0 ? '' : roasPercent}
+                  type="text"
+                  inputMode="decimal"
+                  value={roasText}
                   onChange={(e) => {
-                    const raw = e.target.value;
-                    setRoasPercent(raw === '' ? 0 : Number(raw));
+                    const raw = e.target.value.replace(',', '.');
+                    if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
+                    setRoasText(raw);
+                    const num = raw === '' || raw === '.' ? 0 : Number(raw);
+                    setRoasPercent(Number.isFinite(num) ? num : 0);
                   }}
                   placeholder="120"
                   className="pr-8"
