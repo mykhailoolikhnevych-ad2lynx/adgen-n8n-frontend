@@ -196,19 +196,14 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     }
   }, [selectedAccount?.id, nbEventsAccountId, fetchNbEvents]);
 
-  // Auto-pick preference depends on the current bid type — conversion-based
-  // strategies (TARGET_CPA, TARGET_ROAS) implicitly need a conversion event
-  // (complete_payment), while MAX_CONVERSION defaults to the lighter
-  // click_button. Operator can override via the dropdown below.
-  const wantedEventType =
-    bidType === 'TARGET_ROAS' || bidType === 'TARGET_CPA'
-      ? 'complete_payment'
-      : 'click_button';
+  // Initial default: click_button (lightweight event) if the account exposes
+  // one, else the first event. Only used until the operator (or the ROAS
+  // effect below) sets a manual override.
   const autoPickedEvent = useMemo(() => {
     if (!nbEvents || nbEvents.length === 0) return null;
-    const match = nbEvents.find((e) => e.eventType === wantedEventType);
+    const match = nbEvents.find((e) => e.eventType === 'click_button');
     return match ?? nbEvents[0] ?? null;
-  }, [nbEvents, wantedEventType]);
+  }, [nbEvents]);
   const pickedEvent = useMemo(() => {
     if (manualEventId && nbEvents) {
       const found = nbEvents.find((e) => e.id === manualEventId);
@@ -217,6 +212,20 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     return autoPickedEvent;
   }, [manualEventId, nbEvents, autoPickedEvent]);
   const pickedEventSupportsRoas = pickedEvent?.eventType === 'complete_payment';
+
+  // TARGET_ROAS requires complete_payment by workflow. Force it via a manual
+  // override so the pick sticks when the operator later switches bid types.
+  // TARGET_CPA and MAX_CONVERSION intentionally do NOT touch the event —
+  // whatever's picked stays until the operator changes it themselves.
+  useEffect(() => {
+    if (bidType !== 'TARGET_ROAS') return;
+    if (!nbEvents || nbEvents.length === 0) return;
+    const cp = nbEvents.find((e) => e.eventType === 'complete_payment');
+    if (cp && manualEventId !== cp.id) {
+      setNbForm({ manualEventId: cp.id });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bidType, nbEvents]);
 
   // Downgrade to MAX_CONVERSION if the picked event no longer supports ROAS.
   useEffect(() => {
