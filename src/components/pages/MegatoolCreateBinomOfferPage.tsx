@@ -158,6 +158,28 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const setRoasPercent = (v: number) => setNbForm({ roasPercent: v });
   const setManualEventId = (v: string | null) => setNbForm({ manualEventId: v });
 
+  // Local text state for CPA/ROAS so operators can type both "." and ","
+  // as decimal separators. HTML type="number" rejects commas, so these
+  // inputs use type="text" + inputMode="decimal"; the string is normalized
+  // to a dot before parsing to the store's number.
+  const [cpaText, setCpaText] = useState<string>(String(targetCpaDollars));
+  const [roasText, setRoasText] = useState<string>(
+    roasPercent === 0 ? '' : String(roasPercent),
+  );
+  // Re-sync local text when the store changes from outside (e.g. form reset).
+  useEffect(() => {
+    if (Number((cpaText || '0').replace(',', '.')) !== targetCpaDollars) {
+      setCpaText(String(targetCpaDollars));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetCpaDollars]);
+  useEffect(() => {
+    if (Number((roasText || '0').replace(',', '.')) !== roasPercent) {
+      setRoasText(roasPercent === 0 ? '' : String(roasPercent));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roasPercent]);
+
   const nbAccountNames = useMemo(() => nbAccountsList.map((a) => a.name), [nbAccountsList]);
   const selectedAccount = nbAccountsList.find((a) => a.name === selectedAccountName);
 
@@ -467,16 +489,18 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               <div className="relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
                 <Input
-                  type="number"
-                  min={0}
-                  step={0.01}
-                  value={targetCpaDollars}
+                  type="text"
+                  inputMode="decimal"
+                  value={cpaText}
                   onChange={(e) => {
-                    const raw = e.target.value;
-                    setTargetCpaDollars(raw === '' ? 0 : Number(raw));
+                    const raw = e.target.value.replace(',', '.');
+                    if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
+                    setCpaText(raw);
+                    const num = raw === '' || raw === '.' ? 0 : Number(raw);
+                    setTargetCpaDollars(Number.isFinite(num) ? num : 0);
                   }}
                   placeholder="5"
-                  className="pl-6 no-spinner"
+                  className="pl-6"
                 />
               </div>
             </div>
@@ -487,17 +511,18 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               <label className="text-xs font-medium uppercase text-slate-500">ROAS Target (%) *</label>
               <div className="relative">
                 <Input
-                  type="number"
-                  min={1}
-                  max={1000}
-                  step={1}
-                  value={roasPercent === 0 ? '' : roasPercent}
+                  type="text"
+                  inputMode="decimal"
+                  value={roasText}
                   onChange={(e) => {
-                    const raw = e.target.value;
-                    setRoasPercent(raw === '' ? 0 : Number(raw));
+                    const raw = e.target.value.replace(',', '.');
+                    if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
+                    setRoasText(raw);
+                    const num = raw === '' || raw === '.' ? 0 : Number(raw);
+                    setRoasPercent(Number.isFinite(num) ? num : 0);
                   }}
                   placeholder="120"
-                  className="pr-8 no-spinner"
+                  className="pr-8"
                 />
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">%</span>
               </div>
