@@ -11,11 +11,16 @@ import {
   getTrackerFromTrackingUrl,
 } from '@/lib/binomGroups';
 import { MegatoolCreateNbCampaignPage } from './MegatoolCreateNbCampaignPage';
+import { MegatoolCreateTtCampaignPage } from './MegatoolCreateTtCampaignPage';
 
 // Kept in sync with the NB page's own constant list. When the two pages merge
 // fully these will consolidate; for now duplicated so the pre-Binom bid-type
 // picker knows the labels without importing from the NB page.
 type NbBidType = 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
+
+const TT_PIXELS = [
+  { name: 'GenOst', code: 'D7G9EPRC77U62Q87BP70' },
+];
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -99,7 +104,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const form = useAppStore((s) => s.megatoolBinomForm);
   const setBinomForm = useAppStore((s) => s.setBinomForm);
   const resetBinomForm = useAppStore((s) => s.resetBinomForm);
-  const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName, destination } = form;
+  const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName, destination, ttPixelCode } = form;
   const setTracker = (v: string) => setBinomForm({ tracker: v });
   const setTrackerAutoSet = (v: boolean) => setBinomForm({ trackerAutoSet: v });
   const setNewAmoDomain = (v: string) => setBinomForm({ newAmoDomain: v });
@@ -107,6 +112,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const setNewBinomGroup = (v: string) => setBinomForm({ newBinomGroup: v });
   const setIsRoas = (v: boolean) => setBinomForm({ isRoas: v });
   const setBinomCampaignName = (v: string) => setBinomForm({ binomCampaignName: v });
+  const setTtPixelCode = (v: string) => setBinomForm({ ttPixelCode: v.trim() });
 
   // Seed tracker from auto-detect on first mount if nothing's been set.
   useEffect(() => {
@@ -115,6 +121,12 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (destination === 'TT' && !ttPixelCode) {
+      setBinomForm({ ttPixelCode: TT_PIXELS[0].code });
+    }
+  }, [destination, ttPixelCode, setBinomForm]);
 
   const [showRaw, setShowRaw] = useState(false);
 
@@ -284,6 +296,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
 
   const handleSubmit = () => {
     if (!selectedFbAd.trackingUrl) return;
+    if (destination === 'TT' && !(ttPixelCode ?? '').trim()) return;
     void createBinomOffer({
       trackingUrl: selectedFbAd.trackingUrl,
       newAmoDomain,
@@ -611,6 +624,23 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             />
           </div>
 
+          {destination === 'TT' && (
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">
+                TikTok Pixel <span className="text-red-600">*</span>
+              </label>
+              <select
+                value={ttPixelCode || TT_PIXELS[0].code}
+                onChange={(e) => setTtPixelCode(e.target.value)}
+                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+              >
+                {TT_PIXELS.map((p) => (
+                  <option key={p.code} value={p.code}>{p.name} ({p.code})</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div>
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
               <span>Binom Campaign Name</span>
@@ -639,7 +669,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           <div className="flex gap-2 pt-2">
             <Button
               onClick={handleSubmit}
-              disabled={isLoading || !selectedFbAd.trackingUrl}
+              disabled={isLoading || !selectedFbAd.trackingUrl || (destination === 'TT' && !(ttPixelCode ?? '').trim())}
               className="flex-1"
             >
               {isLoading ? 'Creating…' : 'Create Binom Offer'}
@@ -728,6 +758,12 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           so this is a single continuous workflow across two ordered actions. */}
       {result && destination !== 'TT' && (
         <MegatoolCreateNbCampaignPage
+          embedded
+          onClose={onClose}
+        />
+      )}
+      {result && destination === 'TT' && (
+        <MegatoolCreateTtCampaignPage
           embedded
           onClose={onClose}
         />
