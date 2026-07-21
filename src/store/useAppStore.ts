@@ -491,6 +491,12 @@ interface AppState {
      *  When present, sent through as a verbatim override — the workflow
      *  uses it instead of synthesizing from the cloned template. */
     binomCampaignName: string;
+    /** Traffic-source destination picked on the FB Reader tab before Fetch.
+     *  Undefined until the operator explicitly picks one — the FB Reader
+     *  gates Fetch on this being set. Shipped as top-level `destination`
+     *  in the Binom Offer webhook payload; the workflow branches its
+     *  trafficSourceId lookup on it. */
+    destination?: 'NB' | 'TT';
   };
   /** Persistent NB-campaign form state. Same rationale as megatoolBinomForm.
    *  campaignName / brandName default from binomOfferResult; empty string means
@@ -981,6 +987,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     newBinomGroup: 'same',
     isRoas: false,
     binomCampaignName: '',
+    destination: undefined,
   },
   megatoolNbForm: {
     selectedAccountName: '',
@@ -1412,6 +1419,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       newBinomGroup: 'same',
       isRoas: false,
       binomCampaignName: '',
+      destination: undefined,
     },
   }),
   setNbForm: (patch) => set((state) => ({
@@ -1457,6 +1465,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
     set({ binomOfferStatus: 'loading', binomOfferError: null, binomOfferResult: null });
     try {
+      // Destination is picked on the FB Reader tab (before this call) and lives
+      // in megatoolBinomForm — pull it here so callers don't have to thread it.
+      const destination = get().megatoolBinomForm.destination;
       const payload = {
         trackingUrl: input.trackingUrl,
         newAmoDomain: input.newAmoDomain,
@@ -1470,6 +1481,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           ? { binomCampaignName: input.binomCampaignName.trim() }
           : {}),
         ...(input.nbEventType ? { nbEventType: input.nbEventType } : {}),
+        ...(destination ? { destination } : {}),
       };
       console.log('[createBinomOffer] request payload:', payload);
       const { data } = await axios.post(WEBHOOKS.binomOfferCreator, payload, { timeout: 180_000 });
