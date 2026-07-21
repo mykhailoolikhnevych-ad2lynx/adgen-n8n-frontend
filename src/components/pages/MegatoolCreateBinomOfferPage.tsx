@@ -11,11 +11,16 @@ import {
   getTrackerFromTrackingUrl,
 } from '@/lib/binomGroups';
 import { MegatoolCreateNbCampaignPage } from './MegatoolCreateNbCampaignPage';
+import { MegatoolCreateTtCampaignPage } from './MegatoolCreateTtCampaignPage';
 
 // Kept in sync with the NB page's own constant list. When the two pages merge
 // fully these will consolidate; for now duplicated so the pre-Binom bid-type
 // picker knows the labels without importing from the NB page.
 type NbBidType = 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
+
+const TT_PIXELS = [
+  { name: 'GenOst', code: 'D7G9EPRC77U62Q87BP70' },
+];
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -116,6 +121,12 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (destination === 'TT' && !ttPixelCode) {
+      setBinomForm({ ttPixelCode: TT_PIXELS[0].code });
+    }
+  }, [destination, ttPixelCode, setBinomForm]);
 
   const [showRaw, setShowRaw] = useState(false);
 
@@ -616,16 +627,17 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           {destination === 'TT' && (
             <div>
               <label className="text-xs font-medium uppercase text-slate-500">
-                TikTok Pixel Code <span className="text-red-600">*</span>
+                TikTok Pixel <span className="text-red-600">*</span>
               </label>
-              <Input
-                value={ttPixelCode ?? ''}
+              <select
+                value={ttPixelCode || TT_PIXELS[0].code}
                 onChange={(e) => setTtPixelCode(e.target.value)}
-                placeholder="e.g. D7G9EPRC77U62Q87BP70"
-              />
-              <p className="text-xs text-slate-500 mt-1">
-                Found under Pixels → your pixel → pixel_code. Temporary — dropdown coming in Screen 1.
-              </p>
+                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+              >
+                {TT_PIXELS.map((p) => (
+                  <option key={p.code} value={p.code}>{p.name} ({p.code})</option>
+                ))}
+              </select>
             </div>
           )}
 
@@ -746,6 +758,12 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           so this is a single continuous workflow across two ordered actions. */}
       {result && destination !== 'TT' && (
         <MegatoolCreateNbCampaignPage
+          embedded
+          onClose={onClose}
+        />
+      )}
+      {result && destination === 'TT' && (
+        <MegatoolCreateTtCampaignPage
           embedded
           onClose={onClose}
         />

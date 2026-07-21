@@ -360,6 +360,26 @@ export interface CreateNbCampaignInput {
   bidRate?: number | null;
 }
 
+// MEGATOOL — Create TT Campaign (TikTok Ads) input/response shapes.
+// Advertiser / identity / pixel are hardcoded on the n8n side today; only
+// per-run params flow through this input.
+export interface CreateTtCampaignInput {
+  campaignName: string;
+  /** USD; workflow sends this straight through as conversion_bid_price. */
+  conversionBidPrice: number;
+  landingPageUrl: string;
+  imageUrl: string;
+  adText?: string;
+}
+
+export interface TtCampaignResult {
+  campaign_id: string;
+  adgroup_id: string;
+  ad_id: string;
+  image_id?: string;
+  raw?: unknown;
+}
+
 interface AppState {
   formData: FormData;
   angles: Angle[];
@@ -523,6 +543,15 @@ interface AppState {
     startTimezone: 'PDT' | 'EEST';
     adStates: { adId: string; headline: string; description: string }[];
   };
+  /** Persistent TT-campaign form state (Screen 1). Only conversionBidPrice
+   *  is operator-editable today; the rest of the TT create payload uses
+   *  hardcoded constants on the n8n side. */
+  megatoolTtForm: {
+    conversionBidPrice: string;
+  };
+  ttCampaignStatus: ArticleStatus;
+  ttCampaignResult: TtCampaignResult | null;
+  ttCampaignError: string | null;
   rsocBundle: RsocBundle | null;
   rsocAudiencesStatus: ArticleStatus;
   rsocAudiencesError: string | null;
@@ -563,6 +592,10 @@ interface AppState {
   resetBinomForm: () => void;
   setNbForm: (patch: Partial<AppState['megatoolNbForm']>) => void;
   resetNbForm: () => void;
+  setTtForm: (patch: Partial<AppState['megatoolTtForm']>) => void;
+  resetTtForm: () => void;
+  createTtCampaign: (input: CreateTtCampaignInput) => Promise<void>;
+  resetTtCampaign: () => void;
   generateRsocAudiences: (input: RsocAudiencesInput) => Promise<void>;
   generateRsocHeadlines: (pickedIds: string[]) => Promise<void>;
   toggleRsocAudienceTranslation: (segmentId: string) => Promise<void>;
@@ -649,6 +682,7 @@ const WEBHOOKS = {
   fbCampaignReader: import.meta.env.PUBLIC_WEBHOOK_FB_CAMPAIGN_READER_URL,
   binomOfferCreator: import.meta.env.PUBLIC_WEBHOOK_BINOM_OFFER_CREATOR_URL,
   nbCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL,
+  ttCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_TT_CAMPAIGN_CREATOR_URL,
   nbAccountsList: import.meta.env.PUBLIC_WEBHOOK_NB_ACCOUNTS_LIST_URL,
   nbEventsList: import.meta.env.PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL,
 };
@@ -1011,6 +1045,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     startTimezone: 'PDT',
     adStates: [],
   },
+  megatoolTtForm: { conversionBidPrice: '1.9' },
+  ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
   imageGenerationModel: 'google/gemini-3-pro-image-preview',
@@ -1450,6 +1486,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       adStates: [],
     },
   }),
+  setTtForm: (patch) => set((state) => ({
+    megatoolTtForm: { ...state.megatoolTtForm, ...patch },
+  })),
+  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '1.9' } }),
+  resetTtCampaign: () => set({ ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null }),
 
   // MEGATOOL — Create NB Campaign sub-tab visibility + run state.
   openNbCampaign: () => set({ nbCampaignOpen: true }),
@@ -1581,6 +1622,51 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ nbCampaignStatus: 'error', nbCampaignError: msg, nbCampaignResult: null });
       get().showError(`NB Campaign Creator failed: ${msg}`);
       logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+    }
+  },
+
+  createTtCampaign: async (input) => {
+    const logMeta = {
+      campaignName: input.campaignName,
+      conversionBidPrice: input.conversionBidPrice,
+      landingPageUrl: input.landingPageUrl,
+    };
+    if (!WEBHOOKS.ttCampaignCreator) {
+      const msg = 'PUBLIC_WEBHOOK_TT_CAMPAIGN_CREATOR_URL is not set in .env';
+      set({ ttCampaignStatus: 'error', ttCampaignError: msg, ttCampaignResult: null });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-tt', action: 'createTtCampaign', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    set({ ttCampaignStatus: 'loading', ttCampaignError: null, ttCampaignResult: null });
+    try {
+      console.log('[createTtCampaign] request payload:', input);
+      const { data } = await axios.post(WEBHOOKS.ttCampaignCreator, input, { timeout: 180_000 });
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer || outer.ok === false) {
+        const msg = outer?.error || 'TT Campaign Creator returned an error';
+        const step = outer?.step ? ` (step: ${outer.step})` : '';
+        const full = `${msg}${step}`;
+        set({ ttCampaignStatus: 'error', ttCampaignError: full, ttCampaignResult: null });
+        get().showError(`TT Campaign Creator: ${full}`);
+        logEvent({ tab: 'megatool-tt', action: 'createTtCampaign', meta: logMeta, metaOut: outer, errorMessage: full });
+        return;
+      }
+      const result: TtCampaignResult = {
+        campaign_id: String(outer.campaign_id ?? ''),
+        adgroup_id: String(outer.adgroup_id ?? ''),
+        ad_id: String(outer.ad_id ?? ''),
+        image_id: outer.image_id != null ? String(outer.image_id) : undefined,
+        raw: outer,
+      };
+      set({ ttCampaignStatus: 'success', ttCampaignResult: result, ttCampaignError: null });
+      logEvent({ tab: 'megatool-tt', action: 'createTtCampaign', meta: logMeta, metaOut: result });
+    } catch (e) {
+      console.error('[createTtCampaign]', e);
+      const msg = humanizeError(e);
+      set({ ttCampaignStatus: 'error', ttCampaignError: msg, ttCampaignResult: null });
+      get().showError(`TT Campaign Creator failed: ${msg}`);
+      logEvent({ tab: 'megatool-tt', action: 'createTtCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
     }
   },
 
