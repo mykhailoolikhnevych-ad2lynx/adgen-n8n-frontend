@@ -278,6 +278,9 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
   const resetBinomOffer = useAppStore((s) => s.resetBinomOffer);
   const closeNbCampaign = useAppStore((s) => s.closeNbCampaign);
   const resetNbCampaign = useAppStore((s) => s.resetNbCampaign);
+  const destination = useAppStore((s) => s.megatoolBinomForm.destination);
+  const setBinomForm = useAppStore((s) => s.setBinomForm);
+  const setDestination = (v: 'NB' | 'TT') => setBinomForm({ destination: v });
 
   const isLoading = status === 'loading';
 
@@ -295,6 +298,7 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
   }, [data]);
 
   const handleFetch = () => {
+    if (!destination) return;
     const trimmed = campaignId.trim();
     if (!trimmed) { setIdError(true); return; }
     setIdError(false);
@@ -334,6 +338,39 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
 
           <div className="space-y-3">
             <div>
+              <label className="text-xs font-medium uppercase text-slate-500">
+                Destination <span className="text-red-500">*</span>
+              </label>
+              <div className="mt-1 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDestination('NB')}
+                  className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                    destination === 'NB'
+                      ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                      : 'border-input bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  Newsbreak
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDestination('TT')}
+                  className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                    destination === 'TT'
+                      ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                      : 'border-input bg-white hover:bg-slate-50'
+                  }`}
+                >
+                  TikTok
+                </button>
+              </div>
+              {!destination && (
+                <p className="text-xs text-slate-500 mt-1">Choose destination first</p>
+              )}
+            </div>
+
+            <div>
               <label className="text-xs font-medium uppercase text-slate-500">Source FB Campaign ID *</label>
               <Input
                 value={campaignId}
@@ -350,7 +387,7 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
             </div>
           </div>
 
-          <Button onClick={handleFetch} className="mt-2" disabled={isLoading}>
+          <Button onClick={handleFetch} className="mt-2" disabled={isLoading || !destination}>
             {isLoading ? 'Fetching…' : 'Fetch'}
           </Button>
 

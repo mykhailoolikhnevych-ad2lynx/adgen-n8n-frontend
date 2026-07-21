@@ -99,7 +99,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const form = useAppStore((s) => s.megatoolBinomForm);
   const setBinomForm = useAppStore((s) => s.setBinomForm);
   const resetBinomForm = useAppStore((s) => s.resetBinomForm);
-  const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName } = form;
+  const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName, destination } = form;
   const setTracker = (v: string) => setBinomForm({ tracker: v });
   const setTrackerAutoSet = (v: boolean) => setBinomForm({ trackerAutoSet: v });
   const setNewAmoDomain = (v: string) => setBinomForm({ newAmoDomain: v });
@@ -256,15 +256,15 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     const base = fbCampaign || nbName || fbFallback;
     if (!base) return '';
     const roasPrefix = derivedIsRoas ? 'ROAS | ' : '';
-    const acctPart = selectedAccountName
-      ? ` | US | NB | ${selectedAccountName}`
-      : ' | US | NB';
+    const acctPart = destination === 'TT'
+      ? ' | US | TT'
+      : (selectedAccountName ? ` | US | NB | ${selectedAccountName}` : ' | US | NB');
     const now = new Date();
     const dd = String(now.getDate()).padStart(2, '0');
     const mm = String(now.getMonth() + 1).padStart(2, '0');
     const datePart = `${dd}.${mm}.${now.getFullYear()}`;
     return `${roasPrefix}${base}${acctPart} | MEGATOOL | ${datePart}`;
-  }, [nbForm.campaignName, selectedFbAd, selectedAccountName, derivedIsRoas]);
+  }, [nbForm.campaignName, selectedFbAd, selectedAccountName, derivedIsRoas, destination]);
   const binomCampaignNameEffective = binomCampaignName || binomCampaignNameDefault;
 
   const isLoading = status === 'loading';
@@ -362,6 +362,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           {/* ── Pre-Binom NB choices — Account → Event → Bid Type. The bid
               type here drives whether the resulting Binom URL is a ROAS URL
               (event=complete_payment + _roas suffix). No more Binom checkbox. */}
+          {destination !== 'TT' && (
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
               NB Account *
@@ -443,7 +444,10 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
               </div>
             )}
           </div>
+          )}
 
+          {destination !== 'TT' && (
+          <>
           <div>
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
               <span>Bid Type *</span>
@@ -536,6 +540,8 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">%</span>
               </div>
             </div>
+          )}
+          </>
           )}
 
           <div>
@@ -720,7 +726,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
       {/* Embedded NB Campaign flow — appears below the Binom section once the
           Binom offer has been created. Shares the same store-backed form state,
           so this is a single continuous workflow across two ordered actions. */}
-      {result && (
+      {result && destination !== 'TT' && (
         <MegatoolCreateNbCampaignPage
           embedded
           onClose={onClose}
