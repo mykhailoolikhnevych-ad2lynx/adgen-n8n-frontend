@@ -99,7 +99,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const form = useAppStore((s) => s.megatoolBinomForm);
   const setBinomForm = useAppStore((s) => s.setBinomForm);
   const resetBinomForm = useAppStore((s) => s.resetBinomForm);
-  const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName, destination } = form;
+  const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName, destination, ttPixelCode } = form;
   const setTracker = (v: string) => setBinomForm({ tracker: v });
   const setTrackerAutoSet = (v: boolean) => setBinomForm({ trackerAutoSet: v });
   const setNewAmoDomain = (v: string) => setBinomForm({ newAmoDomain: v });
@@ -107,6 +107,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const setNewBinomGroup = (v: string) => setBinomForm({ newBinomGroup: v });
   const setIsRoas = (v: boolean) => setBinomForm({ isRoas: v });
   const setBinomCampaignName = (v: string) => setBinomForm({ binomCampaignName: v });
+  const setTtPixelCode = (v: string) => setBinomForm({ ttPixelCode: v.trim() });
 
   // Seed tracker from auto-detect on first mount if nothing's been set.
   useEffect(() => {
@@ -284,6 +285,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
 
   const handleSubmit = () => {
     if (!selectedFbAd.trackingUrl) return;
+    if (destination === 'TT' && !(ttPixelCode ?? '').trim()) return;
     void createBinomOffer({
       trackingUrl: selectedFbAd.trackingUrl,
       newAmoDomain,
@@ -611,6 +613,22 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             />
           </div>
 
+          {destination === 'TT' && (
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">
+                TikTok Pixel Code <span className="text-red-600">*</span>
+              </label>
+              <Input
+                value={ttPixelCode ?? ''}
+                onChange={(e) => setTtPixelCode(e.target.value)}
+                placeholder="e.g. D7G9EPRC77U62Q87BP70"
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Found under Pixels → your pixel → pixel_code. Temporary — dropdown coming in Screen 1.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
               <span>Binom Campaign Name</span>
@@ -639,7 +657,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           <div className="flex gap-2 pt-2">
             <Button
               onClick={handleSubmit}
-              disabled={isLoading || !selectedFbAd.trackingUrl}
+              disabled={isLoading || !selectedFbAd.trackingUrl || (destination === 'TT' && !(ttPixelCode ?? '').trim())}
               className="flex-1"
             >
               {isLoading ? 'Creating…' : 'Create Binom Offer'}

@@ -497,6 +497,13 @@ interface AppState {
      *  in the Binom Offer webhook payload; the workflow branches its
      *  trafficSourceId lookup on it. */
     destination?: 'NB' | 'TT';
+    /** TT pixel_code the operator pastes on the Binom Offer form. Shipped
+     *  as top-level `ttPixelCode` in the webhook payload; the workflow
+     *  uses it as the `funnel=` query param on the TT click URL. Empty
+     *  string until the operator types one. Temporary text input — will
+     *  be replaced by a pixel dropdown when Screen 1 (full TT adgroup
+     *  form) ships. */
+    ttPixelCode?: string;
   };
   /** Persistent NB-campaign form state. Same rationale as megatoolBinomForm.
    *  campaignName / brandName default from binomOfferResult; empty string means
@@ -988,6 +995,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     isRoas: false,
     binomCampaignName: '',
     destination: undefined,
+    ttPixelCode: '',
   },
   megatoolNbForm: {
     selectedAccountName: '',
@@ -1420,6 +1428,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       isRoas: false,
       binomCampaignName: '',
       destination: undefined,
+      ttPixelCode: '',
     },
   }),
   setNbForm: (patch) => set((state) => ({
@@ -1468,6 +1477,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Destination is picked on the FB Reader tab (before this call) and lives
       // in megatoolBinomForm — pull it here so callers don't have to thread it.
       const destination = get().megatoolBinomForm.destination;
+      const ttPixelCodeRaw = get().megatoolBinomForm.ttPixelCode ?? '';
+      const ttPixelCode = ttPixelCodeRaw.trim();
       const payload = {
         trackingUrl: input.trackingUrl,
         newAmoDomain: input.newAmoDomain,
@@ -1482,6 +1493,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           : {}),
         ...(input.nbEventType ? { nbEventType: input.nbEventType } : {}),
         ...(destination ? { destination } : {}),
+        ...(ttPixelCode ? { ttPixelCode } : {}),
       };
       console.log('[createBinomOffer] request payload:', payload);
       const { data } = await axios.post(WEBHOOKS.binomOfferCreator, payload, { timeout: 180_000 });
