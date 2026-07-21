@@ -21,11 +21,13 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 // Surfaced here read-only so the operator can eyeball what's being posted.
 const TT_INFO = [
   { label: 'Advertiser', value: '7654600970270867474' },
-  { label: 'Identity', value: 'Personal Guide (BC_AUTH_TT)' },
+  { label: 'Identity', value: 'Fresh CUSTOMIZED_USER per run' },
   { label: 'Pixel', value: 'GenOst (D7G9EPRC77U62Q87BP70)' },
+  { label: 'Optimization goal', value: 'CONVERT' },
   { label: 'Optimization event', value: 'BUTTON' },
   { label: 'Objective', value: 'LEAD_GENERATION' },
-  { label: 'Budget mode', value: 'BUDGET_MODE_INFINITE' },
+  { label: 'Budget mode', value: 'INFINITE (campaign) / DAY $20 (adgroup)' },
+  { label: 'Ad format', value: 'SINGLE_VIDEO (auto cover)' },
 ] as const;
 
 interface Props {
@@ -108,9 +110,10 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
 
   const campaignName = binomOfferResult.binomCampaignName ?? '';
   const landingPageUrl = binomOfferResult.binomCampaignUrl ?? '';
-  const imageUrl = selectedFbAd.thumbnailUrl ?? '';
+  const videoUrl = selectedFbAd.mediaKind === 'video' ? (selectedFbAd.assetUrl ?? '') : '';
+  const isVideo = selectedFbAd.mediaKind === 'video' && !!videoUrl;
 
-  const canSubmit = !isLoading && cpaValid && !!campaignName && !!landingPageUrl && !!imageUrl;
+  const canSubmit = !isLoading && cpaValid && !!campaignName && !!landingPageUrl && isVideo;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -118,7 +121,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       campaignName,
       conversionBidPrice: parsedCpa,
       landingPageUrl,
-      imageUrl,
+      videoUrl,
       adText: '',
     });
   };
@@ -223,29 +226,34 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
           {/* FB creative preview */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
-              FB Creative (image uploaded to TT)
+              FB Creative (video uploaded to TT)
             </label>
             <div className="mt-1 flex items-center gap-3 border rounded-lg bg-slate-50 p-2">
-              {imageUrl ? (
+              {selectedFbAd.thumbnailUrl ? (
                 <img
-                  src={imageUrl}
+                  src={selectedFbAd.thumbnailUrl}
                   alt=""
                   className="h-20 w-20 rounded object-cover shrink-0 border"
                 />
               ) : (
                 <div className="h-20 w-20 rounded bg-slate-200 shrink-0 flex items-center justify-center text-[10px] text-slate-500">
-                  no img
+                  no thumb
                 </div>
               )}
               <div className="flex-1 min-w-0 text-xs">
                 <div className="font-semibold text-slate-800 truncate" title={selectedFbAd.adName}>
                   {selectedFbAd.adName}
                 </div>
-                <div className="text-slate-500 font-mono break-all text-[10px]" title={imageUrl}>
-                  {imageUrl || '(no image url)'}
+                <div className="text-slate-500 font-mono break-all text-[10px]" title={videoUrl}>
+                  {videoUrl || '(no video url — this ad is image-only, TT requires video)'}
                 </div>
               </div>
             </div>
+            {!isVideo && (
+              <p className="text-xs text-red-600 mt-1">
+                TT feed placement requires a video creative. Pick a video FB ad in FB Reader.
+              </p>
+            )}
           </div>
 
           <div className="flex gap-2 pt-2">
@@ -298,8 +306,14 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
               <CopyableCard label="TT Campaign ID" value={result.campaign_id} />
               <CopyableCard label="TT Adgroup ID" value={result.adgroup_id} />
               <CopyableCard label="TT Ad ID" value={result.ad_id} />
-              {result.image_id && (
-                <CopyableCard label="TT Image ID" value={result.image_id} />
+              {result.video_id && (
+                <CopyableCard label="TT Video ID" value={result.video_id} />
+              )}
+              {result.cover_image_id && (
+                <CopyableCard label="TT Cover Image ID" value={result.cover_image_id} />
+              )}
+              {result.identity_id && (
+                <CopyableCard label="TT Identity ID" value={result.identity_id} />
               )}
 
               <div className="border rounded-lg bg-slate-50">

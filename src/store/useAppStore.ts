@@ -368,7 +368,9 @@ export interface CreateTtCampaignInput {
   /** USD; workflow sends this straight through as conversion_bid_price. */
   conversionBidPrice: number;
   landingPageUrl: string;
-  imageUrl: string;
+  /** FB video source URL (.mp4). n8n uploads via /file/video/ad/upload/
+   *  UPLOAD_BY_URL — TT can't accept SINGLE_IMAGE on TikTok feed placement. */
+  videoUrl: string;
   adText?: string;
 }
 
@@ -376,7 +378,9 @@ export interface TtCampaignResult {
   campaign_id: string;
   adgroup_id: string;
   ad_id: string;
-  image_id?: string;
+  video_id?: string;
+  cover_image_id?: string;
+  identity_id?: string;
   raw?: unknown;
 }
 
@@ -1656,7 +1660,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         campaign_id: String(outer.campaign_id ?? ''),
         adgroup_id: String(outer.adgroup_id ?? ''),
         ad_id: String(outer.ad_id ?? ''),
-        image_id: outer.image_id != null ? String(outer.image_id) : undefined,
+        video_id: outer.video_id != null ? String(outer.video_id) : undefined,
+        cover_image_id: outer.cover_image_id != null ? String(outer.cover_image_id) : undefined,
+        identity_id: outer.identity_id != null ? String(outer.identity_id) : undefined,
         raw: outer,
       };
       set({ ttCampaignStatus: 'success', ttCampaignResult: result, ttCampaignError: null });
