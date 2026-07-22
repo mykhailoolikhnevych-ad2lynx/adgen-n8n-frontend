@@ -110,10 +110,10 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
 
   const campaignName = binomOfferResult.binomCampaignName ?? '';
   const landingPageUrl = binomOfferResult.binomCampaignUrl ?? '';
-  const videoUrl = selectedFbAd.mediaKind === 'video' ? (selectedFbAd.assetUrl ?? '') : '';
-  const isVideo = selectedFbAd.mediaKind === 'video' && !!videoUrl;
+  const isVideo = selectedFbAd.mediaKind === 'video';
+  const creativeUrl = selectedFbAd.assetUrl || selectedFbAd.thumbnailUrl || '';
 
-  const canSubmit = !isLoading && cpaValid && !!campaignName && !!landingPageUrl && isVideo;
+  const canSubmit = !isLoading && cpaValid && !!campaignName && !!landingPageUrl && !!creativeUrl;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -121,7 +121,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       campaignName,
       conversionBidPrice: parsedCpa,
       landingPageUrl,
-      videoUrl,
+      ...(isVideo ? { videoUrl: creativeUrl } : { imageUrl: creativeUrl }),
       adText: '',
     });
   };
@@ -226,7 +226,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
           {/* FB creative preview */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
-              FB Creative (video uploaded to TT)
+              FB Creative ({isVideo ? 'video' : 'image'} uploaded to TT)
             </label>
             <div className="mt-1 flex items-center gap-3 border rounded-lg bg-slate-50 p-2">
               {selectedFbAd.thumbnailUrl ? (
@@ -244,14 +244,14 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
                 <div className="font-semibold text-slate-800 truncate" title={selectedFbAd.adName}>
                   {selectedFbAd.adName}
                 </div>
-                <div className="text-slate-500 font-mono break-all text-[10px]" title={videoUrl}>
-                  {videoUrl || '(no video url — this ad is image-only, TT requires video)'}
+                <div className="text-slate-500 font-mono break-all text-[10px]" title={creativeUrl}>
+                  {creativeUrl || '(no creative url)'}
                 </div>
               </div>
             </div>
             {!isVideo && (
-              <p className="text-xs text-red-600 mt-1">
-                TT feed placement requires a video creative. Pick a video FB ad in FB Reader.
+              <p className="text-xs text-amber-700 mt-1">
+                TT feed prefers video. Image ads will be attempted with SINGLE_IMAGE — expect TT to reject "Unsupported image size" until you pick a video creative.
               </p>
             )}
           </div>
