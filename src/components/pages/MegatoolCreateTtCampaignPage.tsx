@@ -27,7 +27,7 @@ const TT_INFO = [
   { label: 'Optimization event', value: 'BUTTON' },
   { label: 'Objective', value: 'LEAD_GENERATION' },
   { label: 'Budget mode', value: 'INFINITE (campaign) / DAY $20 (adgroup)' },
-  { label: 'Ad format', value: 'SINGLE_VIDEO (auto cover)' },
+  { label: 'Ad format', value: 'SINGLE_VIDEO (auto cover; JPEGs wrapped as 1-frame video)' },
 ] as const;
 
 interface Props {
@@ -122,7 +122,9 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       conversionBidPrice: parsedCpa,
       landingPageUrl,
       ...(isVideo ? { videoUrl: creativeUrl } : { imageUrl: creativeUrl }),
-      adText: '',
+      // Reuse the FB ad's own copy. Smart+ rejects empty ad_text; the n8n node
+      // falls back to campaignName if this is still blank.
+      adText: selectedFbAd.creativeBody || selectedFbAd.creativeTitle || '',
     });
   };
 
@@ -150,6 +152,14 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
         </div>
 
         {/* Read-only info panel */}
+        <section className="mb-4 border rounded-lg bg-amber-50 p-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-1">
+            Known TT limit — 5s minimum duration
+          </div>
+          <div className="text-xs text-amber-900">
+            TT auto-wraps our image/video into a 0.04s frame. The ad publishes fine but delivery is blocked until duration ≥5s. Fix in TT UI: open the ad → click "Fix in editor" → TT extends duration.
+          </div>
+        </section>
         <section className="mb-4 border rounded-lg bg-slate-100 p-3">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
             TikTok Ads — fixed settings
@@ -250,8 +260,8 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
               </div>
             </div>
             {!isVideo && (
-              <p className="text-xs text-amber-700 mt-1">
-                TT feed prefers video. Image ads will be attempted with SINGLE_IMAGE — expect TT to reject "Unsupported image size" until you pick a video creative.
+              <p className="text-xs text-slate-500 mt-1">
+                Image will be uploaded to TT as a static-frame video so it runs on TikTok feed (TT wraps JPEGs into 40ms mp4s automatically).
               </p>
             )}
           </div>
