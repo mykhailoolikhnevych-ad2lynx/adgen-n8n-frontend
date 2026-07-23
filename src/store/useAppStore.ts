@@ -368,9 +368,12 @@ export interface CreateTtCampaignInput {
   /** USD; workflow sends this straight through as conversion_bid_price. */
   conversionBidPrice: number;
   landingPageUrl: string;
-  /** FB video source URL (.mp4). n8n uploads via /file/video/ad/upload/
-   *  UPLOAD_BY_URL — TT can't accept SINGLE_IMAGE on TikTok feed placement. */
-  videoUrl: string;
+  /** Set exactly one of videoUrl / imageUrl. n8n picks the path from whichever
+   *  is present. Video is the only format TT feed reliably accepts today;
+   *  image is included so operators can still submit image FB ads and see
+   *  TT's actual rejection message rather than being blocked on the client. */
+  videoUrl?: string;
+  imageUrl?: string;
   adText?: string;
 }
 
@@ -379,6 +382,7 @@ export interface TtCampaignResult {
   adgroup_id: string;
   ad_id: string;
   video_id?: string;
+  image_id?: string;
   cover_image_id?: string;
   identity_id?: string;
   raw?: unknown;
@@ -1661,6 +1665,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         adgroup_id: String(outer.adgroup_id ?? ''),
         ad_id: String(outer.ad_id ?? ''),
         video_id: outer.video_id != null ? String(outer.video_id) : undefined,
+        image_id: outer.image_id != null ? String(outer.image_id) : undefined,
         cover_image_id: outer.cover_image_id != null ? String(outer.cover_image_id) : undefined,
         identity_id: outer.identity_id != null ? String(outer.identity_id) : undefined,
         raw: outer,

@@ -27,7 +27,7 @@ const TT_INFO = [
   { label: 'Optimization event', value: 'BUTTON' },
   { label: 'Objective', value: 'LEAD_GENERATION' },
   { label: 'Budget mode', value: 'INFINITE (campaign) / DAY $20 (adgroup)' },
-  { label: 'Ad format', value: 'SINGLE_VIDEO (auto cover)' },
+  { label: 'Ad format', value: 'SINGLE_VIDEO (auto cover; JPEGs wrapped as 1-frame video)' },
 ] as const;
 
 interface Props {
@@ -110,10 +110,10 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
 
   const campaignName = binomOfferResult.binomCampaignName ?? '';
   const landingPageUrl = binomOfferResult.binomCampaignUrl ?? '';
-  const videoUrl = selectedFbAd.mediaKind === 'video' ? (selectedFbAd.assetUrl ?? '') : '';
-  const isVideo = selectedFbAd.mediaKind === 'video' && !!videoUrl;
+  const isVideo = selectedFbAd.mediaKind === 'video';
+  const creativeUrl = selectedFbAd.assetUrl || selectedFbAd.thumbnailUrl || '';
 
-  const canSubmit = !isLoading && cpaValid && !!campaignName && !!landingPageUrl && isVideo;
+  const canSubmit = !isLoading && cpaValid && !!campaignName && !!landingPageUrl && !!creativeUrl;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -121,8 +121,10 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       campaignName,
       conversionBidPrice: parsedCpa,
       landingPageUrl,
-      videoUrl,
-      adText: '',
+      ...(isVideo ? { videoUrl: creativeUrl } : { imageUrl: creativeUrl }),
+      // Reuse the FB ad's own copy. Smart+ rejects empty ad_text; the n8n node
+      // falls back to campaignName if this is still blank.
+      adText: selectedFbAd.creativeBody || selectedFbAd.creativeTitle || '',
     });
   };
 
@@ -150,6 +152,14 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
         </div>
 
         {/* Read-only info panel */}
+        <section className="mb-4 border rounded-lg bg-amber-50 p-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-1">
+            Known TT limit — 5s minimum duration
+          </div>
+          <div className="text-xs text-amber-900">
+            TT auto-wraps our image/video into a 0.04s frame. The ad publishes fine but delivery is blocked until duration ≥5s. Fix in TT UI: open the ad → click "Fix in editor" → TT extends duration.
+          </div>
+        </section>
         <section className="mb-4 border rounded-lg bg-slate-100 p-3">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-2">
             TikTok Ads — fixed settings
@@ -226,7 +236,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
           {/* FB creative preview */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
-              FB Creative (video uploaded to TT)
+              FB Creative ({isVideo ? 'video' : 'image'} uploaded to TT)
             </label>
             <div className="mt-1 flex items-center gap-3 border rounded-lg bg-slate-50 p-2">
               {selectedFbAd.thumbnailUrl ? (
@@ -244,14 +254,14 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
                 <div className="font-semibold text-slate-800 truncate" title={selectedFbAd.adName}>
                   {selectedFbAd.adName}
                 </div>
-                <div className="text-slate-500 font-mono break-all text-[10px]" title={videoUrl}>
-                  {videoUrl || '(no video url — this ad is image-only, TT requires video)'}
+                <div className="text-slate-500 font-mono break-all text-[10px]" title={creativeUrl}>
+                  {creativeUrl || '(no creative url)'}
                 </div>
               </div>
             </div>
             {!isVideo && (
-              <p className="text-xs text-red-600 mt-1">
-                TT feed placement requires a video creative. Pick a video FB ad in FB Reader.
+              <p className="text-xs text-slate-500 mt-1">
+                Image will be uploaded to TT as a static-frame video so it runs on TikTok feed (TT wraps JPEGs into 40ms mp4s automatically).
               </p>
             )}
           </div>
