@@ -381,6 +381,8 @@ export interface CreateTtCampaignInput {
   startDate?: string;
   /** UTC offset in minutes (as string), e.g. '120' = UTC+2. */
   startTimezone?: string;
+  /** TikTok location_id for the target country. Defaults to US (6252001). */
+  locationId?: string;
 }
 
 export interface TtCampaignResult {
@@ -572,6 +574,9 @@ interface AppState {
     /** UTC offset in minutes (as string) for interpreting the start day, e.g.
      *  '120' = UTC+2. n8n converts to the ad account timezone. */
     startTimezone: string;
+    /** Target country as a "Name (CODE)" label from TT_COUNTRY_OPTIONS. The
+     *  page maps it to the TikTok location_id sent to the API. */
+    geoLabel: string;
     /** Ad primary text. undefined = operator hasn't touched it → the page
      *  seeds the FB ad's own copy as the default at render time. */
     adText?: string;
@@ -1072,7 +1077,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     startTimezone: 'PDT',
     adStates: [],
   },
-  megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120' },
+  megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' },
   ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
@@ -1516,7 +1521,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTtForm: (patch) => set((state) => ({
     megatoolTtForm: { ...state.megatoolTtForm, ...patch },
   })),
-  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120' } }),
+  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' } }),
   resetTtCampaign: () => set({ ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null }),
 
   // MEGATOOL — Create NB Campaign sub-tab visibility + run state.

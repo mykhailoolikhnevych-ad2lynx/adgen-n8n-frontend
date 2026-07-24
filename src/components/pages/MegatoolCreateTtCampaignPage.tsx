@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Combobox } from '@/components/ui/Combobox';
+import { TT_COUNTRY_OPTIONS, TT_LOCATION_ID_BY_LABEL } from '@/data/ttCountries';
 import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
@@ -143,6 +145,13 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const startDate = ttForm.startDate;
   const startTimezone = ttForm.startTimezone;
 
+  // Target country → TikTok location_id. geoLabel is a "Name (CODE)" string;
+  // it only resolves to an id once it exactly matches a known country (the
+  // Combobox lets the user type freely, so mid-typing it won't resolve).
+  const geoLabel = ttForm.geoLabel;
+  const locationId = TT_LOCATION_ID_BY_LABEL[geoLabel];
+  const geoValid = !!locationId;
+
   // Ad text defaults to the FB ad's own copy until the operator edits it
   // (undefined = untouched). Smart+ rejects empty text; the node also falls
   // back to campaignName as a last resort.
@@ -150,7 +159,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const adText = ttForm.adText !== undefined ? ttForm.adText : defaultAdText;
   const adTextValid = adText.trim().length > 0 && adText.length <= TT_AD_TEXT_MAX;
 
-  const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid
+  const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid && geoValid
     && !!campaignName && !!landingPageUrl && !!creativeUrl;
 
   const handleSubmit = () => {
@@ -164,6 +173,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       dailyBudget: parsedBudget,
       startDate,
       startTimezone,
+      locationId,
     });
   };
 
@@ -314,6 +324,25 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
               <> TikTok shows schedules in the account timezone (UTC+2), so it displays the same moment converted — not the label picked here.</>
             )}
           </p>
+
+          {/* GEO — target country (searchable; maps to a TikTok location_id) */}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">
+              GEO — target country <span className="text-red-600">*</span>
+            </label>
+            <Combobox
+              value={geoLabel}
+              onChange={(v) => setTtForm({ geoLabel: v })}
+              options={TT_COUNTRY_OPTIONS}
+              placeholder="Type a country or ISO code…"
+              error={!geoValid}
+            />
+            <p className="text-xs text-slate-600 mt-1">
+              {geoValid
+                ? `TikTok location_id ${locationId}`
+                : 'Pick a country from the list.'}
+            </p>
+          </div>
 
           {/* Campaign Name — editable, defaults to the Binom name */}
           <div>
