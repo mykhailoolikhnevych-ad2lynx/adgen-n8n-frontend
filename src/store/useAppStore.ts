@@ -375,6 +375,12 @@ export interface CreateTtCampaignInput {
   videoUrl?: string;
   imageUrl?: string;
   adText?: string;
+  /** Campaign daily budget in USD. Defaults to 20 on the n8n side if omitted. */
+  dailyBudget?: number;
+  /** 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2' — when delivery starts. */
+  startDate?: string;
+  /** UTC offset in minutes (as string), e.g. '120' = UTC+2. */
+  startTimezone?: string;
 }
 
 export interface TtCampaignResult {
@@ -556,6 +562,19 @@ interface AppState {
    *  hardcoded constants on the n8n side. */
   megatoolTtForm: {
     conversionBidPrice: string;
+    /** TT campaign name. undefined = operator hasn't edited it → the page
+     *  seeds the Binom campaign name as the default at render time. */
+    campaignName?: string;
+    /** Campaign daily budget in USD (BUDGET_MODE_DYNAMIC_DAILY_BUDGET). */
+    dailyBudget: string;
+    /** When the adgroup starts delivering. 'now' = immediate. */
+    startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+    /** UTC offset in minutes (as string) for interpreting the start day, e.g.
+     *  '120' = UTC+2. n8n converts to the ad account timezone. */
+    startTimezone: string;
+    /** Ad primary text. undefined = operator hasn't touched it → the page
+     *  seeds the FB ad's own copy as the default at render time. */
+    adText?: string;
   };
   ttCampaignStatus: ArticleStatus;
   ttCampaignResult: TtCampaignResult | null;
@@ -1053,7 +1072,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     startTimezone: 'PDT',
     adStates: [],
   },
-  megatoolTtForm: { conversionBidPrice: '1.9' },
+  megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120' },
   ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
@@ -1497,7 +1516,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTtForm: (patch) => set((state) => ({
     megatoolTtForm: { ...state.megatoolTtForm, ...patch },
   })),
-  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '1.9' } }),
+  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120' } }),
   resetTtCampaign: () => set({ ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null }),
 
   // MEGATOOL — Create NB Campaign sub-tab visibility + run state.
