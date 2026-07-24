@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Combobox } from '@/components/ui/Combobox';
+import { TT_COUNTRY_OPTIONS, TT_LOCATION_ID_BY_LABEL } from '@/data/ttCountries';
 import { useAppStore, type ArticleStatus } from '@/store/useAppStore';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
@@ -21,14 +23,35 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 // Surfaced here read-only so the operator can eyeball what's being posted.
 const TT_INFO = [
   { label: 'Advertiser', value: '7654600970270867474' },
-  { label: 'Identity', value: 'Fresh CUSTOMIZED_USER per run' },
+  { label: 'Identity', value: 'personalguide333 (BC_AUTH_TT)' },
   { label: 'Pixel', value: 'GenOst (D7G9EPRC77U62Q87BP70)' },
-  { label: 'Optimization goal', value: 'CONVERT' },
-  { label: 'Optimization event', value: 'BUTTON' },
+  { label: 'Campaign type', value: 'Upgraded Smart+ (auto-optimized)' },
+  { label: 'Optimization', value: 'CONVERT / BUTTON' },
   { label: 'Objective', value: 'LEAD_GENERATION' },
-  { label: 'Budget mode', value: 'INFINITE (campaign) / DAY $20 (adgroup)' },
-  { label: 'Ad format', value: 'SINGLE_VIDEO (auto cover; JPEGs wrapped as 1-frame video)' },
+  { label: 'Ad format', value: 'Native Photo (image) / Video — TT auto-renders' },
+  { label: 'Account timezone', value: 'UTC+2 (Europe/Kiev)' },
 ] as const;
+
+type TtStartDate = 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+
+const TT_START_DATE_OPTIONS: Array<{ value: TtStartDate; label: string }> = [
+  { value: 'now', label: 'Now' },
+  { value: 'tomorrow', label: 'Tomorrow' },
+  { value: 'tomorrow+1', label: 'In 2 days' },
+  { value: 'tomorrow+2', label: 'In 3 days' },
+];
+
+// value = UTC offset in minutes (string). n8n converts the chosen start day to
+// the ad account timezone using this.
+const TT_TIMEZONE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '120', label: '(UTC+02:00) Central European Summer Time (Austria)' },
+  { value: '180', label: '(UTC+03:00) Kyiv (EEST)' },
+  { value: '0', label: '(UTC±00:00) UTC' },
+  { value: '-420', label: '(UTC-07:00) Los Angeles (PDT)' },
+];
+
+// TikTok ad primary-text hard limit.
+const TT_AD_TEXT_MAX = 100;
 
 interface Props {
   onClose: () => void;
@@ -108,12 +131,36 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const parsedCpa = Number((cpaText || '0').replace(',', '.'));
   const cpaValid = cpaText.trim() !== '' && Number.isFinite(parsedCpa) && parsedCpa > 0;
 
-  const campaignName = binomOfferResult.binomCampaignName ?? '';
+  const budgetText = ttForm.dailyBudget;
+  const parsedBudget = Number((budgetText || '0').replace(',', '.'));
+  const budgetValid = budgetText.trim() !== '' && Number.isFinite(parsedBudget) && parsedBudget > 0;
+
+  // Campaign name defaults to the Binom name until the operator edits it.
+  const binomCampaignName = binomOfferResult.binomCampaignName ?? '';
+  const campaignName = ttForm.campaignName !== undefined ? ttForm.campaignName : binomCampaignName;
   const landingPageUrl = binomOfferResult.binomCampaignUrl ?? '';
   const isVideo = selectedFbAd.mediaKind === 'video';
   const creativeUrl = selectedFbAd.assetUrl || selectedFbAd.thumbnailUrl || '';
 
-  const canSubmit = !isLoading && cpaValid && !!campaignName && !!landingPageUrl && !!creativeUrl;
+  const startDate = ttForm.startDate;
+  const startTimezone = ttForm.startTimezone;
+
+  // Target country → TikTok location_id. geoLabel is a "Name (CODE)" string;
+  // it only resolves to an id once it exactly matches a known country (the
+  // Combobox lets the user type freely, so mid-typing it won't resolve).
+  const geoLabel = ttForm.geoLabel;
+  const locationId = TT_LOCATION_ID_BY_LABEL[geoLabel];
+  const geoValid = !!locationId;
+
+  // Ad text defaults to the FB ad's own copy until the operator edits it
+  // (undefined = untouched). Smart+ rejects empty text; the node also falls
+  // back to campaignName as a last resort.
+  const defaultAdText = (selectedFbAd.creativeBody || selectedFbAd.creativeTitle || '').slice(0, TT_AD_TEXT_MAX);
+  const adText = ttForm.adText !== undefined ? ttForm.adText : defaultAdText;
+  const adTextValid = adText.trim().length > 0 && adText.length <= TT_AD_TEXT_MAX;
+
+  const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid && geoValid
+    && !!campaignName && !!landingPageUrl && !!creativeUrl;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -122,9 +169,11 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       conversionBidPrice: parsedCpa,
       landingPageUrl,
       ...(isVideo ? { videoUrl: creativeUrl } : { imageUrl: creativeUrl }),
-      // Reuse the FB ad's own copy. Smart+ rejects empty ad_text; the n8n node
-      // falls back to campaignName if this is still blank.
-      adText: selectedFbAd.creativeBody || selectedFbAd.creativeTitle || '',
+      adText,
+      dailyBudget: parsedBudget,
+      startDate,
+      startTimezone,
+      locationId,
     });
   };
 
@@ -151,13 +200,13 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
           )}
         </div>
 
-        {/* Read-only info panel */}
-        <section className="mb-4 border rounded-lg bg-amber-50 p-3">
-          <div className="text-[10px] font-semibold uppercase tracking-wide text-amber-800 mb-1">
-            Known TT limit — 5s minimum duration
+        {/* Info panel */}
+        <section className="mb-4 border rounded-lg bg-emerald-50 p-3">
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-emerald-800 mb-1">
+            Smart+ native feed ad
           </div>
-          <div className="text-xs text-amber-900">
-            TT auto-wraps our image/video into a 0.04s frame. The ad publishes fine but delivery is blocked until duration ≥5s. Fix in TT UI: open the ad → click "Fix in editor" → TT extends duration.
+          <div className="text-xs text-emerald-900">
+            Image creatives publish as native TikTok “Photo” posts — TT auto-adds music and renders them to a feed video. Campaigns are created <strong>paused</strong>; review in TT Ads Manager, then enable.
           </div>
         </section>
         <section className="mb-4 border rounded-lg bg-slate-100 p-3">
@@ -192,37 +241,130 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
             </div>
           </div>
 
-          {/* Conversion Bid Price */}
+          {/* Target cost per result + Daily budget */}
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-xs font-medium uppercase text-slate-500">
+                Target cost / result (USD) <span className="text-red-600">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={cpaText}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(',', '.');
+                    if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
+                    setTtForm({ conversionBidPrice: raw });
+                  }}
+                  placeholder="1.50"
+                  className={`pl-6 no-spinner ${cpaValid ? '' : 'border-red-400'}`}
+                />
+              </div>
+            </div>
+            <div className="flex-1">
+              <label className="text-xs font-medium uppercase text-slate-500">
+                Daily budget (USD) <span className="text-red-600">*</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
+                <Input
+                  type="text"
+                  inputMode="decimal"
+                  value={budgetText}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(',', '.');
+                    if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
+                    setTtForm({ dailyBudget: raw });
+                  }}
+                  placeholder="20"
+                  className={`pl-6 no-spinner ${budgetValid ? '' : 'border-red-400'}`}
+                />
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-slate-600 -mt-2">
+            Target CPA (BUTTON) & campaign daily budget. Comma or dot separator.
+          </p>
+
+          {/* Schedule — start day + timezone (TT interprets in the ad account tz) */}
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-xs font-medium uppercase text-slate-500">Start</label>
+              <select
+                value={startDate}
+                onChange={(e) => setTtForm({ startDate: e.target.value as TtStartDate })}
+                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                {TT_START_DATE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex-1">
+              <label className="text-xs font-medium uppercase text-slate-500">Timezone</label>
+              <select
+                value={startTimezone}
+                onChange={(e) => setTtForm({ startTimezone: e.target.value })}
+                disabled={startDate === 'now'}
+                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:bg-slate-100 disabled:text-slate-400"
+              >
+                {TT_TIMEZONE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <p className="text-xs text-slate-600 -mt-2">
+            {startDate === 'now'
+              ? 'Delivery starts immediately once you enable the campaign.'
+              : 'Starts at 00:00 of the chosen day in the selected timezone.'}
+            {startDate !== 'now' && (
+              <> TikTok shows schedules in the account timezone (UTC+2), so it displays the same moment converted — not the label picked here.</>
+            )}
+          </p>
+
+          {/* GEO — target country (searchable; maps to a TikTok location_id) */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
-              Conversion Bid Price (USD) <span className="text-red-600">*</span>
+              GEO — target country <span className="text-red-600">*</span>
             </label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
-              <Input
-                type="text"
-                inputMode="decimal"
-                value={cpaText}
-                onChange={(e) => {
-                  const raw = e.target.value.replace(',', '.');
-                  if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
-                  setTtForm({ conversionBidPrice: raw });
-                }}
-                placeholder="1.9"
-                className="pl-6 no-spinner"
-              />
-            </div>
+            <Combobox
+              value={geoLabel}
+              onChange={(v) => setTtForm({ geoLabel: v })}
+              options={TT_COUNTRY_OPTIONS}
+              placeholder="Type a country or ISO code…"
+              error={!geoValid}
+            />
             <p className="text-xs text-slate-600 mt-1">
-              Ціна за конверсію (BUTTON) в USD. Кома або крапка як роздільник.
+              {geoValid
+                ? `TikTok location_id ${locationId}`
+                : 'Pick a country from the list.'}
             </p>
           </div>
 
-          {/* Campaign Name (read-only from Binom result) */}
+          {/* Campaign Name — editable, defaults to the Binom name */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
-              Campaign Name (from Binom)
+              Campaign Name <span className="text-red-600">*</span>
             </label>
-            <CopyableCard label="TT Campaign Name" value={campaignName} />
+            <Input
+              type="text"
+              value={campaignName}
+              onChange={(e) => setTtForm({ campaignName: e.target.value })}
+              placeholder="TT campaign name"
+              className={campaignName.trim() ? '' : 'border-red-400'}
+            />
+            {ttForm.campaignName !== undefined && ttForm.campaignName !== binomCampaignName && (
+              <button
+                type="button"
+                onClick={() => setTtForm({ campaignName: undefined })}
+                className="text-xs text-blue-600 mt-1 hover:underline"
+              >
+                ↺ Reset to Binom name
+              </button>
+            )}
           </div>
 
           {/* Landing Page URL (read-only from Binom result) */}
@@ -231,6 +373,28 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
               Landing Page URL (Binom click URL)
             </label>
             <CopyableCard label="Landing Page URL" value={landingPageUrl} />
+          </div>
+
+          {/* Ad primary text — prefilled from the FB ad's own copy, editable */}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">
+              Ad text <span className="text-red-600">*</span>
+            </label>
+            <textarea
+              value={adText}
+              onChange={(e) => setTtForm({ adText: e.target.value.slice(0, TT_AD_TEXT_MAX) })}
+              rows={3}
+              placeholder="Primary text shown above the creative on the TikTok feed…"
+              className={`mt-1 w-full rounded-md border bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring resize-y ${adTextValid ? 'border-input' : 'border-red-400'}`}
+            />
+            <div className="flex items-center justify-between mt-1">
+              <p className="text-xs text-slate-500">
+                Prefilled from the FB ad — edit as needed.
+              </p>
+              <span className={`text-xs ${adText.length >= TT_AD_TEXT_MAX ? 'text-red-600' : 'text-slate-400'}`}>
+                {adText.length}/{TT_AD_TEXT_MAX}
+              </span>
+            </div>
           </div>
 
           {/* FB creative preview */}
@@ -261,7 +425,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
             </div>
             {!isVideo && (
               <p className="text-xs text-slate-500 mt-1">
-                Image will be uploaded to TT as a static-frame video so it runs on TikTok feed (TT wraps JPEGs into 40ms mp4s automatically).
+                Uploaded as a native TikTok Photo creative — Smart+ adds music and renders it to a feed video automatically.
               </p>
             )}
           </div>
