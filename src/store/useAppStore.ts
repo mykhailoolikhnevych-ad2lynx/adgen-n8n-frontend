@@ -383,6 +383,13 @@ export interface CreateTtCampaignInput {
   startTimezone?: string;
   /** TikTok location_id for the target country. Defaults to US (6252001). */
   locationId?: string;
+  /** Selected advertiser account + identity + pixel. When present, the n8n
+   *  workflow uses these instead of its hardcoded defaults. */
+  advertiserId?: string;
+  identityId?: string;
+  identityType?: string;
+  identityBcId?: string;
+  pixelId?: string;
 }
 
 export interface TtCampaignResult {
@@ -505,6 +512,18 @@ interface AppState {
   nbAccountsStatus: ArticleStatus;
   nbAccountsList: { name: string; id: string }[];
   nbAccountsError: string | null;
+  // TT advertiser accounts (from the `tt_accounts` datatable) + the selected
+  // account's live identities & pixels (from /identity/get/ + /pixel/list/).
+  ttAccountsStatus: ArticleStatus;
+  ttAccountsList: { name: string; id: string }[];
+  ttAccountsError: string | null;
+  ttContextStatus: ArticleStatus;
+  ttAccountContext: {
+    advertiserId: string;
+    identities: { id: string; type: string; name: string; bc_id: string }[];
+    pixels: { id: string; code: string; name: string }[];
+  } | null;
+  ttContextError: string | null;
   /** Cache of the currently-fetched NB conversion-event list keyed by
    *  adAccountId — only the last-fetched account is kept (the picker only
    *  shows the current selection). */
@@ -577,6 +596,12 @@ interface AppState {
     /** Target country as a "Name (CODE)" label from TT_COUNTRY_OPTIONS. The
      *  page maps it to the TikTok location_id sent to the API. */
     geoLabel: string;
+    /** Selected TT advertiser account, as "Name (id)" from ttAccountsList. */
+    accountLabel?: string;
+    /** Selected identity + pixel, as combobox labels from the account context.
+     *  The page resolves each back to its id/type before submit. */
+    identityLabel?: string;
+    pixelLabel?: string;
     /** Ad primary text. undefined = operator hasn't touched it → the page
      *  seeds the FB ad's own copy as the default at render time. */
     adText?: string;
@@ -619,6 +644,8 @@ interface AppState {
   resetNbCampaign: () => void;
   createNbCampaign: (input: CreateNbCampaignInput) => Promise<void>;
   fetchNbAccounts: () => Promise<void>;
+  fetchTtAccounts: () => Promise<void>;
+  fetchTtAccountContext: (advertiserId: string) => Promise<void>;
   fetchNbEvents: (adAccountId: string) => Promise<void>;
   setBinomForm: (patch: Partial<AppState['megatoolBinomForm']>) => void;
   resetBinomForm: () => void;
@@ -717,6 +744,8 @@ const WEBHOOKS = {
   ttCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_TT_CAMPAIGN_CREATOR_URL,
   nbAccountsList: import.meta.env.PUBLIC_WEBHOOK_NB_ACCOUNTS_LIST_URL,
   nbEventsList: import.meta.env.PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL,
+  ttAccountsList: import.meta.env.PUBLIC_WEBHOOK_TT_ACCOUNTS_LIST_URL,
+  ttAccountContext: import.meta.env.PUBLIC_WEBHOOK_TT_ACCOUNT_CONTEXT_URL,
 };
 
 export interface KeywordStudioInput {
@@ -1048,6 +1077,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   nbCampaignOpen: false,
   nbCampaignStatus: 'idle', nbCampaignResult: null, nbCampaignError: null,
   nbAccountsStatus: 'idle', nbAccountsList: [], nbAccountsError: null,
+  ttAccountsStatus: 'idle', ttAccountsList: [], ttAccountsError: null,
+  ttContextStatus: 'idle', ttAccountContext: null, ttContextError: null,
   nbEvents: null, nbEventsAccountId: null, nbEventsStatus: 'idle', nbEventsError: null,
   megatoolBinomForm: {
     // Defaults mirror the previous page-local useState values so first-time
@@ -1763,6 +1794,80 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error('[fetchNbAccounts]', e);
       const msg = humanizeError(e);
       set({ nbAccountsStatus: 'error', nbAccountsError: msg, nbAccountsList: [] });
+    }
+  },
+
+  // Megatool TT — advertiser accounts from the `tt_accounts` datatable.
+  // Same shape/handling as fetchNbAccounts.
+  fetchTtAccounts: async () => {
+    const url = (WEBHOOKS as any).ttAccountsList as string | undefined;
+    if (!url) {
+      const msg = 'PUBLIC_WEBHOOK_TT_ACCOUNTS_LIST_URL is not set in .env';
+      set({ ttAccountsStatus: 'error', ttAccountsError: msg, ttAccountsList: [] });
+      return;
+    }
+    set({ ttAccountsStatus: 'loading', ttAccountsError: null });
+    try {
+      const { data } = await axios.post(url, {}, { timeout: 30_000 });
+      const rawRows: any[] = Array.isArray(data)
+        ? data
+        : Array.isArray((data as any)?.items) ? (data as any).items
+        : Array.isArray((data as any)?.data) ? (data as any).data
+        : [];
+      const items = rawRows
+        .map((rawRow) => {
+          const row = rawRow && typeof rawRow === 'object' && 'json' in rawRow && rawRow.json && typeof rawRow.json === 'object'
+            ? rawRow.json : rawRow;
+          const name = String(row.Account_Name ?? row['Account Name'] ?? row.account_name ?? row.name ?? '').trim();
+          const id = String(row.Account_ID ?? row['Account ID'] ?? row.account_id ?? row.advertiser_id ?? row.id ?? '').trim();
+          return { name, id };
+        })
+        .filter((r) => r.name && r.id && /^\d+$/.test(r.id))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (items.length === 0) {
+        set({ ttAccountsStatus: 'error', ttAccountsError: 'No TT accounts returned from datatable', ttAccountsList: [] });
+        return;
+      }
+      set({ ttAccountsStatus: 'success', ttAccountsList: items, ttAccountsError: null });
+    } catch (e) {
+      console.error('[fetchTtAccounts]', e);
+      set({ ttAccountsStatus: 'error', ttAccountsError: humanizeError(e), ttAccountsList: [] });
+    }
+  },
+
+  // Megatool TT — the selected account's identities + pixels (live from TT).
+  fetchTtAccountContext: async (advertiserId: string) => {
+    const url = (WEBHOOKS as any).ttAccountContext as string | undefined;
+    if (!url) {
+      set({ ttContextStatus: 'error', ttContextError: 'PUBLIC_WEBHOOK_TT_ACCOUNT_CONTEXT_URL is not set in .env', ttAccountContext: null });
+      return;
+    }
+    if (!/^\d+$/.test(advertiserId)) {
+      set({ ttContextStatus: 'error', ttContextError: 'Invalid advertiserId', ttAccountContext: null });
+      return;
+    }
+    set({ ttContextStatus: 'loading', ttContextError: null, ttAccountContext: null });
+    try {
+      const { data } = await axios.post(url, { advertiserId }, { timeout: 30_000 });
+      const outer = Array.isArray(data) ? data[0] : data;
+      const body = outer && typeof outer === 'object' && 'json' in outer ? (outer as any).json : outer;
+      if (!body || body.ok === false) {
+        const msg = body?.error || 'TT Account Context returned an error';
+        set({ ttContextStatus: 'error', ttContextError: msg, ttAccountContext: null });
+        return;
+      }
+      set({
+        ttContextStatus: 'success',
+        ttContextError: null,
+        ttAccountContext: {
+          advertiserId,
+          identities: Array.isArray(body.identities) ? body.identities : [],
+          pixels: Array.isArray(body.pixels) ? body.pixels : [],
+        },
+      });
+    } catch (e) {
+      console.error('[fetchTtAccountContext]', e);
+      set({ ttContextStatus: 'error', ttContextError: humanizeError(e), ttAccountContext: null });
     }
   },
 

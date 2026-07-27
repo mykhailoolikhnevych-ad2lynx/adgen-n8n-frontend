@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
@@ -22,9 +22,6 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 // TT constants — these live server-side too (hardcoded in the n8n workflow).
 // Surfaced here read-only so the operator can eyeball what's being posted.
 const TT_INFO = [
-  { label: 'Advertiser', value: '7654600970270867474' },
-  { label: 'Identity', value: 'personalguide333 (BC_AUTH_TT)' },
-  { label: 'Pixel', value: 'GenOst (D7G9EPRC77U62Q87BP70)' },
   { label: 'Campaign type', value: 'Upgraded Smart+ (auto-optimized)' },
   { label: 'Optimization', value: 'CONVERT / BUTTON' },
   { label: 'Objective', value: 'LEAD_GENERATION' },
@@ -103,10 +100,74 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const ttForm = useAppStore((s) => s.megatoolTtForm);
   const setTtForm = useAppStore((s) => s.setTtForm);
   const resetTtForm = useAppStore((s) => s.resetTtForm);
+  const ttAccountsList = useAppStore((s) => s.ttAccountsList);
+  const ttAccountsStatus = useAppStore((s) => s.ttAccountsStatus);
+  const fetchTtAccounts = useAppStore((s) => s.fetchTtAccounts);
+  const ttAccountContext = useAppStore((s) => s.ttAccountContext);
+  const ttContextStatus = useAppStore((s) => s.ttContextStatus);
+  const fetchTtAccountContext = useAppStore((s) => s.fetchTtAccountContext);
 
   const [showRaw, setShowRaw] = useState(false);
 
   const isLoading = status === 'loading';
+
+  // ── Account → Identity + Pixel selection ───────────────────────────────────
+  // These hooks must run before the early return below, so they're declared
+  // here with null-safe access to binom data.
+  useEffect(() => { void fetchTtAccounts(); }, [fetchTtAccounts]);
+
+  const accountOptions = useMemo(
+    () => ttAccountsList.map((a) => `${a.name} (${a.id})`),
+    [ttAccountsList],
+  );
+  const accountIdByLabel = useMemo(
+    () => Object.fromEntries(ttAccountsList.map((a) => [`${a.name} (${a.id})`, a.id])),
+    [ttAccountsList],
+  );
+  const accountLabel = ttForm.accountLabel ?? '';
+  const advertiserId = accountIdByLabel[accountLabel] ?? '';
+
+  // Default the account once the list loads (prefer the legacy hardcoded one).
+  useEffect(() => {
+    if (ttForm.accountLabel || ttAccountsList.length === 0) return;
+    const preferred = ttAccountsList.find((a) => a.id === '7654600970270867474') ?? ttAccountsList[0];
+    setTtForm({ accountLabel: `${preferred.name} (${preferred.id})` });
+  }, [ttAccountsList]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load the selected account's identities + pixels when it changes.
+  useEffect(() => {
+    if (/^\d+$/.test(advertiserId)) void fetchTtAccountContext(advertiserId);
+  }, [advertiserId, fetchTtAccountContext]);
+
+  const identityLabelOf = (i: { name: string; type: string }) => `${i.name || '(no name)'} — ${i.type}`;
+  const pixelLabelOf = (p: { code: string; name: string }) => (p.name ? `${p.code} — ${p.name}` : p.code);
+  // Only trust context that matches the currently-selected account.
+  const ctxMatches = ttAccountContext?.advertiserId === advertiserId;
+  const identities = ctxMatches ? ttAccountContext!.identities : [];
+  const pixels = ctxMatches ? ttAccountContext!.pixels : [];
+  const identityOptions = useMemo(() => identities.map(identityLabelOf), [identities]);
+  const pixelOptions = useMemo(() => pixels.map(pixelLabelOf), [pixels]);
+
+  // funnel pixel_code baked into the Binom landing URL — used to default + to
+  // warn if the chosen TT pixel doesn't match it (tracking would drift).
+  const funnelCode = (binomOfferResult?.binomCampaignUrl ?? '').match(/[?&]funnel=([^&]+)/i)?.[1] ?? '';
+
+  // Default identity (prefer real BC_AUTH_TT) + pixel (prefer funnel match).
+  useEffect(() => {
+    if (identities.length && !ttForm.identityLabel) {
+      const pref = identities.find((i) => i.type === 'BC_AUTH_TT') ?? identities[0];
+      setTtForm({ identityLabel: identityLabelOf(pref) });
+    }
+  }, [identities]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (pixels.length && !ttForm.pixelLabel) {
+      const pref = pixels.find((p) => p.code === funnelCode) ?? pixels[0];
+      setTtForm({ pixelLabel: pixelLabelOf(pref) });
+    }
+  }, [pixels, funnelCode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selIdentity = identities.find((i) => identityLabelOf(i) === (ttForm.identityLabel ?? ''));
+  const selPixel = pixels.find((p) => pixelLabelOf(p) === (ttForm.pixelLabel ?? ''));
 
   if (!selectedFbAd || !binomOfferResult) {
     // In embedded mode the parent Binom page hides this component until
@@ -159,7 +220,14 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const adText = ttForm.adText !== undefined ? ttForm.adText : defaultAdText;
   const adTextValid = adText.trim().length > 0 && adText.length <= TT_AD_TEXT_MAX;
 
+  const accountValid = /^\d+$/.test(advertiserId);
+  const identityValid = !!selIdentity;
+  const pixelValid = !!selPixel;
+  // The chosen TT pixel should match the funnel= pixel_code in the landing URL.
+  const funnelMismatch = !!(selPixel && funnelCode && selPixel.code !== funnelCode);
+
   const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid && geoValid
+    && accountValid && identityValid && pixelValid
     && !!campaignName && !!landingPageUrl && !!creativeUrl;
 
   const handleSubmit = () => {
@@ -174,6 +242,11 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       startDate,
       startTimezone,
       locationId,
+      advertiserId,
+      identityId: selIdentity?.id,
+      identityType: selIdentity?.type,
+      identityBcId: selIdentity?.bc_id || undefined,
+      pixelId: selPixel?.id,
     });
   };
 
@@ -224,6 +297,59 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
         </section>
 
         <section className="space-y-4">
+          {/* TikTok account → identity + pixel, all loaded live from the account */}
+          <div className="space-y-3 border rounded-lg bg-slate-50 p-3">
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">
+                TikTok account <span className="text-red-600">*</span>
+              </label>
+              <Combobox
+                value={accountLabel}
+                onChange={(v) => setTtForm({ accountLabel: v, identityLabel: undefined, pixelLabel: undefined })}
+                options={accountOptions}
+                placeholder={ttAccountsStatus === 'loading' ? 'Loading accounts…' : 'Select account…'}
+                error={!accountValid}
+              />
+              {ttAccountsStatus === 'error' && (
+                <p className="text-xs text-red-600 mt-1">Couldn’t load accounts — check the tt_accounts list webhook.</p>
+              )}
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">
+                Identity (TikTok account) <span className="text-red-600">*</span>
+              </label>
+              <Combobox
+                value={ttForm.identityLabel ?? ''}
+                onChange={(v) => setTtForm({ identityLabel: v })}
+                options={identityOptions}
+                placeholder={ttContextStatus === 'loading' ? 'Loading identities…' : 'Select identity…'}
+                error={accountValid && !identityValid}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium uppercase text-slate-500">
+                Pixel / funnel <span className="text-red-600">*</span>
+              </label>
+              <Combobox
+                value={ttForm.pixelLabel ?? ''}
+                onChange={(v) => setTtForm({ pixelLabel: v })}
+                options={pixelOptions}
+                placeholder={ttContextStatus === 'loading' ? 'Loading pixels…' : 'Select pixel…'}
+                error={accountValid && !pixelValid}
+              />
+              {funnelCode && pixelValid && (
+                <p className={`text-xs mt-1 ${funnelMismatch ? 'text-amber-700' : 'text-slate-600'}`}>
+                  {funnelMismatch
+                    ? `⚠ Landing URL funnel is ${funnelCode}, but selected pixel is ${selPixel?.code} — TikTok would optimize on a different pixel than Binom tracks.`
+                    : `✓ Matches landing URL funnel (${funnelCode}).`}
+                </p>
+              )}
+              {ttContextStatus === 'error' && (
+                <p className="text-xs text-red-600 mt-1">Couldn’t load this account’s identities/pixels.</p>
+              )}
+            </div>
+          </div>
+
           {/* Bid strategy — Target CPA is the only option today */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">Bid Strategy</label>
