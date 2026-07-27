@@ -50,6 +50,17 @@ const TT_TIMEZONE_OPTIONS: Array<{ value: string; label: string }> = [
 // TikTok ad primary-text hard limit.
 const TT_AD_TEXT_MAX = 100;
 
+// Rewrite (or append) the &funnel= param of a Binom click URL so it carries the
+// selected TikTok pixel's code — keeps TT optimization and Binom conversion
+// attribution pointed at the same pixel.
+function setFunnelParam(url: string, code: string): string {
+  if (!url || !code) return url;
+  if (/([?&])funnel=[^&#]*/i.test(url)) {
+    return url.replace(/([?&])funnel=[^&#]*/i, `$1funnel=${encodeURIComponent(code)}`);
+  }
+  return url + (url.includes('?') ? '&' : '?') + 'funnel=' + encodeURIComponent(code);
+}
+
 interface Props {
   onClose: () => void;
   /** When true, render only the form + result columns (no bg-slate-100
@@ -199,7 +210,9 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   // Campaign name defaults to the Binom name until the operator edits it.
   const binomCampaignName = binomOfferResult.binomCampaignName ?? '';
   const campaignName = ttForm.campaignName !== undefined ? ttForm.campaignName : binomCampaignName;
-  const landingPageUrl = binomOfferResult.binomCampaignUrl ?? '';
+  // Base URL from Binom, with funnel= rewritten to the selected pixel's code.
+  const baseLandingUrl = binomOfferResult.binomCampaignUrl ?? '';
+  const landingPageUrl = selPixel?.code ? setFunnelParam(baseLandingUrl, selPixel.code) : baseLandingUrl;
   const isVideo = selectedFbAd.mediaKind === 'video';
   const creativeUrl = selectedFbAd.assetUrl || selectedFbAd.thumbnailUrl || '';
 
@@ -223,8 +236,6 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const accountValid = /^\d+$/.test(advertiserId);
   const identityValid = !!selIdentity;
   const pixelValid = !!selPixel;
-  // The chosen TT pixel should match the funnel= pixel_code in the landing URL.
-  const funnelMismatch = !!(selPixel && funnelCode && selPixel.code !== funnelCode);
 
   const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid && geoValid
     && accountValid && identityValid && pixelValid
@@ -338,11 +349,9 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
                 placeholder={ttContextStatus === 'loading' ? 'Loading pixels…' : 'Select pixel…'}
                 error={accountValid && !pixelValid}
               />
-              {funnelCode && pixelValid && (
-                <p className={`text-xs mt-1 ${funnelMismatch ? 'text-amber-700' : 'text-slate-600'}`}>
-                  {funnelMismatch
-                    ? `⚠ Landing URL funnel is ${funnelCode}, but selected pixel is ${selPixel?.code} — TikTok would optimize on a different pixel than Binom tracks.`
-                    : `✓ Matches landing URL funnel (${funnelCode}).`}
+              {pixelValid && (
+                <p className="text-xs mt-1 text-slate-600">
+                  Landing URL <code>funnel=</code> set to <strong>{selPixel?.code}</strong> — TikTok optimizes and Binom attributes to the same pixel.
                 </p>
               )}
               {ttContextStatus === 'error' && (
