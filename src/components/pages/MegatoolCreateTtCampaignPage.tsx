@@ -151,7 +151,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   }, [advertiserId, fetchTtAccountContext]);
 
   const identityLabelOf = (i: { name: string; type: string }) => `${i.name || '(no name)'} — ${i.type}`;
-  const pixelLabelOf = (p: { code: string; name: string }) => (p.name ? `${p.code} — ${p.name}` : p.code);
+  const pixelLabelOf = (p: { code: string; name: string }) => (p.name ? `${p.name} (${p.code})` : p.code);
   // Only trust context that matches the currently-selected account.
   const ctxMatches = ttAccountContext?.advertiserId === advertiserId;
   const identities = ctxMatches ? ttAccountContext!.identities : [];
@@ -172,7 +172,9 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   }, [identities]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (pixels.length && !ttForm.pixelLabel) {
-      const pref = pixels.find((p) => p.code === funnelCode) ?? pixels[0];
+      const pref = pixels.find((p) => p.code === funnelCode)
+        ?? pixels.find((p) => p.status === 'ACTIVE')
+        ?? pixels[0];
       setTtForm({ pixelLabel: pixelLabelOf(pref) });
     }
   }, [pixels, funnelCode]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -394,7 +396,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
                     if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
                     setTtForm({ conversionBidPrice: raw });
                   }}
-                  placeholder="1.50"
+                  placeholder="0.50"
                   className={`pl-6 no-spinner ${cpaValid ? '' : 'border-red-400'}`}
                 />
               </div>

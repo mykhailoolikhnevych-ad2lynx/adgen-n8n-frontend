@@ -521,7 +521,7 @@ interface AppState {
   ttAccountContext: {
     advertiserId: string;
     identities: { id: string; type: string; name: string; bc_id: string }[];
-    pixels: { id: string; code: string; name: string }[];
+    pixels: { id: string; code: string; name: string; status?: string }[];
   } | null;
   ttContextError: string | null;
   /** Cache of the currently-fetched NB conversion-event list keyed by
@@ -1108,7 +1108,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     startTimezone: 'PDT',
     adStates: [],
   },
-  megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' },
+  megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' },
   ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
@@ -1552,7 +1552,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTtForm: (patch) => set((state) => ({
     megatoolTtForm: { ...state.megatoolTtForm, ...patch },
   })),
-  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '1.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' } }),
+  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' } }),
   resetTtCampaign: () => set({ ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null }),
 
   // MEGATOOL — Create NB Campaign sub-tab visibility + run state.
