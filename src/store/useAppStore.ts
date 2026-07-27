@@ -374,6 +374,10 @@ export interface CreateTtCampaignInput {
    *  TT's actual rejection message rather than being blocked on the client. */
   videoUrl?: string;
   imageUrl?: string;
+  /** Multi-creative: all selected image URLs (→ one combined ad) and all video
+   *  URLs (→ one ad each). Preferred over the single imageUrl/videoUrl. */
+  imageUrls?: string[];
+  videoUrls?: string[];
   adText?: string;
   /** Campaign daily budget in USD. Defaults to 20 on the n8n side if omitted. */
   dailyBudget?: number;

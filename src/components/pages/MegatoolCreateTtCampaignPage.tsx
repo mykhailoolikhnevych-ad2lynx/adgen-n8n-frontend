@@ -102,6 +102,7 @@ const CopyableCard = ({ label, value }: { label: string; value: string }) => {
 
 export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Props) => {
   const selectedFbAd = useAppStore((s) => s.selectedFbAd);
+  const selectedFbAds = useAppStore((s) => s.selectedFbAds);
   const binomOfferResult = useAppStore((s) => s.binomOfferResult);
   const status = useAppStore((s) => s.ttCampaignStatus);
   const result = useAppStore((s) => s.ttCampaignResult);
@@ -215,8 +216,16 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   // Base URL from Binom, with funnel= rewritten to the selected pixel's code.
   const baseLandingUrl = binomOfferResult.binomCampaignUrl ?? '';
   const landingPageUrl = selPixel?.code ? setFunnelParam(baseLandingUrl, selPixel.code) : baseLandingUrl;
-  const isVideo = selectedFbAd.mediaKind === 'video';
-  const creativeUrl = selectedFbAd.assetUrl || selectedFbAd.thumbnailUrl || '';
+  // All selected FB creatives → separated into images and videos.
+  //  • every image goes into ONE ad (each image a Smart+ variation)
+  //  • every video becomes its own ad
+  const allCreatives = (selectedFbAds.length ? selectedFbAds : [selectedFbAd])
+    .map((a) => ({ mediaKind: a.mediaKind, url: a.assetUrl || a.thumbnailUrl || '' }))
+    .filter((c) => c.url);
+  const imageUrls = allCreatives.filter((c) => c.mediaKind === 'image').map((c) => c.url);
+  const videoUrls = allCreatives.filter((c) => c.mediaKind === 'video').map((c) => c.url);
+  const creativeCount = imageUrls.length + videoUrls.length;
+  const adCount = (imageUrls.length ? 1 : 0) + videoUrls.length;
 
   const startDate = ttForm.startDate;
   const startTimezone = ttForm.startTimezone;
@@ -241,7 +250,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
 
   const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid && geoValid
     && accountValid && identityValid && pixelValid
-    && !!campaignName && !!landingPageUrl && !!creativeUrl;
+    && !!campaignName && !!landingPageUrl && creativeCount > 0;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -249,7 +258,8 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       campaignName,
       conversionBidPrice: parsedCpa,
       landingPageUrl,
-      ...(isVideo ? { videoUrl: creativeUrl } : { imageUrl: creativeUrl }),
+      imageUrls,
+      videoUrls,
       adText,
       dailyBudget: parsedBudget,
       startDate,
@@ -535,37 +545,31 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
             </div>
           </div>
 
-          {/* FB creative preview */}
+          {/* Selected creatives → how they'll be grouped into ads */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
-              FB Creative ({isVideo ? 'video' : 'image'} uploaded to TT)
+              Creatives ({creativeCount}) → {adCount} ad{adCount === 1 ? '' : 's'}
             </label>
-            <div className="mt-1 flex items-center gap-3 border rounded-lg bg-slate-50 p-2">
-              {selectedFbAd.thumbnailUrl ? (
-                <img
-                  src={selectedFbAd.thumbnailUrl}
-                  alt=""
-                  className="h-20 w-20 rounded object-cover shrink-0 border"
-                />
-              ) : (
-                <div className="h-20 w-20 rounded bg-slate-200 shrink-0 flex items-center justify-center text-[10px] text-slate-500">
-                  no thumb
-                </div>
-              )}
-              <div className="flex-1 min-w-0 text-xs">
-                <div className="font-semibold text-slate-800 truncate" title={selectedFbAd.adName}>
-                  {selectedFbAd.adName}
-                </div>
-                <div className="text-slate-500 font-mono break-all text-[10px]" title={creativeUrl}>
-                  {creativeUrl || '(no creative url)'}
-                </div>
+            <div className="mt-1 border rounded-lg bg-slate-50 p-2 space-y-2">
+              <div className="flex flex-wrap gap-2">
+                {(selectedFbAds.length ? selectedFbAds : [selectedFbAd]).map((a, i) => (
+                  <div key={a.adId || i} className="relative" title={a.adName}>
+                    {a.thumbnailUrl ? (
+                      <img src={a.thumbnailUrl} alt="" className="h-14 w-14 rounded object-cover border" />
+                    ) : (
+                      <div className="h-14 w-14 rounded bg-slate-200 flex items-center justify-center text-[9px] text-slate-500">no thumb</div>
+                    )}
+                    <span className={`absolute -top-1 -right-1 rounded px-1 text-[9px] font-semibold text-white ${a.mediaKind === 'video' ? 'bg-purple-600' : 'bg-emerald-600'}`}>
+                      {a.mediaKind === 'video' ? 'V' : 'IMG'}
+                    </span>
+                  </div>
+                ))}
               </div>
-            </div>
-            {!isVideo && (
-              <p className="text-xs text-slate-500 mt-1">
-                Uploaded as a native TikTok Photo creative — Smart+ adds music and renders it to a feed video automatically.
+              <p className="text-xs text-slate-600">
+                {imageUrls.length > 0 && <>{imageUrls.length} image{imageUrls.length === 1 ? '' : 's'} → 1 combined Photo ad. </>}
+                {videoUrls.length > 0 && <>{videoUrls.length} video{videoUrls.length === 1 ? '' : 's'} → {videoUrls.length} separate ad{videoUrls.length === 1 ? '' : 's'}.</>}
               </p>
-            )}
+            </div>
           </div>
 
           <div className="flex gap-2 pt-2">
