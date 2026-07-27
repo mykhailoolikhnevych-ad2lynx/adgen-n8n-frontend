@@ -624,22 +624,10 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             />
           </div>
 
-          {destination === 'TT' && (
-            <div>
-              <label className="text-xs font-medium uppercase text-slate-500">
-                TikTok Pixel <span className="text-red-600">*</span>
-              </label>
-              <select
-                value={ttPixelCode || TT_PIXELS[0].code}
-                onChange={(e) => setTtPixelCode(e.target.value)}
-                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
-              >
-                {TT_PIXELS.map((p) => (
-                  <option key={p.code} value={p.code}>{p.name} ({p.code})</option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* TikTok Pixel field hidden — the funnel/pixel is now chosen on the
+              Create TT Campaign form (which rewrites funnel= in the landing URL).
+              ttPixelCode still auto-defaults for TT so the Binom offer builds a
+              valid placeholder URL. */}
 
           <div>
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
