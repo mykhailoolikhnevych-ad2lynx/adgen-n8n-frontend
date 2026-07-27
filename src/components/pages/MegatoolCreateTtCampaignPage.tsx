@@ -307,8 +307,9 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
                 value={accountLabel}
                 onChange={(v) => setTtForm({ accountLabel: v, identityLabel: undefined, pixelLabel: undefined })}
                 options={accountOptions}
-                placeholder={ttAccountsStatus === 'loading' ? 'Loading accounts…' : 'Select account…'}
+                placeholder={ttAccountsStatus === 'loading' ? 'Loading accounts…' : 'Search account…'}
                 error={!accountValid}
+                minSearchChars={2}
               />
               {ttAccountsStatus === 'error' && (
                 <p className="text-xs text-red-600 mt-1">Couldn’t load accounts — check the tt_accounts list webhook.</p>
