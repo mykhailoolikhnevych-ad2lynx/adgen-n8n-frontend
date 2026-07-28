@@ -384,10 +384,8 @@ export interface CreateTtCampaignInput {
   adText?: string;
   /** Campaign daily budget in USD. Defaults to 20 on the n8n side if omitted. */
   dailyBudget?: number;
-  /** 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2' — when delivery starts. */
-  startDate?: string;
-  /** UTC offset in minutes (as string), e.g. '120' = UTC+2. */
-  startTimezone?: string;
+  /** Ad group start time "YYYY-MM-DDTHH:MM" in account tz (Kiev). Empty = now. */
+  startAt?: string;
   /** TikTok location_id for the target country. Defaults to US (6252001). */
   locationId?: string;
   /** Ad group + ad name. Default (omitted) = follow the campaign name. */
@@ -610,11 +608,10 @@ interface AppState {
     adName?: string;
     /** Campaign daily budget in USD (BUDGET_MODE_DYNAMIC_DAILY_BUDGET). */
     dailyBudget: string;
-    /** When the adgroup starts delivering. 'now' = immediate. */
-    startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
-    /** UTC offset in minutes (as string) for interpreting the start day, e.g.
-     *  '120' = UTC+2. n8n converts to the ad account timezone. */
-    startTimezone: string;
+    /** Ad group start date "dd.mm.yyyy" + time "HH:MM" in the account timezone
+     *  (Kyiv / UTC+2). Empty = start now. The page combines them into startAt. */
+    startDateStr: string;
+    startTimeStr: string;
     /** Target country as a "Name (CODE)" label from TT_COUNTRY_OPTIONS. The
      *  page maps it to the TikTok location_id sent to the API. */
     geoLabel: string;
@@ -1130,7 +1127,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     startTimezone: 'PDT',
     adStates: [],
   },
-  megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)', budgetLevel: 'adgroup', bidStrategy: 'target_cpa' },
+  megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDateStr: '', startTimeStr: '', geoLabel: 'United States (US)', budgetLevel: 'adgroup', bidStrategy: 'target_cpa' },
   ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
@@ -1574,7 +1571,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTtForm: (patch) => set((state) => ({
     megatoolTtForm: { ...state.megatoolTtForm, ...patch },
   })),
-  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)', budgetLevel: 'adgroup', bidStrategy: 'target_cpa' } }),
+  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDateStr: '', startTimeStr: '', geoLabel: 'United States (US)', budgetLevel: 'adgroup', bidStrategy: 'target_cpa' } }),
   resetTtCampaign: () => set({ ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null }),
 
   // MEGATOOL — Create NB Campaign sub-tab visibility + run state.
