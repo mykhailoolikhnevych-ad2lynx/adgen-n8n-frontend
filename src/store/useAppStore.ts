@@ -378,6 +378,9 @@ export interface CreateTtCampaignInput {
    *  URLs (→ one ad each). Preferred over the single imageUrl/videoUrl. */
   imageUrls?: string[];
   videoUrls?: string[];
+  /** FB names per creative (parallel to imageUrls/videoUrls) → TT file_name. */
+  imageNames?: string[];
+  videoNames?: string[];
   adText?: string;
   /** Campaign daily budget in USD. Defaults to 20 on the n8n side if omitted. */
   dailyBudget?: number;
@@ -387,6 +390,13 @@ export interface CreateTtCampaignInput {
   startTimezone?: string;
   /** TikTok location_id for the target country. Defaults to US (6252001). */
   locationId?: string;
+  /** Ad group + ad name. Default (omitted) = follow the campaign name. */
+  adgroupName?: string;
+  adName?: string;
+  /** 'adgroup' (default) or 'campaign' — where the daily budget lives. */
+  budgetLevel?: string;
+  /** 'target_cpa' (default) or 'max_results' — bid strategy. */
+  bidStrategy?: string;
   /** Selected advertiser account + identity + pixel. When present, the n8n
    *  workflow uses these instead of its hardcoded defaults. */
   advertiserId?: string;
@@ -587,9 +597,17 @@ interface AppState {
    *  hardcoded constants on the n8n side. */
   megatoolTtForm: {
     conversionBidPrice: string;
+    /** Where the daily budget lives — ad group (default) or campaign (CBO). */
+    budgetLevel: 'adgroup' | 'campaign';
+    /** Bid strategy — Target CPA (cost cap) or Maximum results (no bid cap). */
+    bidStrategy: 'target_cpa' | 'max_results';
     /** TT campaign name. undefined = operator hasn't edited it → the page
      *  seeds the Binom campaign name as the default at render time. */
     campaignName?: string;
+    /** Ad group + ad name. undefined = follow the campaign name; set = override
+     *  only that name. */
+    adgroupName?: string;
+    adName?: string;
     /** Campaign daily budget in USD (BUDGET_MODE_DYNAMIC_DAILY_BUDGET). */
     dailyBudget: string;
     /** When the adgroup starts delivering. 'now' = immediate. */
@@ -1112,7 +1130,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     startTimezone: 'PDT',
     adStates: [],
   },
-  megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' },
+  megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)', budgetLevel: 'adgroup', bidStrategy: 'target_cpa' },
   ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
@@ -1556,7 +1574,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTtForm: (patch) => set((state) => ({
     megatoolTtForm: { ...state.megatoolTtForm, ...patch },
   })),
-  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)' } }),
+  resetTtForm: () => set({ megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDate: 'now', startTimezone: '120', geoLabel: 'United States (US)', budgetLevel: 'adgroup', bidStrategy: 'target_cpa' } }),
   resetTtCampaign: () => set({ ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null }),
 
   // MEGATOOL — Create NB Campaign sub-tab visibility + run state.
