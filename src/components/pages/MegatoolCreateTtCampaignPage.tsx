@@ -204,7 +204,11 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   // the Binom Offer page. Store raw string; parse to number at submit time.
   const cpaText = ttForm.conversionBidPrice;
   const parsedCpa = Number((cpaText || '0').replace(',', '.'));
-  const cpaValid = cpaText.trim() !== '' && Number.isFinite(parsedCpa) && parsedCpa > 0;
+  const budgetLevel = ttForm.budgetLevel;
+  const bidStrategy = ttForm.bidStrategy;
+  // CPA only applies to Target CPA; Maximum results has no bid cap.
+  const cpaNeeded = bidStrategy === 'target_cpa';
+  const cpaValid = !cpaNeeded || (cpaText.trim() !== '' && Number.isFinite(parsedCpa) && parsedCpa > 0);
 
   const budgetText = ttForm.dailyBudget;
   const parsedBudget = Number((budgetText || '0').replace(',', '.'));
@@ -213,6 +217,9 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   // Campaign name defaults to the Binom name until the operator edits it.
   const binomCampaignName = binomOfferResult.binomCampaignName ?? '';
   const campaignName = ttForm.campaignName !== undefined ? ttForm.campaignName : binomCampaignName;
+  // Ad group + ad name follow the campaign name until individually overridden.
+  const adgroupName = ttForm.adgroupName !== undefined ? ttForm.adgroupName : campaignName;
+  const adName = ttForm.adName !== undefined ? ttForm.adName : campaignName;
   // Base URL from Binom, with funnel= rewritten to the selected pixel's code.
   const baseLandingUrl = binomOfferResult.binomCampaignUrl ?? '';
   const landingPageUrl = selPixel?.code ? setFunnelParam(baseLandingUrl, selPixel.code) : baseLandingUrl;
@@ -220,12 +227,15 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   //  • every image goes into ONE ad (each image a Smart+ variation)
   //  • every video becomes its own ad
   const allCreatives = (selectedFbAds.length ? selectedFbAds : [selectedFbAd])
-    .map((a) => ({ mediaKind: a.mediaKind, url: a.assetUrl || a.thumbnailUrl || '' }))
+    .map((a) => ({ mediaKind: a.mediaKind, url: a.assetUrl || a.thumbnailUrl || '', name: a.adName || '' }))
     .filter((c) => c.url);
   const imageUrls = allCreatives.filter((c) => c.mediaKind === 'image').map((c) => c.url);
   const videoUrls = allCreatives.filter((c) => c.mediaKind === 'video').map((c) => c.url);
+  // FB names → the TT creative's file_name (what TT shows as the creative name).
+  const imageNames = allCreatives.filter((c) => c.mediaKind === 'image').map((c) => c.name);
+  const videoNames = allCreatives.filter((c) => c.mediaKind === 'video').map((c) => c.name);
   const creativeCount = imageUrls.length + videoUrls.length;
-  const adCount = (imageUrls.length ? 1 : 0) + videoUrls.length;
+  const adCount = (imageUrls.length ? 1 : 0) + (videoUrls.length ? 1 : 0);
 
   const startDate = ttForm.startDate;
   const startTimezone = ttForm.startTimezone;
@@ -250,16 +260,23 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
 
   const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid && geoValid
     && accountValid && identityValid && pixelValid
-    && !!campaignName && !!landingPageUrl && creativeCount > 0;
+    && !!campaignName && !!adgroupName.trim() && !!adName.trim()
+    && !!landingPageUrl && creativeCount > 0;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
     void createTtCampaign({
       campaignName,
+      adgroupName,
+      adName,
       conversionBidPrice: parsedCpa,
+      budgetLevel,
+      bidStrategy,
       landingPageUrl,
       imageUrls,
       videoUrls,
+      imageNames,
+      videoNames,
       adText,
       dailyBudget: parsedBudget,
       startDate,
@@ -372,45 +389,43 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
             </div>
           </div>
 
-          {/* Bid strategy — Target CPA is the only option today */}
+          {/* Bid strategy */}
           <div>
-            <label className="text-xs font-medium uppercase text-slate-500">Bid Strategy</label>
-            <div className="mt-1 flex gap-2">
-              <button
-                type="button"
-                disabled
-                className="rounded-md border border-blue-600 bg-blue-50 text-blue-900 font-semibold px-4 py-1.5 text-sm min-w-[7rem] cursor-default"
-              >
-                Target CPA
-              </button>
-              <span className="text-[10px] text-slate-400 self-center">
-                more options in later iteration
-              </span>
-            </div>
+            <label className="text-xs font-medium uppercase text-slate-500">Bid strategy</label>
+            <select
+              value={bidStrategy}
+              onChange={(e) => setTtForm({ bidStrategy: e.target.value as 'target_cpa' | 'max_results' })}
+              className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="target_cpa">Target CPA (cost cap)</option>
+              <option value="max_results">Maximum results (no cap)</option>
+            </select>
           </div>
 
-          {/* Target cost per result + Daily budget */}
+          {/* Target CPA (Target-CPA strategy only) + Daily budget + budget level */}
           <div className="flex gap-2">
-            <div className="flex-1">
-              <label className="text-xs font-medium uppercase text-slate-500">
-                Target cost / result (USD) <span className="text-red-600">*</span>
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
-                <Input
-                  type="text"
-                  inputMode="decimal"
-                  value={cpaText}
-                  onChange={(e) => {
-                    const raw = e.target.value.replace(',', '.');
-                    if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
-                    setTtForm({ conversionBidPrice: raw });
-                  }}
-                  placeholder="0.50"
-                  className={`pl-6 no-spinner ${cpaValid ? '' : 'border-red-400'}`}
-                />
+            {cpaNeeded && (
+              <div className="flex-1">
+                <label className="text-xs font-medium uppercase text-slate-500">
+                  Target cost / result (USD) <span className="text-red-600">*</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500 pointer-events-none">$</span>
+                  <Input
+                    type="text"
+                    inputMode="decimal"
+                    value={cpaText}
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(',', '.');
+                      if (raw !== '' && !/^\d*\.?\d*$/.test(raw)) return;
+                      setTtForm({ conversionBidPrice: raw });
+                    }}
+                    placeholder="0.50"
+                    className={`pl-6 no-spinner ${cpaValid ? '' : 'border-red-400'}`}
+                  />
+                </div>
               </div>
-            </div>
+            )}
             <div className="flex-1">
               <label className="text-xs font-medium uppercase text-slate-500">
                 Daily budget (USD) <span className="text-red-600">*</span>
@@ -431,9 +446,20 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
                 />
               </div>
             </div>
+            <div className="flex-1">
+              <label className="text-xs font-medium uppercase text-slate-500">Budget level</label>
+              <select
+                value={budgetLevel}
+                onChange={(e) => setTtForm({ budgetLevel: e.target.value as 'adgroup' | 'campaign' })}
+                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="adgroup">Ad group budget</option>
+                <option value="campaign">Campaign budget</option>
+              </select>
+            </div>
           </div>
           <p className="text-xs text-slate-600 -mt-2">
-            Target CPA (BUTTON) & campaign daily budget. Comma or dot separator.
+            {cpaNeeded ? 'Target CPA (BUTTON) & ' : 'Maximum results — '}daily {budgetLevel === 'campaign' ? 'campaign' : 'ad group'} budget. Comma or dot separator.
           </p>
 
           {/* Schedule — start day + timezone (TT interprets in the ad account tz) */}
@@ -515,6 +541,36 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
             )}
           </div>
 
+          {/* Ad group + ad name — follow the campaign name unless overridden */}
+          <div className="flex gap-2">
+            <div className="flex-1">
+              <label className="text-xs font-medium uppercase text-slate-500">Ad group name</label>
+              <Input
+                type="text"
+                value={adgroupName}
+                onChange={(e) => setTtForm({ adgroupName: e.target.value })}
+                placeholder="follows campaign name"
+                className={adgroupName.trim() ? '' : 'border-red-400'}
+              />
+              {ttForm.adgroupName !== undefined && (
+                <button type="button" onClick={() => setTtForm({ adgroupName: undefined })} className="text-xs text-blue-600 mt-1 hover:underline">↺ Follow campaign name</button>
+              )}
+            </div>
+            <div className="flex-1">
+              <label className="text-xs font-medium uppercase text-slate-500">Ad name</label>
+              <Input
+                type="text"
+                value={adName}
+                onChange={(e) => setTtForm({ adName: e.target.value })}
+                placeholder="follows campaign name"
+                className={adName.trim() ? '' : 'border-red-400'}
+              />
+              {ttForm.adName !== undefined && (
+                <button type="button" onClick={() => setTtForm({ adName: undefined })} className="text-xs text-blue-600 mt-1 hover:underline">↺ Follow campaign name</button>
+              )}
+            </div>
+          </div>
+
           {/* Landing Page URL (read-only from Binom result) */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">
@@ -567,7 +623,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
               </div>
               <p className="text-xs text-slate-600">
                 {imageUrls.length > 0 && <>{imageUrls.length} image{imageUrls.length === 1 ? '' : 's'} → 1 combined Photo ad. </>}
-                {videoUrls.length > 0 && <>{videoUrls.length} video{videoUrls.length === 1 ? '' : 's'} → {videoUrls.length} separate ad{videoUrls.length === 1 ? '' : 's'}.</>}
+                {videoUrls.length > 0 && <>{videoUrls.length} video{videoUrls.length === 1 ? '' : 's'} → 1 combined ad.</>}
               </p>
             </div>
           </div>
