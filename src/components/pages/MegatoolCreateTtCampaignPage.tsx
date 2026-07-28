@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
@@ -29,23 +29,24 @@ const TT_INFO = [
   { label: 'Account timezone', value: 'UTC+2 (Europe/Kiev)' },
 ] as const;
 
-type TtStartDate = 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
-
-const TT_START_DATE_OPTIONS: Array<{ value: TtStartDate; label: string }> = [
-  { value: 'now', label: 'Now' },
-  { value: 'tomorrow', label: 'Tomorrow' },
-  { value: 'tomorrow+1', label: 'In 2 days' },
-  { value: 'tomorrow+2', label: 'In 3 days' },
-];
-
-// value = UTC offset in minutes (string). n8n converts the chosen start day to
-// the ad account timezone using this.
-const TT_TIMEZONE_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: '120', label: '(UTC+02:00) Central European Summer Time (Austria)' },
-  { value: '180', label: '(UTC+03:00) Kyiv (EEST)' },
-  { value: '0', label: '(UTC±00:00) UTC' },
-  { value: '-420', label: '(UTC-07:00) Los Angeles (PDT)' },
-];
+// "now" in the ad account tz (Kyiv / UTC+2) as "YYYY-MM-DDTHH:MM".
+const nowKyivIso = (): string => new Date(Date.now() + 120 * 60000).toISOString().slice(0, 16);
+// "YYYY-MM-DD" -> "dd.mm.yyyy"
+const isoToDmy = (iso: string): string => {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
+};
+// today (+n days) in Kyiv as "dd.mm.yyyy"
+const dmyPlusDays = (n: number): string =>
+  isoToDmy(new Date(Date.now() + 120 * 60000 + n * 86400000).toISOString().slice(0, 10));
+// "dd.mm.yyyy" -> "YYYY-MM-DD" ('' if invalid)
+const dmyToIso = (dmy: string): string => {
+  const m = dmy.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if (!m) return '';
+  const d = Number(m[1]), mo = Number(m[2]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
+  return `${m[3]}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};
 
 // TikTok ad primary-text hard limit.
 const TT_AD_TEXT_MAX = 100;
@@ -120,6 +121,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const fetchTtAccountContext = useAppStore((s) => s.fetchTtAccountContext);
 
   const [showRaw, setShowRaw] = useState(false);
+  const dateInputRef = useRef<HTMLInputElement>(null);
 
   const isLoading = status === 'loading';
 
@@ -237,8 +239,14 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const creativeCount = imageUrls.length + videoUrls.length;
   const adCount = (imageUrls.length ? 1 : 0) + (videoUrls.length ? 1 : 0);
 
-  const startDate = ttForm.startDate;
-  const startTimezone = ttForm.startTimezone;
+  // Start date/time in account tz (Kyiv). Fields default to "now" when untouched.
+  const [nowDateIso, nowTimeStr] = nowKyivIso().split('T');
+  const dateStr = ttForm.startDateStr || isoToDmy(nowDateIso); // "dd.mm.yyyy"
+  const timeStr = ttForm.startTimeStr || nowTimeStr;           // "HH:MM"
+  const dateIso = dmyToIso(dateStr);
+  const timeValid = /^([01]?\d|2[0-3]):[0-5]\d$/.test(timeStr.trim());
+  const startValid = !!dateIso && timeValid;
+  const startAt = startValid ? `${dateIso}T${timeStr.trim()}` : '';
 
   // Target country → TikTok location_id. geoLabel is a "Name (CODE)" string;
   // it only resolves to an id once it exactly matches a known country (the
@@ -261,7 +269,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const canSubmit = !isLoading && cpaValid && budgetValid && adTextValid && geoValid
     && accountValid && identityValid && pixelValid
     && !!campaignName && !!adgroupName.trim() && !!adName.trim()
-    && !!landingPageUrl && creativeCount > 0;
+    && startValid && !!landingPageUrl && creativeCount > 0;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -279,8 +287,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       videoNames,
       adText,
       dailyBudget: parsedBudget,
-      startDate,
-      startTimezone,
+      startAt,
       locationId,
       advertiserId,
       identityId: selIdentity?.id,
@@ -389,17 +396,33 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
             </div>
           </div>
 
-          {/* Bid strategy */}
+          {/* Bid strategy — pill toggle (same design as Destination) */}
           <div>
             <label className="text-xs font-medium uppercase text-slate-500">Bid strategy</label>
-            <select
-              value={bidStrategy}
-              onChange={(e) => setTtForm({ bidStrategy: e.target.value as 'target_cpa' | 'max_results' })}
-              className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="target_cpa">Target CPA (cost cap)</option>
-              <option value="max_results">Maximum results (no cap)</option>
-            </select>
+            <div className="mt-1 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setTtForm({ bidStrategy: 'target_cpa' })}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                  bidStrategy === 'target_cpa'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
+              >
+                Target CPA
+              </button>
+              <button
+                type="button"
+                onClick={() => setTtForm({ bidStrategy: 'max_results' })}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                  bidStrategy === 'max_results'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
+              >
+                Maximum results
+              </button>
+            </div>
           </div>
 
           {/* Target CPA (Target-CPA strategy only) + Daily budget + budget level */}
@@ -446,58 +469,101 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
                 />
               </div>
             </div>
-            <div className="flex-1">
-              <label className="text-xs font-medium uppercase text-slate-500">Budget level</label>
-              <select
-                value={budgetLevel}
-                onChange={(e) => setTtForm({ budgetLevel: e.target.value as 'adgroup' | 'campaign' })}
-                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-              >
-                <option value="adgroup">Ad group budget</option>
-                <option value="campaign">Campaign budget</option>
-              </select>
-            </div>
           </div>
-          <p className="text-xs text-slate-600 -mt-2">
-            {cpaNeeded ? 'Target CPA (BUTTON) & ' : 'Maximum results — '}daily {budgetLevel === 'campaign' ? 'campaign' : 'ad group'} budget. Comma or dot separator.
-          </p>
 
-          {/* Schedule — start day + timezone (TT interprets in the ad account tz) */}
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <label className="text-xs font-medium uppercase text-slate-500">Start</label>
-              <select
-                value={startDate}
-                onChange={(e) => setTtForm({ startDate: e.target.value as TtStartDate })}
-                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          {/* Budget level — pill toggle (same design as Destination) */}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">Budget level</label>
+            <div className="mt-1 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setTtForm({ budgetLevel: 'adgroup' })}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                  budgetLevel === 'adgroup'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
               >
-                {TT_START_DATE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex-1">
-              <label className="text-xs font-medium uppercase text-slate-500">Timezone</label>
-              <select
-                value={startTimezone}
-                onChange={(e) => setTtForm({ startTimezone: e.target.value })}
-                disabled={startDate === 'now'}
-                className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:bg-slate-100 disabled:text-slate-400"
+                Ad group budget
+              </button>
+              <button
+                type="button"
+                onClick={() => setTtForm({ budgetLevel: 'campaign' })}
+                className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                  budgetLevel === 'campaign'
+                    ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                    : 'border-input bg-white hover:bg-slate-50'
+                }`}
               >
-                {TT_TIMEZONE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
+                Campaign budget
+              </button>
             </div>
+            <p className="text-xs text-slate-600 mt-1">
+              {cpaNeeded ? 'Target CPA (BUTTON) bid. ' : 'Maximum results (no bid cap). '}Daily {budgetLevel === 'campaign' ? 'campaign' : 'ad group'} budget.
+            </p>
           </div>
-          <p className="text-xs text-slate-600 -mt-2">
-            {startDate === 'now'
-              ? 'Delivery starts immediately once you enable the campaign.'
-              : 'Starts at 00:00 of the chosen day in the selected timezone.'}
-            {startDate !== 'now' && (
-              <> TikTok shows schedules in the account timezone (UTC+2), so it displays the same moment converted — not the label picked here.</>
-            )}
-          </p>
+
+          {/* Schedule — presets + date (dd.mm.yyyy w/ calendar) + time (Kyiv, UTC+2) */}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">Start</label>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {[{ label: 'Today', n: 0 }, { label: 'Tomorrow', n: 1 }, { label: 'In 2 days', n: 2 }].map((p) => {
+                const active = dateStr === dmyPlusDays(p.n);
+                return (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => setTtForm({ startDateStr: dmyPlusDays(p.n) })}
+                    className={`rounded-md border px-2.5 py-1.5 text-xs transition ${
+                      active ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold' : 'border-input bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+              {/* date text (dd.mm.yyyy) + calendar-picker icon */}
+              <div className="relative">
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  value={dateStr}
+                  onChange={(e) => setTtForm({ startDateStr: e.target.value })}
+                  placeholder="dd.mm.yyyy"
+                  className={`w-32 pr-8 ${dateIso ? '' : 'border-red-400'}`}
+                />
+                <button
+                  type="button"
+                  aria-label="Open calendar"
+                  onClick={() => {
+                    const el = dateInputRef.current as (HTMLInputElement & { showPicker?: () => void }) | null;
+                    if (el) { try { el.showPicker ? el.showPicker() : el.focus(); } catch { el.focus(); } }
+                  }}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-800"
+                >
+                  📅
+                </button>
+                <input
+                  ref={dateInputRef}
+                  type="date"
+                  value={dateIso}
+                  onChange={(e) => setTtForm({ startDateStr: e.target.value ? isoToDmy(e.target.value) : '' })}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  className="absolute inset-0 h-0 w-0 opacity-0 pointer-events-none"
+                />
+              </div>
+              <Input
+                type="time"
+                value={timeStr}
+                onChange={(e) => setTtForm({ startTimeStr: e.target.value })}
+                className={`w-28 ${timeValid ? '' : 'border-red-400'}`}
+              />
+            </div>
+            <p className="text-xs text-slate-600 mt-1">
+              (UTC+02:00) Kyiv time, <code>dd.mm.yyyy</code>. Defaults to now.
+            </p>
+          </div>
 
           {/* GEO — target country (searchable; maps to a TikTok location_id) */}
           <div>
@@ -541,34 +607,34 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
             )}
           </div>
 
-          {/* Ad group + ad name — follow the campaign name unless overridden */}
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <label className="text-xs font-medium uppercase text-slate-500">Ad group name</label>
-              <Input
-                type="text"
-                value={adgroupName}
-                onChange={(e) => setTtForm({ adgroupName: e.target.value })}
-                placeholder="follows campaign name"
-                className={adgroupName.trim() ? '' : 'border-red-400'}
-              />
-              {ttForm.adgroupName !== undefined && (
-                <button type="button" onClick={() => setTtForm({ adgroupName: undefined })} className="text-xs text-blue-600 mt-1 hover:underline">↺ Follow campaign name</button>
-              )}
-            </div>
-            <div className="flex-1">
-              <label className="text-xs font-medium uppercase text-slate-500">Ad name</label>
-              <Input
-                type="text"
-                value={adName}
-                onChange={(e) => setTtForm({ adName: e.target.value })}
-                placeholder="follows campaign name"
-                className={adName.trim() ? '' : 'border-red-400'}
-              />
-              {ttForm.adName !== undefined && (
-                <button type="button" onClick={() => setTtForm({ adName: undefined })} className="text-xs text-blue-600 mt-1 hover:underline">↺ Follow campaign name</button>
-              )}
-            </div>
+          {/* Ad group name — follows the campaign name unless overridden */}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">Ad group name</label>
+            <Input
+              type="text"
+              value={adgroupName}
+              onChange={(e) => setTtForm({ adgroupName: e.target.value })}
+              placeholder="follows campaign name"
+              className={adgroupName.trim() ? '' : 'border-red-400'}
+            />
+            {ttForm.adgroupName !== undefined && (
+              <button type="button" onClick={() => setTtForm({ adgroupName: undefined })} className="text-xs text-blue-600 mt-1 hover:underline">↺ Follow campaign name</button>
+            )}
+          </div>
+
+          {/* Ad name — own row, follows the campaign name unless overridden */}
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">Ad name</label>
+            <Input
+              type="text"
+              value={adName}
+              onChange={(e) => setTtForm({ adName: e.target.value })}
+              placeholder="follows campaign name"
+              className={adName.trim() ? '' : 'border-red-400'}
+            />
+            {ttForm.adName !== undefined && (
+              <button type="button" onClick={() => setTtForm({ adName: undefined })} className="text-xs text-blue-600 mt-1 hover:underline">↺ Follow campaign name</button>
+            )}
           </div>
 
           {/* Landing Page URL (read-only from Binom result) */}
