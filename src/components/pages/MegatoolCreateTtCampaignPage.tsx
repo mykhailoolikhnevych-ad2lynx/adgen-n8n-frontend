@@ -26,7 +26,6 @@ const TT_INFO = [
   { label: 'Optimization', value: 'CONVERT / BUTTON' },
   { label: 'Objective', value: 'LEAD_GENERATION' },
   { label: 'Ad format', value: 'Native Photo (image) / Video — TT auto-renders' },
-  { label: 'Account timezone', value: 'UTC+2 (Europe/Kiev)' },
 ] as const;
 
 // "now" in the ad account tz (Kyiv / UTC+2) as "YYYY-MM-DDTHH:MM".
@@ -35,6 +34,26 @@ const nowKyivIso = (): string => new Date(Date.now() + 120 * 60000).toISOString(
 const isoToDmy = (iso: string): string => {
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/);
   return m ? `${m[3]}.${m[2]}.${m[1]}` : '';
+};
+// Kyiv (UTC+2) "YYYY-MM-DDTHH:MM" -> account-tz wall clock "dd.mm.yyyy HH:MM" (preview).
+const kyivToAccountWall = (startAt: string, tz: string): string => {
+  const m = startAt.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m || !tz) return '';
+  const utc = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - 120 * 60000);
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(utc);
+    const g = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+    return `${g('day')}.${g('month')}.${g('year')} ${g('hour')}:${g('minute')}`;
+  } catch { return ''; }
+};
+// Friendly UTC-offset label for a tz, e.g. "UTC-7".
+const tzOffsetLabel = (tz: string): string => {
+  if (!tz) return '';
+  try {
+    const s = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' })
+      .formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value || '';
+    return s.replace('GMT', 'UTC') || tz;
+  } catch { return tz; }
 };
 // today (+n days) in Kyiv as "dd.mm.yyyy"
 const dmyPlusDays = (n: number): string =>
@@ -159,6 +178,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
   const ctxMatches = ttAccountContext?.advertiserId === advertiserId;
   const identities = ctxMatches ? ttAccountContext!.identities : [];
   const pixels = ctxMatches ? ttAccountContext!.pixels : [];
+  const accountTz = ctxMatches ? (ttAccountContext!.timezone || '') : '';
   const identityOptions = useMemo(() => identities.map(identityLabelOf), [identities]);
   const pixelOptions = useMemo(() => pixels.map(pixelLabelOf), [pixels]);
 
@@ -288,6 +308,7 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
       adText,
       dailyBudget: parsedBudget,
       startAt,
+      accountTimezone: accountTz,
       locationId,
       advertiserId,
       identityId: selIdentity?.id,
@@ -561,7 +582,10 @@ export const MegatoolCreateTtCampaignPage = ({ onClose, embedded = false }: Prop
               />
             </div>
             <p className="text-xs text-slate-600 mt-1">
-              (UTC+02:00) Kyiv time, <code>dd.mm.yyyy</code>. Defaults to now.
+              Entered in <strong>Kyiv time</strong> (UTC+2), <code>dd.mm.yyyy</code>. Defaults to now.
+              {accountTz && startValid && tzOffsetLabel(accountTz) !== 'UTC+2' && (
+                <> This account is <strong>{tzOffsetLabel(accountTz)}</strong> → delivers at <strong>{kyivToAccountWall(startAt, accountTz)}</strong> account time.</>
+              )}
             </p>
           </div>
 

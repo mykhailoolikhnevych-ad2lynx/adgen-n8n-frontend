@@ -388,6 +388,9 @@ export interface CreateTtCampaignInput {
   startAt?: string;
   /** TikTok location_id for the target country. Defaults to US (6252001). */
   locationId?: string;
+  /** Selected account's timezone (e.g. "Etc/GMT-2"). The node converts the
+   *  Kyiv-entered start time into it. */
+  accountTimezone?: string;
   /** Ad group + ad name. Default (omitted) = follow the campaign name. */
   adgroupName?: string;
   adName?: string;
@@ -534,6 +537,7 @@ interface AppState {
     advertiserId: string;
     identities: { id: string; type: string; name: string; bc_id: string }[];
     pixels: { id: string; code: string; name: string; status?: string }[];
+    timezone: string;
   } | null;
   ttContextError: string | null;
   /** Cache of the currently-fetched NB conversion-event list keyed by
@@ -1882,6 +1886,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           advertiserId,
           identities: Array.isArray(body.identities) ? body.identities : [],
           pixels: Array.isArray(body.pixels) ? body.pixels : [],
+          timezone: String(body.timezone || ''),
         },
       });
     } catch (e) {
