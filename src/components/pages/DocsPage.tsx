@@ -16,7 +16,7 @@ type Section = 'kb' | 'prompts';
 // Knowledge Base — typed content model + renderer.
 // ---------------------------------------------------------------------------
 
-type ModuleId = 'keywords' | 'angles' | 'article' | 'creatives' | 'creative-gen' | 'creative-edit' | 'fb-to-nb';
+type ModuleId = 'keywords' | 'angles' | 'article' | 'creatives' | 'creative-gen' | 'creative-edit' | 'creative-edit-approach' | 'fb-to-nb';
 
 type Block =
   | { kind: 'p'; text: string }
@@ -1835,7 +1835,8 @@ lighting_style}.`,
           rows: [
             { k: 'Creatives (4 колонки)', v: 'Повний RSOC-пайплайн. Ти даєш URL статті + ключі, AI видає angles → concepts → creatives → images. Використовуй, коли треба стратегічно розкрити нішу з нуля.' },
             { k: 'Creative Gen (ця вкладка)', v: 'Хуки вже готові — просто перетвори їх у 4 візуальні варіанти. Пропускає Analyst / Strategist / Copywriter. ~10–20 сек замість 30–60.' },
-            { k: 'Creative Edit', v: 'У тебе вже є банер, треба лише замінити тексти / перекласти / прибрати логотип. Image-to-image edit, зберігає композицію оригіналу.' },
+            { k: 'Creative Edit — Change Image', v: 'У тебе вже є банер, треба лише замінити тексти / перекласти / прибрати логотип. Image-to-image edit, зберігає композицію оригіналу.' },
+            { k: 'Creative Edit — Change Approach', v: 'У тебе є банер і стаття, але тексти треба переосмислити з нуля з різних кутів. AI аналізує статтю + оригінал, дає 5 унікальних варіантів (Hook / Accent / CTA / Title / Description) з різними механіками, потім рендерить обраний варіант на банер зі збереженням композиції.' },
           ],
         },
       ],
@@ -1847,8 +1848,8 @@ lighting_style}.`,
 
 const CREATIVE_EDIT_MODULE: KBModule = {
   id: 'creative-edit',
-  label: 'Creative Edit',
-  tagline: 'Хірургічне редагування вже готового банера: заміна Hook / Accent / CTA, переклад тексту і опційні візуальні коригування — з збереженням композиції і стилю оригіналу.',
+  label: 'Creative Edit (Change Image)',
+  tagline: 'Режим Change Image: хірургічне редагування вже готового банера — заміна Hook / Accent / CTA, переклад тексту і опційні візуальні коригування — з збереженням композиції і стилю оригіналу.',
   sections: [
     {
       id: 'ce-overview',
@@ -2331,6 +2332,312 @@ const FB_TO_NB_MODULE: KBModule = {
   ],
 };
 
+// ---------- CREATIVE EDIT — CHANGE APPROACH module ----------
+
+const CREATIVE_EDIT_APPROACH_MODULE: KBModule = {
+  id: 'creative-edit-approach',
+  label: 'Creative Edit (Change Approach)',
+  tagline: 'Режим Change Approach: AI аналізує оригінальний банер + статтю, пропонує 5 повністю нових ідей (Hook / Accent / CTA / Title / Description) з різними механіками — обираєш одну і рендериш банер зі збереженням композиції оригіналу.',
+  sections: [
+    {
+      id: 'cea-overview',
+      label: 'Огляд',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Change Approach — це протилежність Change Image. Change Image міняє слова, лишає ідею. Change Approach міняє ІДЕЮ, лишає композицію. Використовуй, коли поточний банер вже втомлений і потрібно перепридумати кут атаки — а не просто підкрутити текст.',
+        },
+        {
+          kind: 'p',
+          text: 'Флоу — три колонки, як в Angles. У 1-й вкидаєш оригінальний банер + статтю (URL / Title / Description). AI розкладає оригінал на складові, читає статтю, вигадує 5 РІЗНИХ ідей (кожна з окремою механікою — Question, Myth-busting, Direct, Story, Curiosity, Eligibility-first) і повертає їх у 2-у колонку. Обираєш одну — і 3-я колонка рендерить банер із новими текстами на композиції оригіналу.',
+        },
+        {
+          kind: 'steps',
+          items: [
+            { title: 'Upload creative + fill Article', text: 'Оригінальний банер + Article URL + поточні Title / Description. Опційно: Analyze image, щоб автозаповнити поточні Hook / Accent / CTA (це важливо — див. секцію «Composition preservation»).' },
+            { title: 'Generate New Ideas', text: 'Тригерить 3-агентний пайплайн (Analyst → Strategist → Copywriter). Повертається 5 повних креативних сетів у 2-й колонці. ~30–60 сек.' },
+            { title: 'Pick one idea', text: 'Клік по картці — обирається один сет. Кожен сет має Hook / Accent / CTA / Title / Description + мітку механіки + compliance-статус (safe / watch).' },
+            { title: 'Generate Creative', text: 'Рендерить банер image-to-image edit: оригінал + нові тексти на місці старих. Композиція, фон, стиль — зберігаються. Title / Description показуються ПІД банером окремим текстом, НЕ рендеряться на самому зображенні.' },
+          ],
+        },
+        {
+          kind: 'note',
+          title: 'Чому саме 5 ідей',
+          text: 'Copywriter (Agent 3) має лише 4 доступні hook-формули (F2 / F3 / F4 / F6 — F1 і F5 deprecated для RSOC). При N=5 п\'ятий креатив обов\'язково приходить із іншого aspect_category — це тримає різноманіття без формульної колізії. Більше 5 → починає дублювати механіки; менше 5 → недостатньо кутів для A/B.',
+        },
+      ],
+    },
+    {
+      id: 'cea-inputs',
+      label: 'Поля, які ти заповнюєш',
+      blocks: [
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Mode', v: 'Change Approach — двокнопковий toggle на самому верху першої колонки. Change Image / Change Approach. За замовчуванням Change Image.' },
+            { k: 'Creative image *', v: 'PNG / JPG / WebP. Той самий upload, що й у Change Image. Оригінальний банер, композицію якого треба зберегти.' },
+            { k: 'Article URL *', v: 'URL статті, з якої AI буде розуміти intent і compliance-межі. Тільки URL — paste article text не підтримується (backend тягне через Jina.ai).' },
+            { k: 'Title *', v: 'Поточний ad title (той, що зараз стоїть у Ads Manager). AI використовує його як сигнал того, що обіцяла попередня версія креативу.' },
+            { k: 'Description *', v: 'Поточний ad description. Разом із Title формує «поточний контекст», від якого AI відштовхується, генеруючи нові варіанти.' },
+            { k: 'Aspect ratio *', v: '1:1 / 16:9 / 9:16 / 4:5. Passthrough до фінального рендеру. Change Approach не міняє пропорції оригіналу — параметр лишається для конзистентності з Change Image.' },
+            { k: 'Language', v: '«Keep original language» (дефолт) — рендер лишається у мові оригіналу. Обери конкретну мову, щоб Agent 3 одразу генерував нові тексти в ній.' },
+            { k: 'Hook / Accent / CTA', v: 'Опційні. Заповнюються Analyze-кнопкою — це «поточний стан оригіналу», а НЕ бажаний результат. Використовується для composition preservation (див. окрему секцію).' },
+          ],
+        },
+        {
+          kind: 'warn',
+          title: 'Article URL має бути публічно доступним',
+          text: 'Jina.ai (r.jina.ai) фетчить статтю з публічного інтернету. Якщо URL за paywall, JS-only render, чи геоблоком — фетч поверне порожньо або HTML-shell. Тоді Agent 1 працюватиме тільки на Title + Description без справжнього article context — якість ідей просяде. Перевір URL у інкогніто перед запуском.',
+        },
+        {
+          kind: 'tip',
+          title: 'Analyze — не обов\'язково, але сильно рекомендую',
+          text: 'Change Approach працює без Analyze — Agent 3 сам провидить ідеї. Але якщо ти НЕ запустив Analyze, backend не знатиме, які саме текстові позиції були на оригінальному банері — і фінальний рендер може додати Accent / CTA, яких там не було. Запусти Analyze один раз перед Generate Ideas — це дешевий крок (одна vision-модель, ~1 сек).',
+        },
+      ],
+    },
+    {
+      id: 'cea-pipeline',
+      label: 'Крок 1 — Generate New Ideas (3-агентний пайплайн)',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Клік «Generate New Ideas» тригерить POST на /creative_approach_ideas. Backend послідовно робить чотири речі: (1) Vision Decompose читає оригінальний банер, (2) Jina.ai тягне текст статті, (3) Agent 1 → Agent 2 → Agent 3 генерують ідеї. Фінальний вивід — 5 креативів у shape, який очікує фронт.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Endpoint', v: 'POST /creative_approach_ideas (n8n-nodes-base.webhook, responseMode: lastNode)' },
+            { k: 'Article fetch', v: 'https://r.jina.ai/{{articleUrl}} — plain-text reader від Jina.ai. onError: continueRegularOutput, тож fail не валить пайплайн (Agent 1 працює на Title/Description як fallback).' },
+            { k: 'Vision Decompose', v: 'anthropic/claude-opus-4.7 через OpenRouter. Читає оригінал і повертає JSON: {mechanic, tone, formula_detected, current_promises[], banned_words_used[]}. Задача — сказати Agent 1, звідки стартуємо.' },
+            { k: 'Latency', v: '~30–60 сек end-to-end. Три Opus 4.7 виклики послідовно, плюс Jina fetch. Fronted показує skeleton loader.' },
+          ],
+        },
+        { kind: 'h3', text: 'Vision Decompose' },
+        {
+          kind: 'prompt',
+          label: 'Vision Decompose — system prompt',
+          model: 'anthropic/claude-opus-4.7',
+          body: `Analyze this currently-live creative banner so we can design a fundamentally DIFFERENT approach.
+
+Return ONLY a JSON object with keys:
+- mechanic: one of F2 Surprise, F3 Question, F4 Number, F6 Contrast, Story, Direct, Eligibility
+- tone: one of soft, direct, mixed
+- formula_detected: short phrase naming the persuasion pattern (e.g. "question hook + eligibility marker")
+- current_promises: 3–6 short strings summarising the concrete claims the banner asserts
+- banned_words_used: any §12 substitution-table words visibly rendered (free, cash, win, guarantee, save big, etc.)
+
+No prose, no markdown fences.`,
+        },
+        { kind: 'h3', text: 'Agent 1 — Marketing Analyst' },
+        {
+          kind: 'p',
+          text: 'Копія Agent 1 з Hooks-Image Generator (той самий verbatim system prompt, у KB — коротка версія). Задача: розкласти input на структуровану аналітику для Agent 2.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Agent 1 (Marketing Analyst) — summary prompt',
+          model: 'anthropic/claude-opus-4.7',
+          body: `You are Marketing Analyst for the RSOC creative pipeline.
+Input: Vision Decompose output + article headline / first paragraph + current Title / Description.
+Task: produce structured JSON for downstream Strategist / Copywriter.
+
+Primary signal is what the cold Meta user will click on the landing page. Article teaser is supporting context only — do not invent article content beyond it.
+
+Return JSON with:
+- keyword_intent: { core_need, qualifier, intent_modifier, reasoning }
+- content_promise: { main_promise, curiosity_angle, emotional_payoff }
+- bridge_point: 1 sentence, 15–25 words, joining core_need + main_promise
+- audience_clusters: exactly 3 HOT facets of the same keyword user (no proxy personas, no weak filler)
+- content_anchors: 3–5 concrete nouns actually referenced in the article teaser
+- compliance_note: 1 string flagging §7 Location / §10 Personal / §11 Aggression / §14 Invented specifics risks
+
+No prose outside the JSON.`,
+        },
+        { kind: 'h3', text: 'Agent 2 — Strategist (top-1)' },
+        {
+          kind: 'p',
+          text: 'Оригінально видає 3 angles під HITL-вибір. У Change Approach модифікація: інструкція «output exactly 1 angle in the angles array» (топ-1 за trigger-fitness). Agent 3 читає angles[0]. Навіть якщо модель випадково поверне 3, downstream бере тільки перший.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Agent 2 (Strategist, top-1) — summary prompt',
+          model: 'anthropic/claude-opus-4.7',
+          body: `You are Strategist for the RSOC creative pipeline.
+Input: Agent 1 output. Task: pick the ONE strongest cognitive trigger and return a single change-of-approach angle for Agent 3.
+
+Cold Meta pool is mostly L1 Unaware / L2 Problem-Aware. Angle must create curiosity the article partially resolves — never give the full answer upfront.
+
+Choose ONE trigger from:
+  CG Curiosity Gap, SR Self-Reference, LA Loss Aversion, PI Pattern Interrupt, BS Belief Shift.
+(AU Authority is deprecated. Reject LA if no clear missed benefit, BS if no identifiable belief, SR if audience too broad.)
+
+Return ONLY:
+{"angles":[{code, trigger, direction (15–25 words, strategy not headline), awareness_level (L1|L2), belief_being_shifted (only for BS), emotional_anchor (Discovery|Hope|Relief|Concern|Pride|Indignation|Confidence|Curiosity), why_works, why_this_works (25–40 word guardrail), hook_seed (8–12 words)}], "operator_note":"..."}
+
+Comply with §7 / §10 / §11 / §14. Exactly 1 angle. No prose, no fences.`,
+        },
+        { kind: 'h3', text: 'Agent 3 — Copywriter (N=5)' },
+        {
+          kind: 'p',
+          text: 'Копія Agent 3 з модифікацією «3 creatives → 5 creatives». Уся compliance-механіка (§7 / §10 / §11 / §12 / §14 бани, §12 substitution table, formula-trigger compatibility matrix, aspect-pool brainstorm через 8 категорій, read-aloud test) лишається verbatim з оригіналу. Ця частина промта — роки навчання на реальних disapprovals, її не чіпаємо.',
+        },
+        {
+          kind: 'prompt',
+          label: 'Agent 3 (Copywriter, N=5) — summary prompt',
+          model: 'anthropic/claude-opus-4.7',
+          body: `You are Copywriter for the RSOC creative pipeline.
+Input: chosen angle from Agent 2 + Agent 1 audience/anchors. Task: produce EXACTLY 5 banner creatives, each with a distinct aspect_category (from the 8-category library).
+
+Formulas — pick per creative from the trigger-compatibility whitelist:
+  CG → F2 / F3 / F4 / F6
+  SR → F2 / F3 / F4
+  LA → F2 / F3 / F4
+  PI → F2 / F3 / F4
+  BS → F2 / F4 / F6
+(F1 Problem and F5 Story are deprecated for RSOC.)
+
+Compliance — banned in hook / accent / cta / meta_title / meta_copy:
+  §7 Location ("near me / local"), §10 Personal ("your X / are you"),
+  §8 Transactional CTA ("Apply Now / Get Started"), §11 Aggression ("act fast / don't miss out"),
+  §12 Transactional Claims ("free / cash / win / save big / guarantee"), §14 Invented specifics.
+
+§12 substitution table — swap banned SEO vocab:
+  free → no-cost / through nonprofits / covered by
+  cash → financial help / monthly assistance
+  win → qualify for / receive / be considered for
+  save big → lower-cost / reduced rates
+
+meta_ad_copy MUST end with "Read Guide" if banner_cta == "Read Guide", else with "Read Article".
+
+Return ONLY: {"creatives":[{creative, formula, aspect_tested, aspect_category, banner_hook, banner_accent, banner_cta, meta_ad_title, meta_ad_copy} × 5]}. No prose, no fences.`,
+        },
+        {
+          kind: 'note',
+          title: 'Compliance risk badge на картках ідей',
+          text: 'Frontend сканує Agent 3 output на §12-substitution vocab («no-cost», «through nonprofits», «qualify for», «lower-cost»…). Якщо знайшов — картка отримує тег «watch» замість «safe». Це не помилка — це сигнал, що Copywriter довелось перефразувати з banned SEO-вокабуляра. Значення: креатив легальний, але кут ризикованіший — тримай як тестовий, не основний.',
+        },
+      ],
+    },
+    {
+      id: 'cea-generate',
+      label: 'Крок 2 — Generate Creative (з композицією оригіналу)',
+      blocks: [
+        {
+          kind: 'p',
+          text: 'Клік «Generate Creative» після вибору картки шле POST на /creative_approach_generate. Backend бере оригінальний банер + hook/accent/cta з обраної ідеї і робить image-to-image edit — той самий Gemini 3-pro-image-preview, що і в Change Image. Різниця — жорстка перевірка на «які позиції взагалі існують на оригіналі».',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Endpoint', v: 'POST /creative_approach_generate' },
+            { k: 'Model', v: 'google/gemini-3-pro-image-preview' },
+            { k: 'Editing style', v: 'SURGICAL EDIT — 5 жорстких правил: (1) ERASE all original text first, (2) render only strings on Text-to-render lines, (3) empty positions have no text, (4) change only what is named, (5) NEVER render meta_title / meta_copy на банер (вони caption під ним).' },
+            { k: 'Response shape', v: '{ url, fileName, title, description } — title/description echo-нуться назад з обраної ідеї для caption під зображенням.' },
+          ],
+        },
+        {
+          kind: 'prompt',
+          label: 'Generate Image — static editing rules (RULE 1–5)',
+          model: 'google/gemini-3-pro-image-preview',
+          body: `Surgically edit the attached banner. Preserve composition, background, style, lighting, logos.
+
+RULE 1 — ERASE ALL ORIGINAL TEXT FIRST before rendering anything new.
+RULE 2 — RENDER ONLY the exact strings listed on Text-to-render lines, verbatim.
+RULE 3 — POSITIONS IN THE ERASE LIST STAY EMPTY (no ghost text, no empty button shell).
+RULE 4 — CHANGE ONLY WHAT IS NAMED. Do not add or move elements the render / erase lists don't mention.
+RULE 5 — NEVER render meta_title or meta_copy on the image. Those are UI caption below the banner, not banner pixels.
+
+The RENDER LIST and ERASE LIST below are built dynamically from the picked idea and the presentSlots map.`,
+        },
+        { kind: 'h3', text: 'Composition preservation (present slots rule)' },
+        {
+          kind: 'p',
+          text: 'Ключове правило: якщо оригінальний банер мав ТІЛЬКИ Hook (без Accent, без CTA-кнопки), то edited-версія теж має мати тільки Hook. AI не має права додати Accent-рядок і CTA-кнопку, яких не було. Це реалізовано через `presentSlots` boolean-мапу.',
+        },
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'presentSlots на frontend', v: 'Виводиться зі стану Hook/Accent/CTA полів (заповнюються Analyze). Порожнє поле → false («слот відсутній на оригіналі»). Непорожнє → true.' },
+            { k: 'Обробка на backend', v: 'Extract Binary node перед Generate Image робить intersect: idea.hook лишається тільки якщо presentSlots.hook === true. Інакше — обнуляється, і prompt-генератор ставить цю позицію у ERASE list (де стирати нічого — no-op).' },
+            { k: 'Fallback', v: 'Якщо frontend НЕ передав presentSlots (старий payload) — backend дивиться на `original.hook/accent/cta`: непорожні рядки = present, порожні = absent. Якщо взагалі нічого не прийшло — default «all present» (не регресує старий флоу).' },
+          ],
+        },
+        {
+          kind: 'example',
+          label: 'Приклад: оригінал має тільки Hook',
+          body: `Frontend state (після Analyze):
+  hook   = "HOW CENTRELINK HOME BUYING WORKS"
+  accent = ""
+  cta    = ""
+
+Frontend payload:
+  original      = { hook: "HOW CENTRELINK…", accent: "", cta: "" }
+  presentSlots  = { hook: true,  accent: false, cta: false }
+  idea          = { hook: "Pension Income Can Count…",
+                    accent: "Housing Australia Backed Pathways",
+                    cta: "Learn More", title: "…", description: "…" }
+
+Extract Binary → Generate Image:
+  hook   = "Pension Income Can Count…"   (kept, slot present)
+  accent = ""                              (dropped, slot absent)
+  cta    = ""                              (dropped, slot absent)
+
+Editing prompt:
+  RENDER LIST: HOOK position → "Pension Income Can Count…"
+  ERASE LIST:  ACCENT position, CTA button (nothing to erase on
+                original — no-op, no ghost, no empty button shell)
+
+Result:
+  Banner has only Hook (нова текстівка на тій самій композиції).
+  Title/Description показуються ПІД банером окремим текстом у UI.`,
+        },
+        {
+          kind: 'warn',
+          title: 'Meta title / description НЕ рендеряться на банер',
+          text: 'RULE 5 у promt Generate Image явно забороняє додавати title/description на зображення. Вони — caption-текст під банером у UI. Це навмисно: title/description йдуть у Ads Manager як окремі поля, а не як частина зображення. Якщо колись побачиш їх пропечені на банері — це промт-drift, треба тюнити RULE 5.',
+        },
+      ],
+    },
+    {
+      id: 'cea-vs-change-image',
+      label: 'Change Approach vs Change Image',
+      blocks: [
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Change Image', v: 'Тексти вже придумав, треба їх ЗАМІНИТИ на банері. Один webhook, один рендер, ~15–25 сек. Оригінальні тексти й нові — з твоєї голови.' },
+            { k: 'Change Approach', v: 'Тексти треба ПРИДУМАТИ з нуля з різних кутів. Три послідовні LLM-виклики + рендер, ~30–60 сек + ~15 сек = 45–75 сек end-to-end. Оригінальні тексти вже стоять на банері, нові вигадує AI на основі статті.' },
+            { k: 'Коли брати Change Image', v: 'Знаєш, який має бути новий Hook / Accent / CTA. Просто підмінити. Або переклад на іншу мову.' },
+            { k: 'Коли брати Change Approach', v: 'Банер вже втомлений, треба нова ідея. Або хочеш побачити, які кути AI вигадає під ту саму статтю. Або A/B-тестуєш різні cognitive triggers на тому самому візуалі.' },
+          ],
+        },
+        {
+          kind: 'tip',
+          title: 'Composition preservation — спільне для обох режимів',
+          text: 'Обидва режими зберігають композицію оригіналу — фон, стиль, шрифт, розміри. Різниця в тому, ЩО ти даєш як «нові тексти»: у Change Image — руками, у Change Approach — AI генерує 5 варіантів.',
+        },
+      ],
+    },
+    {
+      id: 'cea-troubleshooting',
+      label: 'Troubleshooting',
+      blocks: [
+        {
+          kind: 'kv',
+          rows: [
+            { k: 'Ідеї всі схожі одна на одну', v: 'Agent 3 повинен був відхилити такий output через STEP 4A hook diversity check. Якщо все ж таки — можливо, стаття надто вузька (Agent 1 повернув слабі audience_clusters). Дай ширшу статтю або підправ Title/Description так, щоб вони натякали на ширший intent.' },
+            { k: 'Всі 5 ідей — «watch» compliance', v: 'Стаття або keywords тягнуть §12 vocab (free / cash / win). Agent 3 не має вибору, окрім substitution. Це ОК — рендер легальний, тримай як тест pool, а не основний залив.' },
+            { k: 'Banner після рендеру має Accent / CTA, яких не було на оригіналі', v: 'presentSlots не спрацював. Перевір: (a) чи запустив Analyze перед Generate Ideas — щоб hook/accent/cta заповнились коректно; (b) чи frontend не кеше старий payload (hard reload). Якщо стабільно — переконайся, що новий Extract Binary node в n8n імпортований (стара версія не знає про presentSlots).' },
+            { k: 'Title / Description з\'явились на самому банері', v: 'Prompt-drift на Generate Image. RULE 5 має це блокувати. Якщо повторюється — підсиль RULE 5 більш прямими словами («NEVER add ANY text below or beside the CTA / hook — meta fields do not appear on the image, period»).' },
+            { k: 'Latency > 90 сек', v: 'Три Opus 4.7 виклики + Jina fetch. Якщо стабільно повільно — перевір OpenRouter status; можна тимчасово перевести Agent 2 на sonnet-4.6 (Strategist потребує менше «мозку», ніж Analyst і Copywriter).' },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
 const MODULES: KBModule[] = [
   KEYWORDS_MODULE,
   ANGLES_MODULE,
@@ -2338,6 +2645,7 @@ const MODULES: KBModule[] = [
   CREATIVES_MODULE,
   CREATIVE_GEN_MODULE,
   CREATIVE_EDIT_MODULE,
+  CREATIVE_EDIT_APPROACH_MODULE,
   FB_TO_NB_MODULE,
 ];
 
