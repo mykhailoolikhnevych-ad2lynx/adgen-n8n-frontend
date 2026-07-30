@@ -250,6 +250,9 @@ export interface SelectedFbAd {
   mediaKind: 'image' | 'video';
   creativeTitle: string;
   creativeBody: string;
+  /** ISO-2 country from adset.targeting.geo_locations.countries[0], upper-cased.
+   *  Empty when the adset has no country targeting (e.g. worldwide). */
+  country?: string;
 }
 
 // MEGATOOL — Create Binom Offer response shape (success branch of the n8n webhook).

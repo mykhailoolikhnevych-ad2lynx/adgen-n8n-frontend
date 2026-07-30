@@ -133,6 +133,7 @@ const AdCard = ({ ad, adset, campaign, isSelected, selectionIndex, onToggle }: A
       mediaKind,
       creativeTitle: title,
       creativeBody: body,
+      country: (adset.targeting?.geo_locations?.countries?.[0] ?? '').toString().toUpperCase(),
     };
     onToggle(snapshot);
   };
