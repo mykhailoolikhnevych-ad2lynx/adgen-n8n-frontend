@@ -268,9 +268,10 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     const base = fbCampaign || nbName || fbFallback;
     if (!base) return '';
     const roasPrefix = derivedIsRoas ? 'ROAS | ' : '';
+    const country = (selectedFbAd?.country || 'US').toUpperCase();
     const acctPart = destination === 'TT'
-      ? ' | US | TT'
-      : (selectedAccountName ? ` | US | NB | ${selectedAccountName}` : ' | US | NB');
+      ? ` | ${country} | TT`
+      : (selectedAccountName ? ` | ${country} | NB | ${selectedAccountName}` : ` | ${country} | NB`);
     const now = new Date();
     const dd = String(now.getDate()).padStart(2, '0');
     const mm = String(now.getMonth() + 1).padStart(2, '0');
