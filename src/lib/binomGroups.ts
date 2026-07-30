@@ -149,4 +149,5 @@ export const BINOM_AMO_DOMAINS = [
   'finomira.com',
   'fintreat.com',
   'healquix.com',
+  'moneytano.com',
 ] as const;
