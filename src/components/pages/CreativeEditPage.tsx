@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -21,6 +22,17 @@ const IMAGE_PROMPT_HELP =
 const LANGUAGE_TOOLTIP =
   'Якою мовою рендерити текст на банері. За замовчуванням мова не змінюється — модель залишає її такою ж, як на оригінальному зображенні. Вибери конкретну мову, якщо хочеш переклад.';
 
+const MODE_HELP =
+  'Change Image — редагує завантажений банер, підмінюючи Hook/Accent/CTA. ' +
+  'Change Approach — на основі статті пропонує нові ідеї (Hook/Accent/CTA/Title/Description), ' +
+  'потім рендерить банер із обраною ідеєю. Title/Description показуються під зображенням окремим текстом.';
+
+const IDEAS_HELP =
+  'Модель пропонує кілька повних наборів (Hook / Accent / CTA / Title / Description) під статтю. Обери один — і згенеруємо банер із ним.';
+
+const RESULT_HELP =
+  'Готовий банер із обраної ідеї. Title/Description показуються під зображенням окремим текстом, а не рендеряться на самому банері.';
+
 const LANGUAGE_OPTIONS = ['Keep original language', ...AD_LANGUAGES];
 
 const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
@@ -29,6 +41,14 @@ const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_EDIT_URL as string | undefined;
 const ANALYZE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_EDIT_ANALYZE_URL as string | undefined;
+const APPROACH_IDEAS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_APPROACH_IDEAS_URL as
+  | string
+  | undefined;
+const APPROACH_GENERATE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_APPROACH_GENERATE_URL as
+  | string
+  | undefined;
+
+type Mode = 'image' | 'approach';
 
 const fileToDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -47,7 +67,25 @@ interface ResultItem {
   fileName?: string;
 }
 
+interface Idea {
+  id: string;
+  hook: string;
+  accent: string;
+  cta: string;
+  title: string;
+  description: string;
+}
+
+interface ApproachResult {
+  url: string;
+  fileName?: string;
+  title: string;
+  description: string;
+}
+
 export const CreativeEditPage = () => {
+  const [mode, setMode] = useState<Mode>('image');
+
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [hook, setHook] = useState('');
@@ -62,6 +100,22 @@ export const CreativeEditPage = () => {
   const [analyzeError, setAnalyzeError] = useState<string | null>(null);
   const [results, setResults] = useState<ResultItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Change Approach — extra input fields.
+  const [articleUrl, setArticleUrl] = useState('');
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+
+  // Change Approach — section 2 state.
+  const [isLoadingIdeas, setIsLoadingIdeas] = useState(false);
+  const [ideasError, setIdeasError] = useState<string | null>(null);
+  const [ideas, setIdeas] = useState<Idea[]>([]);
+  const [pickedIdeaId, setPickedIdeaId] = useState<string | null>(null);
+
+  // Change Approach — section 3 state.
+  const [isLoadingApproach, setIsLoadingApproach] = useState(false);
+  const [approachError, setApproachError] = useState<string | null>(null);
+  const [approachResults, setApproachResults] = useState<ApproachResult[]>([]);
 
   const prevPreviewUrl = useRef<string | null>(null);
   const dragCounter = useRef(0);
@@ -207,8 +261,6 @@ export const CreativeEditPage = () => {
   const handleGenerate = async () => {
     if (!file || !hook.trim()) return;
 
-    // meta describes the *input* — the source filename plus the text/prompt
-    // fields the operator submitted. The uploaded image bytes are omitted.
     const meta = {
       fileName: file.name,
       hook: hook.trim(),
@@ -243,10 +295,6 @@ export const CreativeEditPage = () => {
       });
       const data = response.data;
 
-      // metaOut carries the webhook response. Edited creatives come back as
-      // image data URLs; usage.ts downscales them to thumbnails before storing,
-      // so they surface in the Dashboard's "See N images" the same as generated
-      // creatives. No special-casing needed here.
       if (typeof data === 'string') {
         setResults((prev) => [...prev, { url: data }]);
         logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
@@ -291,6 +339,161 @@ export const CreativeEditPage = () => {
     }
   };
 
+  // ---------------------------------------------------------------- Change Approach
+  const approachInputsMissing =
+    !file || !articleUrl.trim() || !title.trim() || !description.trim();
+
+  const handleGenerateIdeas = async () => {
+    if (approachInputsMissing || !file) return;
+
+    const meta = {
+      fileName: file.name,
+      articleUrl: articleUrl.trim(),
+      title: title.trim(),
+      description: description.trim(),
+      hook: hook.trim(),
+      accent: accent.trim(),
+      cta: cta.trim(),
+      language: language === 'Keep original language' ? '' : language,
+      aspectRatio,
+    };
+
+    if (!APPROACH_IDEAS_WEBHOOK) {
+      const msg = 'PUBLIC_WEBHOOK_CREATIVE_APPROACH_IDEAS_URL is not configured. Set it in .env.';
+      setIdeasError(msg);
+      logEvent({ tab: 'creative-edit', action: 'approachIdeas', meta, errorMessage: msg });
+      return;
+    }
+
+    setIsLoadingIdeas(true);
+    setIdeasError(null);
+    setIdeas([]);
+    setPickedIdeaId(null);
+    setApproachResults([]);
+
+    try {
+      const imageDataUrl = await fileToDataUrl(file);
+
+      const response = await axios.post<unknown>(APPROACH_IDEAS_WEBHOOK, {
+        image: imageDataUrl,
+        articleUrl: articleUrl.trim(),
+        title: title.trim(),
+        description: description.trim(),
+        hook: hook.trim(),
+        accent: accent.trim(),
+        cta: cta.trim(),
+        language: language === 'Keep original language' ? '' : language,
+        aspectRatio,
+      });
+      const data = response.data;
+
+      const raw = extractIdeasArray(data);
+      if (!raw) {
+        console.error('[CreativeEdit] ideas: unexpected response', data);
+        setIdeasError('Unexpected ideas response shape');
+        logEvent({ tab: 'creative-edit', action: 'approachIdeas', meta, metaOut: data, errorMessage: 'Unexpected ideas response shape' });
+        return;
+      }
+
+      const parsed: Idea[] = raw.map((item, i) => {
+        const o = item as Record<string, unknown>;
+        const s = (k: string): string => (typeof o[k] === 'string' ? (o[k] as string) : '');
+        const rawId = s('id');
+        return {
+          id: rawId || `idea-${i + 1}`,
+          hook: s('hook'),
+          accent: s('accent'),
+          cta: s('cta'),
+          title: s('title'),
+          description: s('description'),
+        };
+      });
+
+      setIdeas(parsed);
+      logEvent({ tab: 'creative-edit', action: 'approachIdeas', meta, metaOut: data });
+    } catch (err: unknown) {
+      const axiosErr = err as {
+        response?: { data?: { message?: string } };
+        message?: string;
+      };
+      const msg = axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Ideas request failed';
+      setIdeasError(msg);
+      logEvent({ tab: 'creative-edit', action: 'approachIdeas', meta, metaOut: axiosErr?.response?.data, errorMessage: msg });
+    } finally {
+      setIsLoadingIdeas(false);
+    }
+  };
+
+  const handleGenerateApproachImage = async () => {
+    if (!file || !pickedIdeaId) return;
+    const picked = ideas.find((i) => i.id === pickedIdeaId);
+    if (!picked) return;
+
+    const meta = {
+      fileName: file.name,
+      ideaId: picked.id,
+      hook: picked.hook,
+      accent: picked.accent,
+      cta: picked.cta,
+      title: picked.title,
+      description: picked.description,
+      articleUrl: articleUrl.trim(),
+      language: language === 'Keep original language' ? '' : language,
+      aspectRatio,
+    };
+
+    if (!APPROACH_GENERATE_WEBHOOK) {
+      const msg = 'PUBLIC_WEBHOOK_CREATIVE_APPROACH_GENERATE_URL is not configured. Set it in .env.';
+      setApproachError(msg);
+      logEvent({ tab: 'creative-edit', action: 'approachGenerate', meta, errorMessage: msg });
+      return;
+    }
+
+    setIsLoadingApproach(true);
+    setApproachError(null);
+
+    try {
+      const imageDataUrl = await fileToDataUrl(file);
+
+      const response = await axios.post<unknown>(APPROACH_GENERATE_WEBHOOK, {
+        image: imageDataUrl,
+        articleUrl: articleUrl.trim(),
+        idea: {
+          id: picked.id,
+          hook: picked.hook,
+          accent: picked.accent,
+          cta: picked.cta,
+          title: picked.title,
+          description: picked.description,
+        },
+        language: language === 'Keep original language' ? '' : language,
+        aspectRatio,
+      });
+      const data = response.data;
+
+      const items = extractApproachResults(data, picked);
+      if (items.length === 0) {
+        console.error('[CreativeEdit] approach generate: unexpected response', data);
+        setApproachError('Unexpected response shape');
+        logEvent({ tab: 'creative-edit', action: 'approachGenerate', meta, metaOut: data, errorMessage: 'Unexpected response shape' });
+        return;
+      }
+
+      setApproachResults((prev) => [...prev, ...items]);
+      logEvent({ tab: 'creative-edit', action: 'approachGenerate', meta, metaOut: data });
+    } catch (err: unknown) {
+      const axiosErr = err as {
+        response?: { data?: { message?: string } };
+        message?: string;
+      };
+      const msg = axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Generation failed';
+      setApproachError(msg);
+      logEvent({ tab: 'creative-edit', action: 'approachGenerate', meta, metaOut: axiosErr?.response?.data, errorMessage: msg });
+    } finally {
+      setIsLoadingApproach(false);
+    }
+  };
+
   const noFile = !file;
   const hookMissing = !hook.trim();
 
@@ -299,184 +502,490 @@ export const CreativeEditPage = () => {
   else if (noFile) buttonLabel = 'Upload a creative first';
   else if (hookMissing) buttonLabel = 'Enter a Hook first';
 
-  return (
-    <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
-      <div className="w-[400px] shrink-0 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-        <div className="flex flex-col gap-4">
-          <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2">
-            Creative Edit
-            <InfoTooltip text={CREATIVE_EDIT_HELP} />
-          </h2>
+  const modeToggle = (
+    <div>
+      <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400 block mb-1">
+        Mode <span className="text-red-500">*</span>
+        <InfoTooltip text={MODE_HELP} iconSize={11} />
+      </label>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode('image')}
+          className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+            mode === 'image'
+              ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+              : 'border-input bg-white hover:bg-slate-50'
+          }`}
+        >
+          Change Image
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode('approach')}
+          className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+            mode === 'approach'
+              ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+              : 'border-input bg-white hover:bg-slate-50'
+          }`}
+        >
+          Change Approach
+        </button>
+      </div>
+    </div>
+  );
 
-          <div>
-            <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
-              Creative image
-            </label>
-            <label
-              onDragEnter={handleDragEnter}
-              onDragLeave={handleDragLeave}
-              onDragOver={handleDragOver}
-              onDrop={handleDrop}
-              className={`cursor-pointer flex flex-col items-center justify-center rounded-md border-2 border-dashed px-3 py-4 text-sm font-medium transition-colors w-full text-center ${
-                isDragging
-                  ? 'border-blue-500 bg-blue-50 text-blue-700'
-                  : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
-              }`}
-            >
-              <span>{file ? 'Replace creative' : 'Upload creative'}</span>
-              <span className="mt-0.5 text-[11px] font-normal text-slate-500">
-                or drag & drop here
-              </span>
-              <input
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="hidden"
-                onChange={handleFileChange}
-              />
-            </label>
-            {file && (
-              <p className="mt-1 text-xs text-slate-500 truncate">{file.name}</p>
-            )}
-            {previewUrl && (
-              <img
-                src={previewUrl}
-                alt="Preview"
-                className="mt-2 max-h-40 w-full object-contain rounded border"
-              />
-            )}
-          </div>
+  const uploadBlock = (
+    <div>
+      <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+        Creative image
+      </label>
+      <label
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+        className={`cursor-pointer flex flex-col items-center justify-center rounded-md border-2 border-dashed px-3 py-4 text-sm font-medium transition-colors w-full text-center ${
+          isDragging
+            ? 'border-blue-500 bg-blue-50 text-blue-700'
+            : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
+        }`}
+      >
+        <span>{file ? 'Replace creative' : 'Upload creative'}</span>
+        <span className="mt-0.5 text-[11px] font-normal text-slate-500">
+          or drag & drop here
+        </span>
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          className="hidden"
+          onChange={handleFileChange}
+        />
+      </label>
+      {file && (
+        <p className="mt-1 text-xs text-slate-500 truncate">{file.name}</p>
+      )}
+      {previewUrl && (
+        <img
+          src={previewUrl}
+          alt="Preview"
+          className="mt-2 max-h-40 w-full object-contain rounded border"
+        />
+      )}
+    </div>
+  );
 
-          <Button
-            onClick={handleAnalyze}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white"
-            disabled={noFile || isAnalyzing}
-          >
-            {isAnalyzing ? 'Analyzing image...' : 'Analyze image'}
-          </Button>
-          {analyzeError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-              {analyzeError}
-            </div>
+  const creativeTextBlock = (includeImagePrompt: boolean) => (
+    <>
+      <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] font-bold uppercase text-gray-500">Creative text</div>
+          {isAnalyzing && (
+            <div className="text-[10px] uppercase text-blue-600 animate-pulse">Reading…</div>
           )}
-
-          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-[10px] font-bold uppercase text-gray-500">Creative text</div>
-              {isAnalyzing && (
-                <div className="text-[10px] uppercase text-blue-600 animate-pulse">Reading…</div>
-              )}
-            </div>
-            <div>
-              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
-                Aspect ratio
-              </label>
-              <select
-                value={aspectRatio}
-                onChange={(e) => setAspectRatio(e.target.value)}
-                className="w-full text-sm border rounded-md px-2 py-1 bg-white"
-              >
-                {ASPECT_RATIOS.map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-                Language
-                <InfoTooltip text={LANGUAGE_TOOLTIP} iconSize={11} />
-              </label>
-              <Combobox
-                value={language}
-                onChange={setLanguage}
-                options={LANGUAGE_OPTIONS}
-                placeholder="Keep original language"
-              />
-            </div>
-            <div>
-              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-                Hook
-                <InfoTooltip text={HOOK_HELP} iconSize={11} />
-                {hookMissing && (
-                  <span className="ml-1 normal-case font-normal text-red-500">— required</span>
-                )}
-              </label>
-              <Textarea
-                value={hook}
-                onChange={(e) => setHook(e.target.value)}
-                placeholder="Main banner line, 40–55 chars…"
-                className="bg-white text-sm resize-none"
-              />
-            </div>
-            <div>
-              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-                Accent
-                <InfoTooltip text={ACCENT_HELP} iconSize={11} />
-              </label>
-              <Textarea
-                value={accent}
-                onChange={(e) => setAccent(e.target.value)}
-                placeholder="Second, smaller line under the hook…"
-                className="bg-white text-sm resize-none"
-              />
-            </div>
-            <div>
-              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-                CTA
-                <InfoTooltip text={CTA_HELP} iconSize={11} />
-              </label>
-              <Textarea
-                value={cta}
-                onChange={(e) => setCta(e.target.value)}
-                placeholder="Learn More, Read More, Discover More…"
-                className="bg-white text-sm resize-none"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-              Image prompt adjustments
-              <InfoTooltip text={IMAGE_PROMPT_HELP} iconSize={11} />
-              <span className="ml-1 normal-case font-normal text-slate-400">— optional</span>
-            </label>
-            <Textarea
-              value={imagePrompt}
-              onChange={(e) => setImagePrompt(e.target.value)}
-              rows={4}
-              placeholder="e.g. Change background to blue, remove logo, make the CTA button red. Leave empty to only update texts."
-              className="bg-white text-sm resize-none"
-            />
-          </div>
-
-          <Button
-            onClick={handleGenerate}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white"
-            disabled={isLoading || noFile || hookMissing}
+        </div>
+        <div>
+          <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+            Aspect ratio
+          </label>
+          <select
+            value={aspectRatio}
+            onChange={(e) => setAspectRatio(e.target.value)}
+            className="w-full text-sm border rounded-md px-2 py-1 bg-white"
           >
-            {buttonLabel}
-          </Button>
+            {ASPECT_RATIOS.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+            Language
+            <InfoTooltip text={LANGUAGE_TOOLTIP} iconSize={11} />
+          </label>
+          <Combobox
+            value={language}
+            onChange={setLanguage}
+            options={LANGUAGE_OPTIONS}
+            placeholder="Keep original language"
+          />
+        </div>
+        <div>
+          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+            Hook
+            <InfoTooltip text={HOOK_HELP} iconSize={11} />
+            {mode === 'image' && hookMissing && (
+              <span className="ml-1 normal-case font-normal text-red-500">— required</span>
+            )}
+          </label>
+          <Textarea
+            value={hook}
+            onChange={(e) => setHook(e.target.value)}
+            placeholder="Main banner line, 40–55 chars…"
+            className="bg-white text-sm resize-none"
+          />
+        </div>
+        <div>
+          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+            Accent
+            <InfoTooltip text={ACCENT_HELP} iconSize={11} />
+          </label>
+          <Textarea
+            value={accent}
+            onChange={(e) => setAccent(e.target.value)}
+            placeholder="Second, smaller line under the hook…"
+            className="bg-white text-sm resize-none"
+          />
+        </div>
+        <div>
+          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+            CTA
+            <InfoTooltip text={CTA_HELP} iconSize={11} />
+          </label>
+          <Textarea
+            value={cta}
+            onChange={(e) => setCta(e.target.value)}
+            placeholder="Learn More, Read More, Discover More…"
+            className="bg-white text-sm resize-none"
+          />
         </div>
       </div>
 
-      <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-        <h2 className="font-bold text-xl mb-4">Result</h2>
+      {includeImagePrompt && (
+        <div>
+          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+            Image prompt adjustments
+            <InfoTooltip text={IMAGE_PROMPT_HELP} iconSize={11} />
+            <span className="ml-1 normal-case font-normal text-slate-400">— optional</span>
+          </label>
+          <Textarea
+            value={imagePrompt}
+            onChange={(e) => setImagePrompt(e.target.value)}
+            rows={4}
+            placeholder="e.g. Change background to blue, remove logo, make the CTA button red. Leave empty to only update texts."
+            className="bg-white text-sm resize-none"
+          />
+        </div>
+      )}
+    </>
+  );
 
-        {errorMessage && (
-          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {errorMessage}
+  const analyzeBlock = (
+    <>
+      <Button
+        onClick={handleAnalyze}
+        className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+        disabled={noFile || isAnalyzing}
+      >
+        {isAnalyzing ? 'Analyzing image...' : 'Analyze image'}
+      </Button>
+      {analyzeError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {analyzeError}
+        </div>
+      )}
+    </>
+  );
+
+  // -------------------------------------------------------------- Change Image layout
+  if (mode === 'image') {
+    return (
+      <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
+        <div className="w-[400px] shrink-0 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+          <div className="flex flex-col gap-4">
+            <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2">
+              Creative Edit
+              <InfoTooltip text={CREATIVE_EDIT_HELP} />
+            </h2>
+
+            {modeToggle}
+            {uploadBlock}
+            {analyzeBlock}
+            {creativeTextBlock(true)}
+
+            <Button
+              onClick={handleGenerate}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+              disabled={isLoading || noFile || hookMissing}
+            >
+              {buttonLabel}
+            </Button>
           </div>
-        )}
+        </div>
 
-        {results.length === 0 && !isLoading && !errorMessage && (
-          <p className="text-sm text-slate-400">
-            Upload a creative and describe the changes, then click Generate.
-          </p>
-        )}
+        <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+          <h2 className="font-bold text-xl mb-4">Result</h2>
 
-        {results.length > 0 && (
-          <div className="flex flex-col gap-6">
-            {results.map((item, i) => {
-              const rawName = item.fileName ?? `creative-edit-${i + 1}.png`;
+          {errorMessage && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {errorMessage}
+            </div>
+          )}
+
+          {results.length === 0 && !isLoading && !errorMessage && (
+            <p className="text-sm text-slate-400">
+              Upload a creative and describe the changes, then click Generate.
+            </p>
+          )}
+
+          {results.length > 0 && (
+            <div className="flex flex-col gap-6">
+              {results.map((item, i) => {
+                const rawName = item.fileName ?? `creative-edit-${i + 1}.png`;
+                const name = rawName.startsWith('aiimg_') ? rawName : `aiimg_${rawName}`;
+                return (
+                  <div key={i} className="flex flex-col gap-2">
+                    <div className="text-[10px] font-bold uppercase text-gray-400">
+                      Generation #{i + 1}
+                    </div>
+                    <div className="w-full flex items-center justify-center bg-slate-50 rounded border">
+                      <img
+                        src={item.url}
+                        alt={`Generated creative ${i + 1}`}
+                        className="max-h-[480px] w-full object-contain rounded"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={item.url}
+                        download={name}
+                        className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors w-fit"
+                      >
+                        Download
+                      </a>
+                      <CopyNameButton fileName={name} className="px-3 py-1.5 text-sm" />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {isLoading && (
+            <div className={`flex flex-col gap-3 ${results.length > 0 ? 'mt-6' : ''}`}>
+              <Skeleton className="h-6 w-48 rounded" />
+              <Skeleton className="h-64 w-full rounded" />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---------------------------------------------------------- Change Approach layout
+  const pickedIdea = ideas.find((i) => i.id === pickedIdeaId) ?? null;
+
+  return (
+    <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
+      {/* 1. Input */}
+      <div className="w-1/4 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+        <div className="flex flex-col gap-4">
+          <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2">
+            1. Input
+            <InfoTooltip text={CREATIVE_EDIT_HELP} />
+          </h2>
+
+          {modeToggle}
+          {uploadBlock}
+          {analyzeBlock}
+
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3">
+            <div className="text-[10px] font-bold uppercase text-gray-500">Article</div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Article URL <span className="text-red-500">*</span>
+              </label>
+              <Input
+                value={articleUrl}
+                onChange={(e) => setArticleUrl(e.target.value)}
+                placeholder="https://example.com/article"
+                className="text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Title <span className="text-red-500">*</span>
+              </label>
+              <Textarea
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                rows={2}
+                placeholder="Article title"
+                className="bg-white text-sm resize-none"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Description <span className="text-red-500">*</span>
+              </label>
+              <Textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={3}
+                placeholder="Short article description"
+                className="bg-white text-sm resize-none"
+              />
+            </div>
+          </div>
+
+          {creativeTextBlock(false)}
+
+          <Button
+            onClick={handleGenerateIdeas}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+            disabled={isLoadingIdeas || approachInputsMissing}
+          >
+            {isLoadingIdeas ? 'Generating…' : 'Generate New Ideas'}
+          </Button>
+          {approachInputsMissing && (
+            <p className="text-[11px] text-slate-500">
+              Upload a creative and fill Article URL / Title / Description.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* 2. New Ideas */}
+      <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
+        <div className="flex flex-col gap-4 flex-1 min-h-0">
+          <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2 shrink-0">
+            2. New Ideas
+            <InfoTooltip text={IDEAS_HELP} />
+          </h2>
+
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
+            {isLoadingIdeas && (
+              <div className="flex flex-col gap-3">
+                <Skeleton className="h-24 w-full rounded" />
+                <Skeleton className="h-24 w-full rounded" />
+                <Skeleton className="h-24 w-full rounded" />
+              </div>
+            )}
+            {ideasError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 whitespace-pre-wrap">
+                {ideasError}
+              </div>
+            )}
+            {!isLoadingIdeas && !ideasError && ideas.length === 0 && (
+              <div className="text-gray-400 italic text-sm">
+                Fill inputs on the left and click Generate New Ideas.
+              </div>
+            )}
+            {ideas.map((idea) => {
+              const isPicked = pickedIdeaId === idea.id;
+              return (
+                <div
+                  key={idea.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isPicked}
+                  onClick={() => setPickedIdeaId(isPicked ? null : idea.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setPickedIdeaId(isPicked ? null : idea.id);
+                    }
+                  }}
+                  className={`w-full cursor-pointer text-left rounded-lg border bg-white p-3 transition-colors ${
+                    isPicked ? 'border-blue-500 ring-1 ring-blue-500' : 'border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    <span
+                      aria-hidden="true"
+                      className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] font-bold ${
+                        isPicked ? 'border-blue-500 bg-blue-500 text-white' : 'border-slate-300 bg-white text-transparent'
+                      }`}
+                    >
+                      ✓
+                    </span>
+                    <div className="min-w-0 flex-1 space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-white">
+                          {idea.id}
+                        </span>
+                      </div>
+                      {idea.hook && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Hook</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{idea.hook}</p>
+                        </div>
+                      )}
+                      {idea.accent && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Accent</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{idea.accent}</p>
+                        </div>
+                      )}
+                      {idea.cta && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">CTA</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{idea.cta}</p>
+                        </div>
+                      )}
+                      {idea.title && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Title</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{idea.title}</p>
+                        </div>
+                      )}
+                      {idea.description && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Description</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{idea.description}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {ideas.length > 0 && (
+            <Button
+              onClick={handleGenerateApproachImage}
+              className="mt-2 shrink-0"
+              disabled={isLoadingApproach || !pickedIdeaId}
+            >
+              {isLoadingApproach ? 'Generating…' : 'Generate Creative'}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* 3. Generated Creatives */}
+      <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
+        <div className="flex flex-col gap-4 flex-1 min-h-0">
+          <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2 shrink-0">
+            3. Generated Creatives
+            <InfoTooltip text={RESULT_HELP} />
+          </h2>
+
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
+            {approachError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 whitespace-pre-wrap">
+                {approachError}
+              </div>
+            )}
+
+            {isLoadingApproach && (
+              <div className="flex flex-col gap-3">
+                <Skeleton className="h-6 w-48 rounded" />
+                <Skeleton className="h-64 w-full rounded" />
+              </div>
+            )}
+
+            {!isLoadingApproach && !approachError && approachResults.length === 0 && (
+              <div className="text-gray-400 italic text-sm">
+                {pickedIdea
+                  ? 'Click Generate Creative to render an image for the picked idea.'
+                  : 'Pick an idea in the middle column, then generate.'}
+              </div>
+            )}
+
+            {approachResults.map((item, i) => {
+              const rawName = item.fileName ?? `creative-approach-${i + 1}.png`;
               const name = rawName.startsWith('aiimg_') ? rawName : `aiimg_${rawName}`;
               return (
                 <div key={i} className="flex flex-col gap-2">
@@ -490,6 +999,22 @@ export const CreativeEditPage = () => {
                       className="max-h-[480px] w-full object-contain rounded"
                     />
                   </div>
+                  {(item.title || item.description) && (
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-1">
+                      {item.title && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Title</p>
+                          <p className="text-sm text-slate-900">{item.title}</p>
+                        </div>
+                      )}
+                      {item.description && (
+                        <div>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Description</p>
+                          <p className="text-sm text-slate-900 whitespace-pre-wrap">{item.description}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="flex items-center gap-2">
                     <a
                       href={item.url}
@@ -498,22 +1023,62 @@ export const CreativeEditPage = () => {
                     >
                       Download
                     </a>
-                    {/* Copies the standardized file name (no extension) -> Facebook Ad name. */}
                     <CopyNameButton fileName={name} className="px-3 py-1.5 text-sm" />
                   </div>
                 </div>
               );
             })}
           </div>
-        )}
-
-        {isLoading && (
-          <div className={`flex flex-col gap-3 ${results.length > 0 ? 'mt-6' : ''}`}>
-            <Skeleton className="h-6 w-48 rounded" />
-            <Skeleton className="h-64 w-full rounded" />
-          </div>
-        )}
+        </div>
       </div>
     </div>
   );
 };
+
+// Accepts { ideas: [...] } | { data: [...] } | [...] and returns the raw
+// array of idea objects, or null if none of the shapes matched.
+function extractIdeasArray(data: unknown): unknown[] | null {
+  if (Array.isArray(data)) return data;
+  if (data !== null && typeof data === 'object') {
+    const o = data as Record<string, unknown>;
+    if (Array.isArray(o.ideas)) return o.ideas as unknown[];
+    if (Array.isArray(o.data)) return o.data as unknown[];
+  }
+  return null;
+}
+
+// Accepts a string data-URL, { url, fileName? }, or { images: [{url, ...}] }.
+// Falls back to the picked idea's title/description when the response omits them.
+function extractApproachResults(data: unknown, picked: Idea): ApproachResult[] {
+  const fallbackTitle = picked.title;
+  const fallbackDescription = picked.description;
+
+  if (typeof data === 'string') {
+    return [{ url: data, title: fallbackTitle, description: fallbackDescription }];
+  }
+  if (data === null || typeof data !== 'object') return [];
+  const o = data as Record<string, unknown>;
+
+  if (typeof o.url === 'string') {
+    return [{
+      url: o.url,
+      fileName: typeof o.fileName === 'string' ? o.fileName : undefined,
+      title: typeof o.title === 'string' ? o.title : fallbackTitle,
+      description: typeof o.description === 'string' ? o.description : fallbackDescription,
+    }];
+  }
+
+  if (Array.isArray(o.images)) {
+    return (o.images as unknown[])
+      .filter((it): it is Record<string, unknown> =>
+        it !== null && typeof it === 'object' && typeof (it as Record<string, unknown>).url === 'string',
+      )
+      .map((it) => ({
+        url: it.url as string,
+        fileName: typeof it.fileName === 'string' ? it.fileName : undefined,
+        title: typeof it.title === 'string' ? (it.title as string) : fallbackTitle,
+        description: typeof it.description === 'string' ? (it.description as string) : fallbackDescription,
+      }));
+  }
+  return [];
+}
