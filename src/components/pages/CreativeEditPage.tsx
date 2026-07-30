@@ -429,6 +429,20 @@ export const CreativeEditPage = () => {
     const picked = ideas.find((i) => i.id === pickedIdeaId);
     if (!picked) return;
 
+    // `original` = what the operator sees in the current Hook/Accent/CTA fields
+    // (filled by Analyze image). Any field that's empty is treated as NOT present
+    // on the uploaded image — the backend must NOT add it to the edited banner.
+    const original = {
+      hook: hook.trim(),
+      accent: accent.trim(),
+      cta: cta.trim(),
+    };
+    const presentSlots = {
+      hook: original.hook.length > 0,
+      accent: original.accent.length > 0,
+      cta: original.cta.length > 0,
+    };
+
     const meta = {
       fileName: file.name,
       ideaId: picked.id,
@@ -440,6 +454,7 @@ export const CreativeEditPage = () => {
       articleUrl: articleUrl.trim(),
       language: language === 'Keep original language' ? '' : language,
       aspectRatio,
+      presentSlots,
     };
 
     if (!APPROACH_GENERATE_WEBHOOK) {
@@ -466,6 +481,8 @@ export const CreativeEditPage = () => {
           title: picked.title,
           description: picked.description,
         },
+        original,
+        presentSlots,
         language: language === 'Keep original language' ? '' : language,
         aspectRatio,
       });
