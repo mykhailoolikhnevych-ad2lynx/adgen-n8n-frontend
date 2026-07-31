@@ -1,7 +1,8 @@
 // Binom group catalog — mirror of the `binom_groups` n8n datatable.
-// Each group belongs to a specific tracker (ilab.nnctrack.com or
-// jaguars.nnctrack.com). Group names can repeat across trackers — they're
-// different Binom installs with different UUIDs, so name alone isn't unique.
+// Each group belongs to a specific tracker (ilab.nnctrack.com,
+// jaguars.nnctrack.com, or pumas.nnctrack.com). Group names can repeat across
+// trackers — they're different Binom installs with different UUIDs, so name
+// alone isn't unique.
 
 export interface BinomGroup {
   name: string;
@@ -83,12 +84,31 @@ export const BINOM_GROUPS: readonly BinomGroup[] = [
   { name: 'NB_Shared', tracker: 'jaguars.nnctrack.com' },
   { name: 'oleksii_kotliarevskyi', tracker: 'jaguars.nnctrack.com' },
   { name: 'Test Group', tracker: 'jaguars.nnctrack.com' },
+
+  // pumas.nnctrack.com (alfredofuns.com)
+  { name: 'Vitaliy', tracker: 'pumas.nnctrack.com' },
+  { name: 'Igor_Kazan', tracker: 'pumas.nnctrack.com' },
+  { name: 'Evgeniy', tracker: 'pumas.nnctrack.com' },
+  { name: 'Igor_Fedyniak', tracker: 'pumas.nnctrack.com' },
+  { name: 'ILAB', tracker: 'pumas.nnctrack.com' },
+  { name: 'Ross', tracker: 'pumas.nnctrack.com' },
+  { name: 'Igor_T', tracker: 'pumas.nnctrack.com' },
+  { name: 'Marta', tracker: 'pumas.nnctrack.com' },
+  { name: 'Alya_Poyda', tracker: 'pumas.nnctrack.com' },
+  { name: 'Andrey_Sharkov', tracker: 'pumas.nnctrack.com' },
+  { name: 'Mariia_Iankova', tracker: 'pumas.nnctrack.com' },
+  { name: 'Dmytro_Kotok', tracker: 'pumas.nnctrack.com' },
+  { name: 'kostiantyn_vremenko', tracker: 'pumas.nnctrack.com' },
+  { name: 'vladyslav_andrianov', tracker: 'pumas.nnctrack.com' },
+  { name: 'roman_zahorbenskyi', tracker: 'pumas.nnctrack.com' },
+  { name: 'Test Group', tracker: 'pumas.nnctrack.com' },
 ];
 
 // Trackers the user can target. Each Binom install lives at its own host.
 export const BINOM_TRACKERS = [
   'ilab.nnctrack.com',
   'jaguars.nnctrack.com',
+  'pumas.nnctrack.com',
 ] as const;
 export type BinomTracker = typeof BINOM_TRACKERS[number];
 export const DEFAULT_BINOM_TRACKER: BinomTracker = 'ilab.nnctrack.com';
@@ -100,6 +120,7 @@ export const DEFAULT_BINOM_TRACKER: BinomTracker = 'ilab.nnctrack.com';
 export const AMO_DOMAIN_TO_TRACKER: Record<string, BinomTracker> = {
   'perabianco.com': 'ilab.nnctrack.com',
   'pancettafuns.com': 'jaguars.nnctrack.com',
+  'alfredofuns.com': 'pumas.nnctrack.com',
 };
 
 // Resolve a trackingUrl to its Binom tracker via AMO_DOMAIN_TO_TRACKER.
