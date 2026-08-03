@@ -857,7 +857,7 @@ const extractExecutionError = (full: any): string | null => {
 // API until the run finishes, then return the JSON of the last node that ran.
 // Used by RSOC Audiences / Headlines and (soon) any other long-running webhook
 // that would otherwise hit Cloudflare's ~100s edge cap.
-const pollExecutionResult = async (jobId: string, label: string): Promise<any> => {
+export const pollExecutionResult = async (jobId: string, label: string): Promise<any> => {
   if (!N8N_EXECUTIONS_URL) {
     throw new Error('PUBLIC_N8N_EXECUTIONS_URL is not set in .env');
   }
