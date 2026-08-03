@@ -37,6 +37,29 @@ const LANGUAGE_OPTIONS = ['Keep original language', ...AD_LANGUAGES];
 
 const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
 
+const FLAG_STYLES: Record<string, { label: string; tooltip: string; className: string }> = {
+  'story-risk': {
+    label: 'story',
+    tooltip: 'F5 Story format — elevated §14 invention risk. Vet the copy for made-up names/places/amounts.',
+    className: 'bg-amber-100 text-amber-800 border border-amber-300',
+  },
+  'brand-mention': {
+    label: 'brand',
+    tooltip: 'Names a third-party organization. Higher brand_query keyword drift + Facebook affiliation-review risk.',
+    className: 'bg-yellow-100 text-yellow-800 border border-yellow-300',
+  },
+  'clickbait-review': {
+    label: 'clickbait',
+    tooltip: '"Truth about X" / "What They Don\'t Tell You" phrasing — may trigger Facebook manual review on cold accounts.',
+    className: 'bg-orange-100 text-orange-800 border border-orange-300',
+  },
+  default: {
+    label: 'flag',
+    tooltip: 'Compliance flag from Agent 3.',
+    className: 'bg-slate-100 text-slate-800 border border-slate-300',
+  },
+};
+
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_EDIT_URL as string | undefined;
@@ -74,6 +97,7 @@ interface Idea {
   cta: string;
   title: string;
   description: string;
+  complianceFlags?: string[];
 }
 
 interface ApproachResult {
@@ -406,6 +430,10 @@ export const CreativeEditPage = () => {
           cta: s('cta'),
           title: s('title'),
           description: s('description'),
+          complianceFlags: Array.isArray(o.complianceFlags)
+            ? (o.complianceFlags as unknown[])
+                .filter((f): f is string => typeof f === 'string')
+            : undefined,
         };
       });
 
@@ -921,6 +949,18 @@ export const CreativeEditPage = () => {
                         <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-white">
                           {idea.id}
                         </span>
+                        {idea.complianceFlags?.map((flag) => {
+                          const style = FLAG_STYLES[flag] ?? FLAG_STYLES.default;
+                          return (
+                            <span
+                              key={flag}
+                              title={style.tooltip}
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${style.className}`}
+                            >
+                              {style.label}
+                            </span>
+                          );
+                        })}
                       </div>
                       {idea.hook && (
                         <div>
