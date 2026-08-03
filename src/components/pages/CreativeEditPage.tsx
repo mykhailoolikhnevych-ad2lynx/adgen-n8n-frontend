@@ -421,7 +421,10 @@ export const CreativeEditPage = () => {
       // if the response already contains the ideas array (older workflow version).
       const jobId = extractJobId(data);
       if (jobId) {
-        data = await pollExecutionResult(jobId, 'creativeApproachIdeas');
+        // Explicit preferred node: the workflow fans out at Agent 3 (Shape branch +
+        // cost-log branch), so lastNodeExecuted often points at the cost log. Ask for
+        // Shape's output directly.
+        data = await pollExecutionResult(jobId, 'creativeApproachIdeas', 'Shape to ideas[]');
       }
 
       const raw = extractIdeasArray(data);
