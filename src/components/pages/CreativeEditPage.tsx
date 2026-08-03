@@ -43,11 +43,6 @@ const FLAG_STYLES: Record<string, { label: string; tooltip: string; className: s
     tooltip: 'F5 Story format — elevated §14 invention risk. Vet the copy for made-up names/places/amounts.',
     className: 'bg-amber-100 text-amber-800 border border-amber-300',
   },
-  'brand-mention': {
-    label: 'brand',
-    tooltip: 'Names a third-party organization. Higher brand_query keyword drift + Facebook affiliation-review risk.',
-    className: 'bg-yellow-100 text-yellow-800 border border-yellow-300',
-  },
   'clickbait-review': {
     label: 'clickbait',
     tooltip: '"Truth about X" / "What They Don\'t Tell You" phrasing — may trigger Facebook manual review on cold accounts.',
@@ -70,6 +65,7 @@ const APPROACH_IDEAS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_APPROACH_
 const APPROACH_GENERATE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_APPROACH_GENERATE_URL as
   | string
   | undefined;
+const TRANSLATE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL as string | undefined;
 
 type Mode = 'image' | 'approach';
 
@@ -90,14 +86,20 @@ interface ResultItem {
   fileName?: string;
 }
 
-interface Idea {
-  id: string;
+interface IdeaTexts {
   hook: string;
   accent: string;
   cta: string;
   title: string;
   description: string;
+}
+
+interface Idea extends IdeaTexts {
+  id: string;
   complianceFlags?: string[];
+  translation?: IdeaTexts;
+  isTranslating?: boolean;
+  showTranslation?: boolean;
 }
 
 interface ApproachResult {
@@ -452,6 +454,88 @@ export const CreativeEditPage = () => {
     }
   };
 
+  // Toggle Ukrainian translation on one idea card. First call fetches via /translate_uk
+  // and caches on the idea. Subsequent calls just flip showTranslation. Card render picks
+  // between article-native fields (idea.hook/…) and translation.* based on the flag.
+  const toggleIdeaTranslation = async (ideaId: string) => {
+    const idea = ideas.find((i) => i.id === ideaId);
+    if (!idea || idea.isTranslating) return;
+
+    // Already cached — just flip the flag.
+    if (idea.translation) {
+      setIdeas((prev) =>
+        prev.map((i) =>
+          i.id === ideaId ? { ...i, showTranslation: !i.showTranslation } : i,
+        ),
+      );
+      return;
+    }
+
+    if (!TRANSLATE_WEBHOOK) {
+      const msg = 'PUBLIC_WEBHOOK_TRANSLATE_URL is not configured. Set it in .env.';
+      setIdeasError(msg);
+      return;
+    }
+
+    setIdeas((prev) =>
+      prev.map((i) => (i.id === ideaId ? { ...i, isTranslating: true } : i)),
+    );
+
+    try {
+      const payload = {
+        hook: idea.hook,
+        accent: idea.accent,
+        cta: idea.cta,
+        title: idea.title,
+        description: idea.description,
+      };
+      const response = await axios.post<unknown>(TRANSLATE_WEBHOOK, payload);
+      const raw = response.data;
+      const outer = Array.isArray(raw) ? raw[0] : raw;
+      const wrapped = outer && typeof outer === 'object' && 'json' in outer
+        ? (outer as { json: unknown }).json
+        : outer;
+      const obj = (wrapped && typeof wrapped === 'object') ? (wrapped as Record<string, unknown>) : {};
+      const pick = (k: keyof IdeaTexts): string =>
+        typeof obj[k] === 'string' ? (obj[k] as string) : idea[k];
+      const translation: IdeaTexts = {
+        hook: pick('hook'),
+        accent: pick('accent'),
+        cta: pick('cta'),
+        title: pick('title'),
+        description: pick('description'),
+      };
+      setIdeas((prev) =>
+        prev.map((i) =>
+          i.id === ideaId
+            ? { ...i, translation, showTranslation: true, isTranslating: false }
+            : i,
+        ),
+      );
+      logEvent({
+        tab: 'creative-edit',
+        action: 'translateIdea',
+        meta: { ideaId },
+        metaOut: translation,
+      });
+    } catch (err: unknown) {
+      const axiosErr = err as {
+        response?: { data?: { message?: string } };
+        message?: string;
+      };
+      const msg = axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Translate failed';
+      setIdeas((prev) =>
+        prev.map((i) => (i.id === ideaId ? { ...i, isTranslating: false } : i)),
+      );
+      logEvent({
+        tab: 'creative-edit',
+        action: 'translateIdea',
+        meta: { ideaId },
+        errorMessage: msg,
+      });
+    }
+  };
+
   const handleGenerateApproachImage = async () => {
     if (!file || !pickedIdeaId) return;
     const picked = ideas.find((i) => i.id === pickedIdeaId);
@@ -643,18 +727,20 @@ export const CreativeEditPage = () => {
             ))}
           </select>
         </div>
-        <div>
-          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-            Language
-            <InfoTooltip text={LANGUAGE_TOOLTIP} iconSize={11} />
-          </label>
-          <Combobox
-            value={language}
-            onChange={setLanguage}
-            options={LANGUAGE_OPTIONS}
-            placeholder="Keep original language"
-          />
-        </div>
+        {mode === 'image' && (
+          <div>
+            <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+              Language
+              <InfoTooltip text={LANGUAGE_TOOLTIP} iconSize={11} />
+            </label>
+            <Combobox
+              value={language}
+              onChange={setLanguage}
+              options={LANGUAGE_OPTIONS}
+              placeholder="Keep original language"
+            />
+          </div>
+        )}
         <div>
           <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
             Hook
@@ -918,6 +1004,19 @@ export const CreativeEditPage = () => {
             )}
             {ideas.map((idea) => {
               const isPicked = pickedIdeaId === idea.id;
+              const isUk = !!idea.showTranslation && !!idea.translation;
+              const view: IdeaTexts = isUk
+                ? (idea.translation as IdeaTexts)
+                : {
+                    hook: idea.hook,
+                    accent: idea.accent,
+                    cta: idea.cta,
+                    title: idea.title,
+                    description: idea.description,
+                  };
+              let translateLabel = '🇺🇦 Translate';
+              if (idea.isTranslating) translateLabel = 'Translating…';
+              else if (isUk) translateLabel = '🇺🇸 Original';
               return (
                 <div
                   key={idea.id}
@@ -945,51 +1044,65 @@ export const CreativeEditPage = () => {
                       ✓
                     </span>
                     <div className="min-w-0 flex-1 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-white">
-                          {idea.id}
-                        </span>
-                        {idea.complianceFlags?.map((flag) => {
-                          const style = FLAG_STYLES[flag] ?? FLAG_STYLES.default;
-                          return (
-                            <span
-                              key={flag}
-                              title={style.tooltip}
-                              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${style.className}`}
-                            >
-                              {style.label}
-                            </span>
-                          );
-                        })}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-mono font-bold text-white">
+                            {idea.id}
+                          </span>
+                          {idea.complianceFlags?.map((flag) => {
+                            const style = FLAG_STYLES[flag] ?? FLAG_STYLES.default;
+                            return (
+                              <span
+                                key={flag}
+                                title={style.tooltip}
+                                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${style.className}`}
+                              >
+                                {style.label}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="shrink-0"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void toggleIdeaTranslation(idea.id);
+                          }}
+                          disabled={idea.isTranslating}
+                        >
+                          {translateLabel}
+                        </Button>
                       </div>
-                      {idea.hook && (
+                      {view.hook && (
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Hook</p>
-                          <p className="text-xs leading-relaxed text-slate-900">{idea.hook}</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{view.hook}</p>
                         </div>
                       )}
-                      {idea.accent && (
+                      {view.accent && (
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Accent</p>
-                          <p className="text-xs leading-relaxed text-slate-900">{idea.accent}</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{view.accent}</p>
                         </div>
                       )}
-                      {idea.cta && (
+                      {view.cta && (
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">CTA</p>
-                          <p className="text-xs leading-relaxed text-slate-900">{idea.cta}</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{view.cta}</p>
                         </div>
                       )}
-                      {idea.title && (
+                      {view.title && (
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Title</p>
-                          <p className="text-xs leading-relaxed text-slate-900">{idea.title}</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{view.title}</p>
                         </div>
                       )}
-                      {idea.description && (
+                      {view.description && (
                         <div>
                           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Description</p>
-                          <p className="text-xs leading-relaxed text-slate-900">{idea.description}</p>
+                          <p className="text-xs leading-relaxed text-slate-900">{view.description}</p>
                         </div>
                       )}
                     </div>
