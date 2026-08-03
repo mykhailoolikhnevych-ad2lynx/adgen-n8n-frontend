@@ -857,7 +857,15 @@ const extractExecutionError = (full: any): string | null => {
 // API until the run finishes, then return the JSON of the last node that ran.
 // Used by RSOC Audiences / Headlines and (soon) any other long-running webhook
 // that would otherwise hit Cloudflare's ~100s edge cap.
-export const pollExecutionResult = async (jobId: string, label: string): Promise<any> => {
+export const pollExecutionResult = async (
+  jobId: string,
+  label: string,
+  // Optional: if the workflow fans out (e.g. main branch → Respond, side branch →
+  // cost log), lastNodeExecuted may not be the branch we care about. Pass the exact
+  // node name (or an ordered list of preferred names) to read that node's output
+  // directly. Falls back to lastNodeExecuted when the preferred nodes are absent.
+  preferredNodes?: string | string[],
+): Promise<any> => {
   if (!N8N_EXECUTIONS_URL) {
     throw new Error('PUBLIC_N8N_EXECUTIONS_URL is not set in .env');
   }
@@ -866,6 +874,10 @@ export const pollExecutionResult = async (jobId: string, label: string): Promise
     : undefined;
   const metaUrl = `${N8N_EXECUTIONS_URL}/${jobId}`;
   const fullUrl = `${N8N_EXECUTIONS_URL}/${jobId}?includeData=true`;
+
+  const preferList = preferredNodes
+    ? (Array.isArray(preferredNodes) ? preferredNodes : [preferredNodes])
+    : [];
 
   for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -884,10 +896,23 @@ export const pollExecutionResult = async (jobId: string, label: string): Promise
     const full = res.data;
     const errMessage = extractExecutionError(full);
     if (errMessage) throw new Error(errMessage);
+
+    const runData = full?.data?.resultData?.runData ?? {};
+    const readNode = (name: string) =>
+      runData?.[name]?.[0]?.data?.main?.[0]?.[0]?.json;
+
+    // Try preferred nodes first (exact-match, in order).
+    for (const name of preferList) {
+      const j = readNode(name);
+      if (j) return j;
+    }
+
+    // Fall back to lastNodeExecuted so callers that don't specify a preference
+    // keep their old behavior.
     const lastNode = full?.data?.resultData?.lastNodeExecuted;
-    const json = full?.data?.resultData?.runData?.[lastNode]?.[0]?.data?.main?.[0]?.[0]?.json;
+    const json = readNode(lastNode);
     if (!json) {
-      throw new Error('Execution finished but the last node returned no result');
+      throw new Error('Execution finished but the target node returned no result');
     }
     return json;
   }
