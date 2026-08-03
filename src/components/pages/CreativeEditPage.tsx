@@ -839,7 +839,7 @@ export const CreativeEditPage = () => {
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 rows={3}
-                placeholder="Short article description"
+                placeholder="Short ad description"
                 className="bg-white text-sm resize-none"
               />
             </div>
