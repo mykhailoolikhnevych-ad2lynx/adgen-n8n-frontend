@@ -821,13 +821,13 @@ export const CreativeEditPage = () => {
             </div>
             <div>
               <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
-                Title <span className="text-red-500">*</span>
+                Ad title <span className="text-red-500">*</span>
               </label>
               <Textarea
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 rows={2}
-                placeholder="Article title"
+                placeholder="Ad title"
                 className="bg-white text-sm resize-none"
               />
             </div>
