@@ -10,6 +10,7 @@ import { Combobox } from '@/components/ui/Combobox';
 import { CopyNameButton } from '@/components/ui/CopyNameButton';
 import { AD_LANGUAGES } from '@/lib/geos';
 import { logEvent } from '@/lib/usage';
+import { pollExecutionResult } from '@/store/useAppStore';
 
 const CREATIVE_EDIT_HELP =
   'Завантаж статичний банер (PNG / JPG / WebP), заповни Hook / Accent / CTA та (опційно) опиши, ' +
@@ -411,7 +412,17 @@ export const CreativeEditPage = () => {
         language: language === 'Keep original language' ? '' : language,
         aspectRatio,
       });
-      const data = response.data;
+      let data = response.data;
+
+      // The workflow returns immediately with { job_id } (or execution_id / id) so the
+      // request never times out past 300s. Poll the n8n executions API until the run
+      // finishes, then read the final node's JSON — which is Shape to ideas[]'s
+      // { ideas: [...], detectedLanguage: "..." }. Falls through to synchronous parsing
+      // if the response already contains the ideas array (older workflow version).
+      const jobId = extractJobId(data);
+      if (jobId) {
+        data = await pollExecutionResult(jobId, 'creativeApproachIdeas');
+      }
 
       const raw = extractIdeasArray(data);
       if (!raw) {
@@ -1204,6 +1215,19 @@ export const CreativeEditPage = () => {
     </div>
   );
 };
+
+// Extract an n8n execution id from a webhook response for long-poll pattern. The
+// "Respond to FE with execution_id" node returns { job_id: "..." }; older setups may
+// use execution_id or id. Returns null when the response is the final result (not a
+// job pointer) — then caller parses inline.
+function extractJobId(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const o = data as Record<string, unknown>;
+  const cand = o.job_id ?? o.execution_id ?? o.id;
+  if (typeof cand === 'string' && cand.trim().length > 0) return cand.trim();
+  if (typeof cand === 'number') return String(cand);
+  return null;
+}
 
 // Accepts { ideas: [...] } | { data: [...] } | [...] and returns the raw
 // array of idea objects, or null if none of the shapes matched.
