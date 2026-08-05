@@ -1005,13 +1005,14 @@ const parseCreativeImages = (result: any, fileMeta: CreativeFileMeta): ImageVari
   const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
 
   // n8n's Aggregate Images keys every image by preset_id: image_a_url / image_b_url /
-  // image_c_url / image_d_url / image_custom_url. The same node also emits a flat
-  // `images: [...]` array in response order, but that order loses which preset each
-  // image came from — so a partial run like {A, D} would otherwise get filenamed _1, _2
-  // instead of _1, _4. Prefer the keyed entries so the trailing slot matches the preset.
-  const PRESET_ORDER = ['a', 'b', 'c', 'd', 'custom'] as const;
+  // image_c_url / image_d_url / image_e_url / image_custom_url. The same node also
+  // emits a flat `images: [...]` array in response order, but that order loses which
+  // preset each image came from — so a partial run like {A, D} would otherwise get
+  // filenamed _1, _2 instead of _1, _4. Prefer the keyed entries so the trailing slot
+  // matches the preset.
+  const PRESET_ORDER = ['a', 'b', 'c', 'd', 'e', 'custom'] as const;
   const PRESET_SLOT: Record<string, number | string> = {
-    a: 1, b: 2, c: 3, d: 4, custom: 'custom',
+    a: 1, b: 2, c: 3, d: 4, e: 5, custom: 'custom',
   };
 
   // Per-key compliance reader. Defaults to compliant=true when the field

@@ -11,7 +11,7 @@
 //   en           - creative language code
 //   11           - aspect ratio (1:1 -> 11, 16:9 -> 169, 9:16 -> 916, 4:5 -> 45)
 //   nbp          - image model code (nbp / nb2 / gi2 / sd45)
-//   1            - preset slot: A/B/C/D -> 1/2/3/4, Custom preset -> 'custom'
+//   1            - preset slot: A/B/C/D/E -> 1/2/3/4/5, Custom preset -> 'custom'
 
 export interface CreativeFileMeta {
   campaignName: string;            // "Housing Help"
@@ -129,7 +129,7 @@ export const buildBatchFilename = (meta: CreativeFileMeta): string =>
         modelCode(meta.imageModel),
       ].join('_');
 
-// Full per-variant name. `variant` is the preset slot — pass 1..4 for A/B/C/D
+// Full per-variant name. `variant` is the preset slot — pass 1..5 for A/B/C/D/E
 // or the literal 'custom' for the Custom preset. The trailing token is appended
 // verbatim, so the caller is responsible for picking the right slot (not the
 // array index — that breaks when the user runs a partial selection like A+D).
