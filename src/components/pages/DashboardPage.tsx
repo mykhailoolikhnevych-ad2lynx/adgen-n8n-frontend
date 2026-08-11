@@ -1156,7 +1156,10 @@ export interface DashboardStats {
   tabs_by_count: { tab: string; count: number }[];
 }
 
-export const DashboardPage = () => {
+// `active` = this tab is the one on screen. The page is kept mounted across tab
+// switches (so filters, date range and sub-tab survive), which means the mount
+// fetch below runs only on the first visit — re-entry refetches instead.
+export const DashboardPage = ({ active = true }: { active?: boolean }) => {
   const [rows, setRows] = useState<UsageRow[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -1273,6 +1276,16 @@ export const DashboardPage = () => {
     setStats(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromDate, toDate]);
+
+  // Re-entering the tab refetches the rows so a kept-alive Dashboard never shows
+  // stale analytics. fetchEvents has its own in-flight guard, so a fast
+  // away-and-back can't stack requests on the n8n data table.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    if (active && !wasActive.current) void fetchEvents();
+    wasActive.current = active;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active]);
 
   // Lazy stats fetch: only when an aggregation tab is shown AND we don't
   // already have stats cached.

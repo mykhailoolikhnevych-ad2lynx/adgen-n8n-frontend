@@ -168,12 +168,14 @@ export const CreativeEditPage = () => {
     };
   }, [file]);
 
+  // Swapping the source image never touches what was already generated —
+  // results only go away when the operator presses "Clear results". Generations
+  // append, so a batch built from several source images stays side by side.
   const acceptFile = (picked: File | null) => {
     if (!picked) {
       setFile(null);
       setErrorMessage(null);
       setAnalyzeError(null);
-      setResults([]);
       return;
     }
     if (!ACCEPTED_TYPES.includes(picked.type)) {
@@ -183,7 +185,6 @@ export const CreativeEditPage = () => {
     setFile(picked);
     setErrorMessage(null);
     setAnalyzeError(null);
-    setResults([]);
   };
 
   const handleAnalyze = async () => {
@@ -394,9 +395,11 @@ export const CreativeEditPage = () => {
 
     setIsLoadingIdeas(true);
     setIdeasError(null);
+    // The idea list is an input picker, so a new run replaces it (pickedIdeaId
+    // points into the old list). Already-generated creatives are output and stay
+    // until the operator clears them by hand.
     setIdeas([]);
     setPickedIdeaId(null);
-    setApproachResults([]);
 
     try {
       const imageDataUrl = await fileToDataUrl(file);
@@ -859,7 +862,22 @@ export const CreativeEditPage = () => {
         </div>
 
         <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
-          <h2 className="font-bold text-xl mb-4">Result</h2>
+          {/* Clearing the batch is a deliberate, explicit action — nothing else
+              in this tab removes generated images. */}
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <h2 className="font-bold text-xl">Result</h2>
+            {results.length > 0 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setResults([])}
+                disabled={isLoading}
+                title="Remove every generated image from this panel"
+              >
+                Clear results ({results.length})
+              </Button>
+            )}
+          </div>
 
           {errorMessage && (
             <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -1141,10 +1159,25 @@ export const CreativeEditPage = () => {
       {/* 3. Generated Creatives */}
       <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
         <div className="flex flex-col gap-4 flex-1 min-h-0">
-          <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2 shrink-0">
-            3. Generated Creatives
-            <InfoTooltip text={RESULT_HELP} />
-          </h2>
+          {/* Same rule as Change Image: generations accumulate, and only this
+              button removes them. */}
+          <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
+            <h2 className="flex items-center gap-1.5 font-bold text-xl">
+              3. Generated Creatives
+              <InfoTooltip text={RESULT_HELP} />
+            </h2>
+            {approachResults.length > 0 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setApproachResults([])}
+                disabled={isLoadingApproach}
+                title="Remove every generated image from this panel"
+              >
+                Clear results ({approachResults.length})
+              </Button>
+            )}
+          </div>
 
           <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
             {approachError && (

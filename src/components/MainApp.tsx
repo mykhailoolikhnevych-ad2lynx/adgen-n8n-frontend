@@ -59,6 +59,20 @@ const formatErrorArg = (a: unknown): string => {
   return String(a);
 };
 
+// Every page keeps at least part of the operator's work in local component state
+// (typed inputs, picked rows, uploaded image, generated batches). Unmounting a
+// page on a tab switch throws all of that away, so instead we mount a page the
+// first time it's opened and never unmount it — inactive pages are just hidden.
+// Nothing renders before its first visit, so app start stays as cheap as before.
+const KeepAlive = ({ active, children }: { active: boolean; children: React.ReactNode }) => {
+  // "Adjust state during render" — the React-blessed way to derive state from
+  // props without an extra render pass.
+  const [visited, setVisited] = useState(active);
+  if (active && !visited) setVisited(true);
+  if (!visited) return null;
+  return <div className={active ? 'h-full' : 'hidden'}>{children}</div>;
+};
+
 const CreativesPage = () => (
   <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
     <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
@@ -193,6 +207,16 @@ export default function MainApp() {
   }, []);
 
   const NAV_ITEMS = isAdmin ? [...BASE_NAV, ...ADMIN_NAV] : BASE_NAV;
+
+  // The shared prompt library used to be re-fetched by ImageGenSettings on every
+  // mount, so a prompt saved in Docs showed up without a hard refresh. Its two
+  // hosts (Creative Gen, Creatives) are now kept mounted, so mounting happens once
+  // — pull the library on tab entry instead, which keeps the old behaviour.
+  useEffect(() => {
+    if (megatool) return;
+    if (page !== 'creative-gen' && page !== 'creatives') return;
+    void useAppStore.getState().loadSavedPrompts();
+  }, [page, megatool]);
 
   useEffect(() => {
     const originalError = console.error;
@@ -445,32 +469,65 @@ export default function MainApp() {
           </div>
         </header>
 
+        {/* Every page below is wrapped in KeepAlive: it stays mounted once visited,
+            so switching tabs (and toggling megatool mode) never discards what the
+            operator typed, picked or generated. The `active` expression for each
+            page is exactly the condition that used to gate its rendering. */}
         <main className="flex-1 overflow-hidden">
-          {megatool ? (
-            // Docs icon stays visible in megatool mode, so it can override the
-            // megatool page. Otherwise render whichever megatool the operator picked.
-            page === 'docs' ? <DocsPage isAdmin={isAdmin} /> : (
-              <>
-                {megatoolPage === 'fb-campaign-reader' && (
-                  <MegatoolFBCampaignPage onOpenBinomOffer={handleOpenBinomOffer} />
-                )}
-                {(megatoolPage === 'create-binom-offer' || megatoolPage === 'create-nb-campaign') && binomOfferOpen && (
-                  <MegatoolCreateBinomOfferPage onClose={handleCloseBinomOffer} />
-                )}
-              </>
-            )
-          ) : (
-            <>
-              {page === 'creative-gen' && <CreativeGenPage />}
-              {page === 'creative-edit' && <CreativeEditPage />}
-              {page === 'creatives' && <CreativesPage />}
-              {page === 'keywords' && <KeywordsPage />}
-              {page === 'angles' && <AnglesPage />}
-              {page === 'article' && <ArticlePage onCreateOffer={handleCreateOffer} />}
-              {page === 'offer-article' && offerArticleOpen && <OfferArticlePage onClose={handleCloseOffer} />}
-              {page === 'dashboard' && isAdmin && <DashboardPage />}
-              {page === 'docs' && <DocsPage isAdmin={isAdmin} />}
-            </>
+          {/* Docs overrides both modes — the icon stays visible in megatool mode. */}
+          <KeepAlive active={page === 'docs'}>
+            <DocsPage isAdmin={isAdmin} />
+          </KeepAlive>
+
+          {/* Megatool mode */}
+          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'fb-campaign-reader'}>
+            <MegatoolFBCampaignPage onOpenBinomOffer={handleOpenBinomOffer} />
+          </KeepAlive>
+          {/* Closing the Binom sub-tab (×) means "discard this offer draft", so it
+              stays gated on binomOfferOpen — closing still resets the form. */}
+          {binomOfferOpen && (
+            <KeepAlive
+              active={
+                megatool && page !== 'docs' &&
+                (megatoolPage === 'create-binom-offer' || megatoolPage === 'create-nb-campaign')
+              }
+            >
+              <MegatoolCreateBinomOfferPage onClose={handleCloseBinomOffer} />
+            </KeepAlive>
+          )}
+
+          {/* Pipeline mode */}
+          <KeepAlive active={!megatool && page === 'creative-gen'}>
+            <CreativeGenPage />
+          </KeepAlive>
+          <KeepAlive active={!megatool && page === 'creative-edit'}>
+            <CreativeEditPage />
+          </KeepAlive>
+          <KeepAlive active={!megatool && page === 'creatives'}>
+            <CreativesPage />
+          </KeepAlive>
+          <KeepAlive active={!megatool && page === 'keywords'}>
+            <KeywordsPage />
+          </KeepAlive>
+          <KeepAlive active={!megatool && page === 'angles'}>
+            <AnglesPage />
+          </KeepAlive>
+          <KeepAlive active={!megatool && page === 'article'}>
+            <ArticlePage onCreateOffer={handleCreateOffer} />
+          </KeepAlive>
+          {/* Same as Binom above: the × on the Offer Article tab discards the draft,
+              so a new article starts from a form freshly derived from its content. */}
+          {offerArticleOpen && (
+            <KeepAlive active={!megatool && page === 'offer-article'}>
+              <OfferArticlePage onClose={handleCloseOffer} />
+            </KeepAlive>
+          )}
+          {isAdmin && (
+            <KeepAlive active={!megatool && page === 'dashboard'}>
+              {/* Read-only analytics: filters and sub-tab survive, but the rows are
+                  re-fetched on re-entry so the view is never stale. */}
+              <DashboardPage active={!megatool && page === 'dashboard'} />
+            </KeepAlive>
           )}
         </main>
       </div>
