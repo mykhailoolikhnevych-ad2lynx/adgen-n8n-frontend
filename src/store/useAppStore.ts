@@ -1005,14 +1005,18 @@ const parseCreativeImages = (result: any, fileMeta: CreativeFileMeta): ImageVari
   const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
 
   // n8n's Aggregate Images keys every image by preset_id: image_a_url / image_b_url /
-  // image_c_url / image_d_url / image_e_url / image_custom_url. The same node also
-  // emits a flat `images: [...]` array in response order, but that order loses which
-  // preset each image came from — so a partial run like {A, D} would otherwise get
-  // filenamed _1, _2 instead of _1, _4. Prefer the keyed entries so the trailing slot
-  // matches the preset.
-  const PRESET_ORDER = ['a', 'b', 'c', 'd', 'e', 'custom'] as const;
+  // image_c_url / image_d_url / image_e1_url..image_e4_url / image_custom_url. The
+  // same node also emits a flat `images: [...]` array in response order, but that
+  // order loses which preset each image came from — so a partial run like {A, D}
+  // would otherwise get filenamed _1, _2 instead of _1, _4. Prefer the keyed
+  // entries so the trailing slot matches the preset.
+  //
+  // Preset E (Creative) fans out into 4 image variants via the ideator chain;
+  // each carries slot 5a/5b/5c/5d so the filenames sort next to slot 4 without
+  // colliding with the single-slot presets.
+  const PRESET_ORDER = ['a', 'b', 'c', 'd', 'e1', 'e2', 'e3', 'e4', 'custom'] as const;
   const PRESET_SLOT: Record<string, number | string> = {
-    a: 1, b: 2, c: 3, d: 4, e: 5, custom: 'custom',
+    a: 1, b: 2, c: 3, d: 4, e1: '5a', e2: '5b', e3: '5c', e4: '5d', custom: 'custom',
   };
 
   // Per-key compliance reader. Defaults to compliant=true when the field
@@ -1271,7 +1275,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           emotionalAnchor: item.emotional_anchor ?? '',
           raw: item,
         }));
-        set({ angles: anglesWithIds, agent1Output, operatorNote, article, concepts: [], creatives: [], isLoadingAngles: false });
+        set((state) => ({
+          angles: anglesWithIds, agent1Output, operatorNote, article, concepts: [],
+          // A fresh angles run resets the pipeline, but Creative Gen batches are
+          // not part of that pipeline — they must survive, otherwise a run on the
+          // Creatives tab silently wipes the other tab's output.
+          creatives: state.creatives.filter((c) => c.origin === 'creativeOnly'),
+          isLoadingAngles: false,
+        }));
         logEvent({ tab: 'creatives', action: 'generateAngles', meta, metaOut: data });
         return;
       } catch (e) {

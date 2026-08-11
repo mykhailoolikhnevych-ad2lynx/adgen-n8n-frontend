@@ -112,7 +112,7 @@ const IMAGE_PRESETS: { id: string; label: string; hint: string }[] = [
   { id: 'B',      label: 'Organic Social',  hint: 'Виглядає як UGC-пост у стрічці. Великий хук із товстою обводкою поверх затемненого фото, декоративні пастельні стікери, курсивний CTA без кнопки.' },
   { id: 'C',      label: 'Highlight Block', hint: 'Повнокадрове фото + ОДИН однотонний блок зверху з хуком. Без акценту, без CTA. Найпростіший варіант.' },
   { id: 'D',      label: 'Illustrated',     hint: 'Преміум native-ad стиль (як Outbrain/Taboola): редакторська ілюстрація на фоні, жовтий курсивний хук + біла картка + яскравий pill-CTA.' },
-  { id: 'E',      label: 'Creative',        hint: 'Креативний реалізм — хук вбудований у сцену як фізичний об’єкт (намальований на стіні/машині/дорозі, викладений з предметів, надрукований на банері, викарбуваний на камені). Опційно легкий сюрреалізм. БЕЗ цифрових overlay-написів, БЕЗ pill-кнопки CTA. Ефект "ого, що я щойно побачив" у стрічці.' },
+  { id: 'E',      label: 'Creative (×4)',   hint: 'Креативний реалізм — Sonnet 4.5 генерує 4 різні ідеї сцени (кожна з різним архетипом: намальовано на стіні / тримає з картонкою / викладено з предметів / банер / знак на футболці / сюрреалістичний спектакль), потім кожна ідея рендериться в окремий банер. Хук завжди фізично вбудований у сцену — без цифрових overlay. CTA 50/50: іноді в сцені, іноді як звичайна pill-кнопка. Один клік = 4 зображення.' },
   { id: 'Custom', label: 'Custom',          hint: 'Свій варіант. Базово містить той самий каркас, що A/B/C/D (правила тексту, сцена, хук, акцент, CTA, заборонене). Чіпами нижче вмикаєш/вимикаєш блоки. Перетягни чіп у текстове поле, щоб закріпити блок у конкретній позиції — без перетягування блоки рендеряться у порядку за замовчуванням.' },
 ];
 
@@ -211,10 +211,14 @@ export const ImageGenSettings = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [previewImage]);
 
-  // Pull the shared prompt library on mount — re-fetches each time so a
-  // freshly-saved prompt in Docs shows up here without a hard refresh.
+  // The shared prompt library is pulled by MainApp whenever the operator enters a
+  // tab that hosts this panel (Creative Gen / Creatives) — these pages are kept
+  // mounted across tab switches, so a mount-time fetch here would only ever run
+  // once. This mount fetch stays as the fallback for any host outside MainApp's
+  // tab nav; loadSavedPrompts keeps the cached list on failure, so the extra call
+  // is harmless.
   useEffect(() => {
-    void loadSavedPrompts();
+    if (savedPromptsStatus === 'idle') void loadSavedPrompts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
