@@ -10,6 +10,7 @@ import { Combobox } from '@/components/ui/Combobox';
 import { CopyNameButton } from '@/components/ui/CopyNameButton';
 import { AD_LANGUAGES } from '@/lib/geos';
 import { logEvent } from '@/lib/usage';
+import { makeUniqueCopy, type Brightness, type UniqueCopy } from '@/lib/imageUnique';
 import { pollExecutionResult } from '@/store/useAppStore';
 
 const CREATIVE_EDIT_HELP =
@@ -26,7 +27,17 @@ const LANGUAGE_TOOLTIP =
 const MODE_HELP =
   'Change Image — редагує завантажений банер, підмінюючи Hook/Accent/CTA. ' +
   'Change Approach — на основі статті пропонує нові ідеї (Hook/Accent/CTA/Title/Description), ' +
-  'потім рендерить банер із обраною ідеєю. Title/Description показуються під зображенням окремим текстом.';
+  'потім рендерить банер із обраною ідеєю. Title/Description показуються під зображенням окремим текстом. ' +
+  'Unique Copy — не змінює картинку: робить копію з іншим хешем файлу (brightness ±1 + унікальний штамп).';
+
+const UNIQUE_HELP =
+  'Робить копію креативу, візуально ідентичну оригіналу, але з іншим хешем файлу. ' +
+  'Зсув яскравості ±1 з 255 (менше 0.5% — око не бачить) плюс унікальний коментар-штамп у файлі, ' +
+  'щоб кожен клік давав новий хеш. Працює повністю в браузері — без n8n і без витрат.';
+
+const BRIGHTNESS_HELP =
+  '+1 робить кожен піксель на одиницю світлішим, −1 — темнішим (з 255). ' +
+  'Обидва варіанти непомітні; тримай два значення, щоб з одного оригіналу зробити дві різні копії.';
 
 const IDEAS_HELP =
   'Модель пропонує кілька повних наборів (Hook / Accent / CTA / Title / Description) під статтю. Обери один — і згенеруємо банер із ним.';
@@ -68,7 +79,7 @@ const APPROACH_GENERATE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_APPROA
   | undefined;
 const TRANSLATE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL as string | undefined;
 
-type Mode = 'image' | 'approach';
+type Mode = 'image' | 'approach' | 'unique';
 
 const fileToDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -143,6 +154,12 @@ export const CreativeEditPage = () => {
   const [isLoadingApproach, setIsLoadingApproach] = useState(false);
   const [approachError, setApproachError] = useState<string | null>(null);
   const [approachResults, setApproachResults] = useState<ApproachResult[]>([]);
+
+  // Unique Copy state. Runs entirely in the browser — no webhook.
+  const [brightness, setBrightness] = useState<Brightness>(1);
+  const [isMakingUnique, setIsMakingUnique] = useState(false);
+  const [uniqueError, setUniqueError] = useState<string | null>(null);
+  const [uniqueResults, setUniqueResults] = useState<UniqueCopy[]>([]);
 
   const prevPreviewUrl = useRef<string | null>(null);
   const dragCounter = useRef(0);
@@ -640,6 +657,54 @@ export const CreativeEditPage = () => {
     }
   };
 
+  // ------------------------------------------------------------------ Unique Copy
+  // Each click appends one copy. The stamp inside makeUniqueCopy is what keeps
+  // repeat clicks at the same brightness from producing an identical file.
+  const handleMakeUnique = async () => {
+    if (!file) return;
+
+    const meta = {
+      fileName: file.name,
+      fileType: file.type,
+      fileSizeKB: Math.round(file.size / 1024),
+      brightness,
+    };
+
+    setIsMakingUnique(true);
+    setUniqueError(null);
+    try {
+      const copy = await makeUniqueCopy(file, brightness);
+      setUniqueResults((prev) => [...prev, copy]);
+      logEvent({
+        tab: 'creative-edit',
+        action: 'uniqueCopy',
+        meta,
+        metaOut: { fileName: copy.fileName, hash: copy.hash, bytes: copy.bytes },
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Could not build a unique copy';
+      setUniqueError(msg);
+      logEvent({ tab: 'creative-edit', action: 'uniqueCopy', meta, errorMessage: msg });
+    } finally {
+      setIsMakingUnique(false);
+    }
+  };
+
+  // Results hold object URLs, so dropping them without revoking leaks the blobs.
+  const clearUniqueResults = () => {
+    setUniqueResults((prev) => {
+      prev.forEach((r) => URL.revokeObjectURL(r.url));
+      return [];
+    });
+  };
+
+  const uniqueResultsRef = useRef<UniqueCopy[]>([]);
+  uniqueResultsRef.current = uniqueResults;
+  useEffect(
+    () => () => uniqueResultsRef.current.forEach((r) => URL.revokeObjectURL(r.url)),
+    [],
+  );
+
   const noFile = !file;
   const hookMissing = !hook.trim();
 
@@ -654,29 +719,27 @@ export const CreativeEditPage = () => {
         Mode <span className="text-red-500">*</span>
         <InfoTooltip text={MODE_HELP} iconSize={11} />
       </label>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => setMode('image')}
-          className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
-            mode === 'image'
-              ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
-              : 'border-input bg-white hover:bg-slate-50'
-          }`}
-        >
-          Change Image
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode('approach')}
-          className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
-            mode === 'approach'
-              ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
-              : 'border-input bg-white hover:bg-slate-50'
-          }`}
-        >
-          Change Approach
-        </button>
+      {/* Three modes no longer fit side by side at the 400px sidebar width,
+          so the toggle is a grid with tighter type. */}
+      <div className="grid grid-cols-3 gap-1.5">
+        {([
+          ['image', 'Change Image'],
+          ['approach', 'Change Approach'],
+          ['unique', 'Unique Copy'],
+        ] as [Mode, string][]).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setMode(value)}
+            className={`rounded-md border px-2 py-2 text-xs leading-tight transition ${
+              mode === value
+                ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                : 'border-input bg-white hover:bg-slate-50'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -834,6 +897,152 @@ export const CreativeEditPage = () => {
       )}
     </>
   );
+
+  // --------------------------------------------------------------- Unique Copy layout
+  if (mode === 'unique') {
+    return (
+      <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
+        <div className="w-[400px] shrink-0 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+          <div className="flex flex-col gap-4">
+            <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2">
+              Creative Edit
+              <InfoTooltip text={CREATIVE_EDIT_HELP} />
+            </h2>
+
+            {modeToggle}
+            {uploadBlock}
+
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3">
+              <div className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-500">
+                Filter
+                <InfoTooltip text={UNIQUE_HELP} iconSize={11} />
+              </div>
+              <div>
+                <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400 mb-1">
+                  Brightness
+                  <InfoTooltip text={BRIGHTNESS_HELP} iconSize={11} />
+                </label>
+                <div className="flex gap-2">
+                  {([1, -1] as Brightness[]).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setBrightness(value)}
+                      className={`flex-1 rounded-md border px-3 py-2 text-sm transition ${
+                        brightness === value
+                          ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                          : 'border-input bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      Brightness {value > 0 ? '+1' : '−1'}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-500">
+                  Pixels change by 1 of 255 — invisible. The image itself is not edited.
+                </p>
+              </div>
+            </div>
+
+            <Button
+              onClick={handleMakeUnique}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+              disabled={isMakingUnique || noFile}
+            >
+              {isMakingUnique
+                ? 'Creating…'
+                : noFile
+                  ? 'Upload a creative first'
+                  : 'Create New Copy'}
+            </Button>
+            <p className="text-[11px] text-slate-500">
+              Every click makes one more copy with a different file hash — click twice for
+              two, or switch brightness between clicks.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex-1 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+          <div className="flex items-center justify-between gap-2 mb-4">
+            <h2 className="font-bold text-xl">Result</h2>
+            {uniqueResults.length > 0 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={clearUniqueResults}
+                disabled={isMakingUnique}
+                title="Remove every copy from this panel"
+              >
+                Clear results ({uniqueResults.length})
+              </Button>
+            )}
+          </div>
+
+          {uniqueError && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {uniqueError}
+            </div>
+          )}
+
+          {uniqueResults.length === 0 && !isMakingUnique && !uniqueError && (
+            <p className="text-sm text-slate-400">
+              Upload a creative, pick a brightness, then click Create New Copy.
+            </p>
+          )}
+
+          {uniqueResults.length > 0 && (
+            <div className="flex flex-col gap-6">
+              {uniqueResults.map((item, i) => (
+                <div key={item.hash} className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase text-gray-400">
+                      Copy #{i + 1}
+                    </span>
+                    {/* The hash is the whole point of this mode — surface it so the
+                        operator can confirm at a glance that copies really differ. */}
+                    <span
+                      title="SHA-256 prefix — every copy must show a different value"
+                      className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-bold text-white"
+                    >
+                      {item.hash}
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      {item.width}×{item.height} · {Math.round(item.bytes / 1024)} KB
+                    </span>
+                  </div>
+                  <div className="w-full flex items-center justify-center bg-slate-50 rounded border">
+                    <img
+                      src={item.url}
+                      alt={`Unique copy ${i + 1}`}
+                      className="max-h-[480px] w-full object-contain rounded"
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500 truncate">{item.fileName}</p>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={item.url}
+                      download={item.fileName}
+                      className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-100 transition-colors w-fit"
+                    >
+                      Download
+                    </a>
+                    <CopyNameButton fileName={item.fileName} className="px-3 py-1.5 text-sm" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {isMakingUnique && (
+            <div className={`flex flex-col gap-3 ${uniqueResults.length > 0 ? 'mt-6' : ''}`}>
+              <Skeleton className="h-6 w-48 rounded" />
+              <Skeleton className="h-64 w-full rounded" />
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   // -------------------------------------------------------------- Change Image layout
   if (mode === 'image') {
