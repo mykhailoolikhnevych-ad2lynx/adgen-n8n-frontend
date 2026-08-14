@@ -69,6 +69,10 @@ const FLAG_STYLES: Record<string, { label: string; tooltip: string; className: s
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 
+// Unique Copy runs at brightness +1 only for now, so the picker is hidden rather
+// than removed — flip to true to bring the −1 option back.
+const SHOW_BRIGHTNESS_FILTER: boolean = false;
+
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_EDIT_URL as string | undefined;
 const ANALYZE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_EDIT_ANALYZE_URL as string | undefined;
 const APPROACH_IDEAS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_APPROACH_IDEAS_URL as
@@ -912,6 +916,7 @@ export const CreativeEditPage = () => {
             {modeToggle}
             {uploadBlock}
 
+            {SHOW_BRIGHTNESS_FILTER && (
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3">
               <div className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-500">
                 Filter
@@ -943,6 +948,7 @@ export const CreativeEditPage = () => {
                 </p>
               </div>
             </div>
+            )}
 
             <Button
               onClick={handleMakeUnique}
@@ -956,8 +962,7 @@ export const CreativeEditPage = () => {
                   : 'Create New Copy'}
             </Button>
             <p className="text-[11px] text-slate-500">
-              Every click makes one more copy with a different file hash — click twice for
-              two, or switch brightness between clicks.
+              Every click makes one more copy with a different file hash — click twice for two.
             </p>
           </div>
         </div>
@@ -986,7 +991,7 @@ export const CreativeEditPage = () => {
 
           {uniqueResults.length === 0 && !isMakingUnique && !uniqueError && (
             <p className="text-sm text-slate-400">
-              Upload a creative, pick a brightness, then click Create New Copy.
+              Upload a creative, then click Create New Copy.
             </p>
           )}
 
