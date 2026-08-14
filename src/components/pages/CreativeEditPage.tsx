@@ -49,6 +49,28 @@ const LANGUAGE_OPTIONS = ['Keep original language', ...AD_LANGUAGES];
 
 const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
 
+// Verified against OpenRouter's image catalog (GET /api/v1/images/models) — NOT the
+// chat catalog at /api/v1/models, which does not list Qwen/Seedream/GPT Image 2.
+// All five take `input_references`, so they can edit the uploaded creative, and all
+// five are reached through POST /api/v1/images.
+const IMAGE_MODELS: { label: string; value: string }[] = [
+  { label: 'Nano banana 2', value: 'google/gemini-3.1-flash-image' },
+  { label: 'Nano banana pro', value: 'google/gemini-3-pro-image' },
+  { label: 'GPT Image 2', value: 'openai/gpt-image-2' },
+  { label: 'Qwen Image 3 Pro', value: 'qwen/qwen-image-3-pro' },
+  { label: 'Seedream 5.0 Pro', value: 'bytedance-seed/seedream-5-0-pro' },
+];
+
+// GPT Image 2 is the one model here without 4:5 in its aspect_ratio enum
+// (1:1, 3:2, 2:3, 4:3, 3:4, 16:9, 9:16, 21:9, auto).
+const MODELS_WITHOUT_4_5 = new Set(['openai/gpt-image-2']);
+
+const MODEL_HELP =
+  'Модель, якою рендериться банер. Nano banana pro — найкраща якість і текст на банері; ' +
+  'Nano banana 2 — вдвічі дешевша й швидша; GPT Image 2, Qwen Image 3 Pro та ' +
+  'Seedream 5.0 Pro — альтернативні стилі. Впливає лише на генерацію зображення, ' +
+  'не на Analyze image і не на тексти.';
+
 const FLAG_STYLES: Record<string, { label: string; tooltip: string; className: string }> = {
   'story-risk': {
     label: 'story',
@@ -136,6 +158,9 @@ export const CreativeEditPage = () => {
   const [imagePrompt, setImagePrompt] = useState('');
   const [language, setLanguage] = useState('Keep original language');
   const [aspectRatio, setAspectRatio] = useState('1:1');
+  // Local, not the shared store — picking a model here must not silently change
+  // what Creative Gen is set to.
+  const [imageModel, setImageModel] = useState('google/gemini-3-pro-image');
   const [isLoading, setIsLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -318,6 +343,7 @@ export const CreativeEditPage = () => {
       imagePrompt: imagePrompt.trim(),
       language: language === 'Keep original language' ? '' : language,
       aspectRatio,
+      imageModel,
     };
 
     if (!WEBHOOK) {
@@ -341,6 +367,7 @@ export const CreativeEditPage = () => {
         imagePrompt: imagePrompt.trim(),
         language: language === 'Keep original language' ? '' : language,
         aspectRatio,
+        imageModel,
       });
       const data = response.data;
 
@@ -604,6 +631,7 @@ export const CreativeEditPage = () => {
       articleUrl: articleUrl.trim(),
       language: language === 'Keep original language' ? '' : language,
       aspectRatio,
+      imageModel,
       presentSlots,
     };
 
@@ -635,6 +663,7 @@ export const CreativeEditPage = () => {
         presentSlots,
         language: language === 'Keep original language' ? '' : language,
         aspectRatio,
+        imageModel,
       });
       const data = response.data;
 
@@ -785,6 +814,34 @@ export const CreativeEditPage = () => {
           className="mt-2 max-h-40 w-full object-contain rounded border"
         />
       )}
+    </div>
+  );
+
+  // Mirrors the Settings card in Creative Gen (ImageGenSettings). Shown in both
+  // generating modes; Unique Copy does not call a model at all.
+  const settingsBlock = (
+    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-2">
+      <div className="text-[10px] font-bold uppercase text-gray-500">Settings</div>
+      <div>
+        <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400 mb-1">
+          Image model
+          <InfoTooltip text={MODEL_HELP} iconSize={11} />
+        </label>
+        <select
+          value={imageModel}
+          onChange={(e) => setImageModel(e.target.value)}
+          className="w-full text-sm border rounded-md px-2 py-1 bg-white"
+        >
+          {IMAGE_MODELS.map((m) => (
+            <option key={m.value} value={m.value}>{m.label}</option>
+          ))}
+        </select>
+        {MODELS_WITHOUT_4_5.has(imageModel) && aspectRatio === '4:5' && (
+          <p className="mt-1 text-[11px] text-amber-700">
+            This model does not support 4:5 — pick another ratio or another model.
+          </p>
+        )}
+      </div>
     </div>
   );
 
@@ -1063,6 +1120,7 @@ export const CreativeEditPage = () => {
             {modeToggle}
             {uploadBlock}
             {analyzeBlock}
+            {settingsBlock}
             {creativeTextBlock(true)}
 
             <Button
@@ -1165,6 +1223,7 @@ export const CreativeEditPage = () => {
           {modeToggle}
           {uploadBlock}
           {analyzeBlock}
+          {settingsBlock}
 
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3">
             <div className="text-[10px] font-bold uppercase text-gray-500">Article</div>
