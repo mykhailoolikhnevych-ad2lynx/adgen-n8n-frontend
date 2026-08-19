@@ -21,12 +21,16 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 
 const START_DATE_OPTIONS = [
   { label: 'Зараз', value: 'now' },
+  { label: 'Зараз +3 год', value: 'now+3h' },
   { label: 'Завтра', value: 'tomorrow' },
   { label: 'Післязавтра', value: 'tomorrow+1' },
   { label: 'Через 3 дні', value: 'tomorrow+2' },
 ] as const;
 
-type StartDate = 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+type StartDate = 'now' | 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+
+/** Relative offsets ignore the timezone picker — they're anchored to "now". */
+const RELATIVE_START_DATES: StartDate[] = ['now', 'now+3h'];
 type StartTimezone = 'PDT' | 'EEST';
 
 // Flip to true when the n8n workflow supports body.startTimezone again. The
@@ -707,14 +711,14 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
                 <select
                   value={startTimezone}
                   onChange={(e) => setStartTimezone(e.target.value as StartTimezone)}
-                  disabled={startDate === 'now'}
+                  disabled={RELATIVE_START_DATES.includes(startDate)}
                   className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:bg-slate-100 disabled:text-slate-400"
                 >
                   {TIMEZONE_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
-                {startDate !== 'now' && (
+                {!RELATIVE_START_DATES.includes(startDate) && (
                   <p className="text-xs text-slate-600 mt-1">
                     {startTimezone === 'PDT' ? (
                       <>Старт о <strong>00:00 PDT</strong> обраного дня (≈ 10:00 Kyiv того ж дня).</>

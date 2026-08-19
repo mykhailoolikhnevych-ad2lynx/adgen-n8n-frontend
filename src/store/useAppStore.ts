@@ -342,10 +342,10 @@ export interface CreateNbCampaignInput {
   /** Per-adset budget in USD/day. Each adset gets this; total spend is
    *  budget * adsetSizes.length. */
   budget: number;
-  startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+  startDate: 'now' | 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
   /** Timezone the 01:00 start hour is anchored to. `PDT` = Pacific Daylight
    *  Time (matches NB's own timezone). `EEST` = Eastern European Summer Time
-   *  (Kyiv). Ignored when startDate = 'now'. Optional because the UI picker
+   *  (Kyiv). Ignored when startDate = 'now' / 'now+3h'. Optional because the UI picker
    *  is currently gated off — the workflow defaults to PDT server-side. */
   startTimezone?: 'PDT' | 'EEST';
   /** Ads to create. Order matters — they're distributed left-to-right across
@@ -593,7 +593,7 @@ interface AppState {
     bidType: 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
     targetCpaDollars: number;
     manualEventId: string | null;
-    startDate: 'now' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+    startDate: 'now' | 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
     startTimezone: 'PDT' | 'EEST';
     adStates: { adId: string; headline: string; description: string }[];
   };
