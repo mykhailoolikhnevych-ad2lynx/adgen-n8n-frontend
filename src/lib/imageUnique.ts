@@ -78,23 +78,36 @@ async function shiftBrightness(
 }
 
 /**
- * Insert a JPEG COM (comment) segment right after SOI. Decoders skip COM
- * entirely, and the entropy-coded scan data is never touched, so the decoded
- * image is bit-for-bit what it was before the stamp.
+ * Insert a JPEG COM (comment) segment after the leading APPn segments. Decoders
+ * skip COM entirely, and the entropy-coded scan data is never touched, so the
+ * decoded image is bit-for-bit what it was before the stamp.
+ *
+ * It must NOT go directly after SOI, even though decoders accept that: JFIF
+ * requires APP0 to be the first marker after SOI, so splicing a comment in front
+ * of it moves the "JFIF" signature off byte 6. Content sniffers that key on that
+ * offset — libmagic, and the hand-rolled checks ad platforms run on upload —
+ * then stop identifying the file as a JPEG and reject it.
  */
 function stampJpeg(buf: Uint8Array, text: string): Uint8Array {
   const payload = new TextEncoder().encode(text);
   const segLen = payload.length + 2; // length field counts itself
   if (segLen > 0xffff) throw new Error('comment too long');
 
+  // Walk SOI, then every leading APPn (0xFFE0..0xFFEF) segment. Each carries a
+  // big-endian length that covers itself but not the 2-byte marker.
+  let at = 2;
+  while (at + 4 <= buf.length && buf[at] === 0xff && buf[at + 1] >= 0xe0 && buf[at + 1] <= 0xef) {
+    at += 2 + ((buf[at + 2] << 8) | buf[at + 3]);
+  }
+
   const out = new Uint8Array(buf.length + 4 + payload.length);
-  out.set(buf.subarray(0, 2), 0); // SOI
-  out[2] = 0xff;
-  out[3] = 0xfe; // COM marker
-  out[4] = segLen >> 8;
-  out[5] = segLen & 0xff;
-  out.set(payload, 6);
-  out.set(buf.subarray(2), 6 + payload.length);
+  out.set(buf.subarray(0, at), 0);
+  out[at] = 0xff;
+  out[at + 1] = 0xfe; // COM marker
+  out[at + 2] = segLen >> 8;
+  out[at + 3] = segLen & 0xff;
+  out.set(payload, at + 4);
+  out.set(buf.subarray(at), at + 4 + payload.length);
   return out;
 }
 
