@@ -5,6 +5,10 @@ import { logEvent } from '@/lib/usage';
 import { listPrompts, type SavedPrompt } from '@/lib/prompts';
 import { getAuthEmail } from '@/lib/identity';
 import { adLanguagesForGeo } from '@/lib/geos';
+import {
+  buildVideoPrompt, SOURCE_PHOTO_PROMPT, IMAGE_MODEL, VIDEO_MODEL,
+  VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION,
+} from '@/lib/videoGenPrompts';
 
 interface FormData {
   articleUrl: string;
@@ -421,6 +425,23 @@ export interface TtCampaignResult {
   raw?: unknown;
 }
 
+/** One finished run of the Video Generator prototype. `videoUrl` is a
+ *  `data:video/mp4;base64,…` URI — the n8n workflow downloads the clip from
+ *  OpenRouter and inlines it, same as the image workflows do for stills. */
+export interface VideoGenResult {
+  /** Both are plain https URLs served by n8n — `/webhook/frame?id=…` for the
+   *  still and `/webhook/video?id=…` for the clip. They are NOT inlined base64:
+   *  doing that pushed the saved execution to ~84 MB, which broke both the n8n
+   *  editor and this app's executions-API fetch. */
+  imageUrl: string;
+  videoUrl: string;
+  imageCost: number;
+  videoCost: number;
+  model: string;
+  jobId: string;
+  prompt: string;
+}
+
 interface AppState {
   formData: FormData;
   angles: Angle[];
@@ -461,6 +482,13 @@ interface AppState {
   /** Loading flag for the Creative Gen tab — separate from isLoadingCreatives so
    *  a run here never disables the classic Creatives tab's buttons (and vice versa). */
   isLoadingCreativeOnly: boolean;
+  /** Video Generator (admin prototype). The operator supplies only the spoken
+   *  line; the scene, both prompts and every model setting are hardcoded. One run
+   *  generates the still, then animates it. */
+  videoGenLine: string;
+  videoGenStatus: 'idle' | 'loading' | 'success' | 'error';
+  videoGenError: string | null;
+  videoGenResult: VideoGenResult | null;
   articleHtml: string | null;
   articleStatus: ArticleStatus;
   articleError: string | null;
@@ -692,6 +720,9 @@ interface AppState {
   /** Creative Gen tab — generate a batch straight from the typed Hook/Accent/CTA
    *  + the shared image settings, via the dedicated creative-only n8n workflow. */
   generateCreativeOnly: () => Promise<void>;
+  setVideoGenLine: (v: string) => void;
+  /** Video Generator tab — animate the pasted still into a talking clip. */
+  generateVideo: () => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
   toggleAngleTranslation: (angleId: string) => Promise<void>;
   toggleConceptTranslation: (conceptId: string) => Promise<void>;
@@ -757,6 +788,8 @@ const WEBHOOKS = {
   creative: import.meta.env.PUBLIC_WEBHOOK_CREATIVE_URL,
   // Creative Gen tab — separate n8n workflow (same image logic, no pipeline context).
   creativeOnly: import.meta.env.PUBLIC_WEBHOOK_CREATIVE_ONLY_URL,
+  // Video generator (admin-only prototype) — OpenRouter image-to-video.
+  videoGen: import.meta.env.PUBLIC_WEBHOOK_VIDEO_GEN_URL,
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
   translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
   article: import.meta.env.PUBLIC_WEBHOOK_ARTICLE_URL,
@@ -829,6 +862,11 @@ const POLL_MAX_ATTEMPTS = 60; // 5 minutes
 // the full 300s on a workflow that already errored out 3 seconds in.
 const isExecutionDone = (meta: any): boolean => {
   if (!meta) return false;
+  // A run parked on a Wait node reports status "waiting" *and* a stoppedAt (the
+  // moment it paused), which would otherwise trip the stoppedAt check below and
+  // make us declare a still-running workflow finished. Video Generator polls
+  // OpenRouter behind a Wait loop, so this case is normal there.
+  if (String(meta.status ?? '').toLowerCase() === 'waiting') return false;
   if (meta.finished === true) return true;
   const s = String(meta.status ?? '').toLowerCase();
   if (s === 'error' || s === 'failed' || s === 'canceled' || s === 'cancelled' || s === 'crashed') return true;
@@ -935,12 +973,14 @@ export const pollExecutionResult = async (
 const pollCreativeExecution = async (
   jobId: string,
   shouldAbort: () => boolean,
+  resultNode: string = 'Aggregate Images',
+  maxAttempts: number = POLL_MAX_ATTEMPTS,
 ): Promise<any | null> => {
   const apiHeaders = { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY };
   const metaUrl = `${N8N_EXECUTIONS_URL}/${jobId}`;
   const fullUrl = `${N8N_EXECUTIONS_URL}/${jobId}?includeData=true`;
 
-  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (shouldAbort()) return null;
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
 
@@ -958,6 +998,12 @@ const pollCreativeExecution = async (
     // Finished — fetch the full execution data once
     const full = (await axios.get(fullUrl, { headers: apiHeaders })).data;
 
+    // The meta and full payloads are two separate requests, so the run can park
+    // on a Wait node between them. Either one reporting "waiting" means it is
+    // still going — otherwise extractExecutionError below reads that status and
+    // reports the bogus "Execution waiting".
+    if (String(full?.status ?? '').toLowerCase() === 'waiting') continue;
+
     const errMessage = extractExecutionError(full);
     if (errMessage) {
       console.error('[pollCreativeExecution] execution failed:', errMessage, full?.data?.resultData?.error);
@@ -973,9 +1019,9 @@ const pollCreativeExecution = async (
       const runs = runData[nodeName] ?? [];
       return runs.flatMap((r: any) => (r?.data?.main?.[0] ?? []).map((it: any) => it?.json).filter(Boolean));
     };
-    const aggregateResults = pickResultsFor('Aggregate Images');
+    const aggregateResults = pickResultsFor(resultNode);
     const lastNodeResults  = pickResultsFor(lastNode);
-    // Merge into one result. Aggregate Images is the authoritative source if it ran.
+    // Merge into one result. The aggregate node is the authoritative source if it ran.
     const sources = aggregateResults.length ? aggregateResults : lastNodeResults;
     const result: any = sources.reduce((acc: any, j: any) => {
       if (!j || typeof j !== 'object') return acc;
@@ -995,8 +1041,8 @@ const pollCreativeExecution = async (
     return result;
   }
 
-  console.error('[pollCreativeExecution] polling timed out after', POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000, 'seconds');
-  throw new Error(`Creative generation timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s`);
+  console.error('[pollCreativeExecution] polling timed out after', maxAttempts * POLL_INTERVAL_MS / 1000, 'seconds');
+  throw new Error(`Generation timed out after ${maxAttempts * POLL_INTERVAL_MS / 1000}s`);
 };
 
 // Turn a merged execution result into the ImageVariant[] shown on a batch card,
@@ -1095,6 +1141,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
+  videoGenLine: '',
+  videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   articleInputs: null, offerArticleOpen: false,
   articleForm: {
@@ -2611,6 +2659,88 @@ export const useAppStore = create<AppState>((set, get) => ({
       isLoadingCreativeOnly: false,
     }));
     logEvent({ tab: 'creative_gen', action: 'generateCreativeOnly', meta: logMeta, metaOut: result });
+  },
+
+  setVideoGenLine: (v) => set({ videoGenLine: v }),
+
+  generateVideo: async () => {
+    const line = get().videoGenLine.trim();
+    if (!line) return;
+
+    const prompt = buildVideoPrompt(line);
+    const payload = {
+      // Both prompts travel with the request so the whole recipe stays in one
+      // file on this side — n8n just executes it.
+      photo_prompt: SOURCE_PHOTO_PROMPT,
+      video_prompt: prompt,
+      image_model: IMAGE_MODEL,
+      video_model: VIDEO_MODEL,
+      duration: VIDEO_DURATION_SEC,
+      aspect_ratio: VIDEO_ASPECT_RATIO,
+      resolution: VIDEO_RESOLUTION,
+    };
+    const logMeta = { imageModel: IMAGE_MODEL, videoModel: VIDEO_MODEL, line };
+
+    set({ videoGenStatus: 'loading', videoGenError: null, videoGenResult: null });
+
+    const fail = (message: string, responseBody?: unknown) => {
+      set({ videoGenStatus: 'error', videoGenError: message });
+      logEvent({ tab: 'video_gen', action: 'generateVideo', meta: logMeta, metaOut: responseBody, errorMessage: message });
+    };
+
+    if (!WEBHOOKS.videoGen) {
+      fail('PUBLIC_WEBHOOK_VIDEO_GEN_URL is not set in .env');
+      return;
+    }
+
+    // Step 1: kick off the n8n run — it responds with the execution id immediately
+    // and keeps polling OpenRouter in the background.
+    let jobId: string | null = null;
+    try {
+      console.log('[generateVideo] request payload:', payload);
+      const { data } = await axios.post(WEBHOOKS.videoGen, payload);
+      const startPayload = Array.isArray(data) ? data[0] : data;
+      jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
+      if (!jobId) throw new Error('Webhook did not return a job_id');
+    } catch (e) {
+      console.error(e);
+      fail(`Video generation failed: ${humanizeError(e)}`, (e as any)?.response?.data);
+      return;
+    }
+
+    // Step 2: poll the n8n execution until "Aggregate Video" has the clip.
+    let result: any;
+    try {
+      // Seedance itself takes ~5 min for an 8s clip, so the image-gen default of
+      // 60 attempts (5 min) times out right as the run finishes. 120 = 10 min.
+      result = await pollCreativeExecution(jobId, () => get().videoGenStatus !== 'loading', 'Aggregate Video', 120);
+    } catch (e) {
+      fail(`Video generation failed: ${humanizeError(e)}`, (e as any)?.responseBody ?? (e as any)?.response?.data);
+      return;
+    }
+    if (result === null) return; // operator navigated away / reset mid-poll
+
+    if (typeof result.video_url !== 'string' || !result.video_url) {
+      fail(result.error ? String(result.error) : 'Run finished but returned no video', result);
+      return;
+    }
+
+    set({
+      videoGenStatus: 'success',
+      videoGenResult: {
+        imageUrl: typeof result.image_url === 'string' ? result.image_url : '',
+        videoUrl: result.video_url,
+        imageCost: Number(result.image_cost) || 0,
+        videoCost: Number(result.video_cost) || 0,
+        model: String(result.video_model || VIDEO_MODEL),
+        jobId: String(jobId),
+        prompt,
+      },
+    });
+    logEvent({
+      tab: 'video_gen', action: 'generateVideo', meta: logMeta,
+      metaOut: { image_cost: result.image_cost, video_cost: result.video_cost, video_model: result.video_model },
+    });
   },
 
   sendToTelegram: async (creativeId) => {
