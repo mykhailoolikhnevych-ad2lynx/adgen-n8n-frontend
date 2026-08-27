@@ -13,13 +13,14 @@ import { DashboardPage } from './pages/DashboardPage';
 import { DocsPage } from './pages/DocsPage';
 import { CreativeGenPage } from './pages/CreativeGenPage';
 import { CreativeEditPage } from './pages/CreativeEditPage';
+import { VideoGenPage } from './pages/VideoGenPage';
 import { MegatoolFBCampaignPage } from './pages/MegatoolFBCampaignPage';
 import { MegatoolCreateBinomOfferPage } from './pages/MegatoolCreateBinomOfferPage';
 import { MegatoolCreateNbCampaignPage } from './pages/MegatoolCreateNbCampaignPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail } from '@/lib/identity';
 
-type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'offer-article' | 'creatives' | 'dashboard' | 'docs';
+type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'offer-article' | 'creatives' | 'video-gen' | 'dashboard' | 'docs';
 
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
@@ -47,6 +48,7 @@ const BASE_NAV: { value: Page; label: string }[] = [
 ];
 
 const ADMIN_NAV: { value: Page; label: string }[] = [
+  { value: 'video-gen', label: 'Video generator' },
   { value: 'dashboard', label: 'Dashboard' },
 ];
 
@@ -520,6 +522,11 @@ export default function MainApp() {
           {offerArticleOpen && (
             <KeepAlive active={!megatool && page === 'offer-article'}>
               <OfferArticlePage onClose={handleCloseOffer} />
+            </KeepAlive>
+          )}
+          {isAdmin && (
+            <KeepAlive active={!megatool && page === 'video-gen'}>
+              <VideoGenPage />
             </KeepAlive>
           )}
           {isAdmin && (
