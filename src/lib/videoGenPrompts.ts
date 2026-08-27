@@ -33,10 +33,12 @@ export const FRAME_COUNT = 4;
 // first — so this stays a parallel path, not a replacement.
 export type VideoProvider = 'openrouter' | 'leonardo';
 export const LEONARDO_VIDEO_MODEL = 'seedance-2.0-fast';
-// Leonardo takes explicit pixels rather than a resolution tier. 9:16 at the
-// cheap tier, matching VIDEO_RESOLUTION on the OpenRouter side.
-export const LEONARDO_WIDTH = 480;
-export const LEONARDO_HEIGHT = 854;
+// Leonardo takes explicit pixels rather than a resolution tier. Both values must
+// divide by 16 — 480x854 is a true 9:16 ratio but 854 does not, and Leonardo
+// rejects it with an opaque "An error occurred." validation error. 720x1280 is
+// exactly 9:16 and verified to pass validation.
+export const LEONARDO_WIDTH = 720;
+export const LEONARDO_HEIGHT = 1280;
 
 // Reads the finished clip's own audio back for caption timings. whisper-1 routes
 // to OpenAI, which is where `timestamp_granularities: ["word"]` is supported —
