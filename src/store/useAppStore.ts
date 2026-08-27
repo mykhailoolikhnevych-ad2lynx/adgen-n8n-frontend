@@ -6,9 +6,11 @@ import { listPrompts, type SavedPrompt } from '@/lib/prompts';
 import { getAuthEmail } from '@/lib/identity';
 import { adLanguagesForGeo } from '@/lib/geos';
 import {
-  buildVideoPrompt, SOURCE_PHOTO_PROMPT, IMAGE_MODEL, VIDEO_MODEL,
-  VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION,
+  SCENE_SYSTEM_PROMPT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL, FRAME_COUNT,
+  VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
+  LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT, type VideoProvider,
 } from '@/lib/videoGenPrompts';
+import { normalizeWords, groupWordsIntoCues, type CaptionCue } from '@/lib/captions';
 
 interface FormData {
   articleUrl: string;
@@ -428,6 +430,16 @@ export interface TtCampaignResult {
 /** One finished run of the Video Generator prototype. `videoUrl` is a
  *  `data:video/mp4;base64,…` URI — the n8n workflow downloads the clip from
  *  OpenRouter and inlines it, same as the image workflows do for stills. */
+/** One of the 4 scene variants written from the article. `url` points at the
+ *  n8n frame webhook; `videoPrompt` is the animation prompt the model wrote for
+ *  this specific scene, sent back untouched when the operator picks it. */
+export interface VideoGenFrame {
+  frameId: string;
+  url: string;
+  label: string;
+  videoPrompt: string;
+}
+
 export interface VideoGenResult {
   /** Both are plain https URLs served by n8n — `/webhook/frame?id=…` for the
    *  still and `/webhook/video?id=…` for the clip. They are NOT inlined base64:
@@ -440,6 +452,12 @@ export interface VideoGenResult {
   model: string;
   jobId: string;
   prompt: string;
+  /** OpenRouter's video job id — the handle the transcription leg needs.
+   *  Empty on Leonardo runs, which is what disables the caption pass. */
+  openrouterId: string;
+  provider: VideoProvider;
+  /** Leonardo bills in credits, not dollars — 0 on OpenRouter runs. */
+  credits: number;
 }
 
 interface AppState {
@@ -486,7 +504,19 @@ interface AppState {
    *  line; the scene, both prompts and every model setting are hardcoded. One run
    *  generates the still, then animates it. */
   videoGenLine: string;
+  videoGenArticleUrl: string;
+  videoGenProvider: VideoProvider;
+  /** Phase 1 — the 4 variants written from the article. */
+  videoGenFrames: VideoGenFrame[];
+  videoGenFramesStatus: 'idle' | 'loading' | 'success' | 'error';
+  videoGenFramesError: string | null;
+  videoGenSelectedFrameId: string | null;
+  /** Phase 2 — animating the picked still. */
   videoGenStatus: 'idle' | 'loading' | 'success' | 'error';
+  /** Phase 3 — word-timed captions read back off the finished clip's own audio. */
+  videoGenCaptions: CaptionCue[];
+  videoGenCaptionsStatus: 'idle' | 'loading' | 'success' | 'error';
+  videoGenCaptionsError: string | null;
   videoGenError: string | null;
   videoGenResult: VideoGenResult | null;
   articleHtml: string | null;
@@ -721,8 +751,15 @@ interface AppState {
    *  + the shared image settings, via the dedicated creative-only n8n workflow. */
   generateCreativeOnly: () => Promise<void>;
   setVideoGenLine: (v: string) => void;
-  /** Video Generator tab — animate the pasted still into a talking clip. */
+  setVideoGenArticleUrl: (v: string) => void;
+  setVideoGenProvider: (v: VideoProvider) => void;
+  selectVideoGenFrame: (frameId: string) => void;
+  /** Phase 1 — read the article, write 4 scenes, render a still for each. */
+  generateVideoFrames: () => Promise<void>;
+  /** Phase 2 — animate the selected still with the typed line. */
   generateVideo: () => Promise<void>;
+  /** Phase 3 — transcribe the clip for word-level caption timings. */
+  fetchVideoCaptions: () => Promise<void>;
   sendToTelegram: (creativeId: string) => Promise<void>;
   toggleAngleTranslation: (angleId: string) => Promise<void>;
   toggleConceptTranslation: (conceptId: string) => Promise<void>;
@@ -790,6 +827,9 @@ const WEBHOOKS = {
   creativeOnly: import.meta.env.PUBLIC_WEBHOOK_CREATIVE_ONLY_URL,
   // Video generator (admin-only prototype) — OpenRouter image-to-video.
   videoGen: import.meta.env.PUBLIC_WEBHOOK_VIDEO_GEN_URL,
+  videoFrames: import.meta.env.PUBLIC_WEBHOOK_VIDEO_FRAMES_URL,
+  videoTranscribe: import.meta.env.PUBLIC_WEBHOOK_VIDEO_TRANSCRIBE_URL,
+  videoGenLeonardo: import.meta.env.PUBLIC_WEBHOOK_VIDEO_LEONARDO_URL,
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
   translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
   article: import.meta.env.PUBLIC_WEBHOOK_ARTICLE_URL,
@@ -1141,8 +1181,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
-  videoGenLine: '',
+  videoGenLine: '', videoGenArticleUrl: '', videoGenProvider: 'openrouter',
+  videoGenFrames: [], videoGenFramesStatus: 'idle', videoGenFramesError: null,
+  videoGenSelectedFrameId: null,
   videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
+  videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   articleInputs: null, offerArticleOpen: false,
   articleForm: {
@@ -2662,43 +2705,142 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setVideoGenLine: (v) => set({ videoGenLine: v }),
+  setVideoGenArticleUrl: (v) => set({ videoGenArticleUrl: v }),
+  setVideoGenProvider: (v) => set({ videoGenProvider: v }),
+  selectVideoGenFrame: (frameId) => set({ videoGenSelectedFrameId: frameId }),
+
+  generateVideoFrames: async () => {
+    const articleUrl = get().videoGenArticleUrl.trim();
+    const line = get().videoGenLine.trim();
+    if (!articleUrl || !line) return;
+
+    const payload = {
+      article_url: articleUrl,
+      line,
+      scene_system_prompt: SCENE_SYSTEM_PROMPT,
+      frame_count: FRAME_COUNT,
+      prompt_model: PROMPT_MODEL,
+      image_model: IMAGE_MODEL,
+      aspect_ratio: VIDEO_ASPECT_RATIO,
+    };
+    const logMeta = { articleUrl, line, promptModel: PROMPT_MODEL, imageModel: IMAGE_MODEL };
+
+    // Starting a new batch invalidates whatever clip the previous one produced.
+    set({
+      videoGenFramesStatus: 'loading', videoGenFramesError: null,
+      videoGenFrames: [], videoGenSelectedFrameId: null,
+      videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
+      videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
+    });
+
+    const fail = (message: string, responseBody?: unknown) => {
+      set({ videoGenFramesStatus: 'error', videoGenFramesError: message });
+      logEvent({ tab: 'video_gen', action: 'generateVideoFrames', meta: logMeta, metaOut: responseBody, errorMessage: message });
+    };
+
+    if (!WEBHOOKS.videoFrames) {
+      fail('PUBLIC_WEBHOOK_VIDEO_FRAMES_URL is not set in .env');
+      return;
+    }
+
+    let jobId: string | null = null;
+    try {
+      const { data } = await axios.post(WEBHOOKS.videoFrames, payload);
+      const startPayload = Array.isArray(data) ? data[0] : data;
+      jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
+      if (!jobId) throw new Error('Webhook did not return a job_id');
+    } catch (e) {
+      console.error(e);
+      fail(`Scene generation failed: ${humanizeError(e)}`, (e as any)?.response?.data);
+      return;
+    }
+
+    let result: any;
+    try {
+      // Article fetch + one LLM call + 4 images. Comfortably inside 5 min, but
+      // give it the same headroom as the video leg.
+      result = await pollCreativeExecution(jobId, () => get().videoGenFramesStatus !== 'loading', 'Aggregate Frames', 120);
+    } catch (e) {
+      fail(`Scene generation failed: ${humanizeError(e)}`, (e as any)?.responseBody ?? (e as any)?.response?.data);
+      return;
+    }
+    if (result === null) return;
+
+    const frames: VideoGenFrame[] = Array.isArray(result.frames)
+      ? result.frames
+          .filter((f: any) => f && typeof f.url === 'string' && f.url)
+          .map((f: any) => ({
+            frameId: String(f.frame_id ?? ''),
+            url: String(f.url),
+            label: String(f.label ?? ''),
+            videoPrompt: String(f.video_prompt ?? ''),
+          }))
+      : [];
+
+    if (!frames.length) {
+      fail(result.error ? String(result.error) : 'Run finished but returned no images', result);
+      return;
+    }
+
+    set({
+      videoGenFramesStatus: 'success',
+      videoGenFrames: frames,
+      // Pre-select the first so the operator can go straight to Generate.
+      videoGenSelectedFrameId: frames[0].frameId,
+    });
+    logEvent({
+      tab: 'video_gen', action: 'generateVideoFrames', meta: logMeta,
+      metaOut: { count: frames.length, scenes_cost: result.scenes_cost, images_cost: result.images_cost },
+    });
+  },
 
   generateVideo: async () => {
-    const line = get().videoGenLine.trim();
-    if (!line) return;
+    const frame = get().videoGenFrames.find((f) => f.frameId === get().videoGenSelectedFrameId);
+    if (!frame) return;
 
-    const prompt = buildVideoPrompt(line);
-    const payload = {
-      // Both prompts travel with the request so the whole recipe stays in one
-      // file on this side — n8n just executes it.
-      photo_prompt: SOURCE_PHOTO_PROMPT,
-      video_prompt: prompt,
-      image_model: IMAGE_MODEL,
-      video_model: VIDEO_MODEL,
-      duration: VIDEO_DURATION_SEC,
-      aspect_ratio: VIDEO_ASPECT_RATIO,
-      resolution: VIDEO_RESOLUTION,
-    };
-    const logMeta = { imageModel: IMAGE_MODEL, videoModel: VIDEO_MODEL, line };
+    const provider = get().videoGenProvider;
+    const leonardo = provider === 'leonardo';
+    const model = leonardo ? LEONARDO_VIDEO_MODEL : VIDEO_MODEL;
 
-    set({ videoGenStatus: 'loading', videoGenError: null, videoGenResult: null });
+    const payload = leonardo
+      ? {
+          frame_id: frame.frameId,
+          video_prompt: frame.videoPrompt,
+          video_model: model,
+          duration: VIDEO_DURATION_SEC,
+          // Leonardo takes explicit pixels rather than a resolution tier.
+          width: LEONARDO_WIDTH,
+          height: LEONARDO_HEIGHT,
+        }
+      : {
+          frame_id: frame.frameId,
+          video_prompt: frame.videoPrompt,
+          video_model: model,
+          duration: VIDEO_DURATION_SEC,
+          aspect_ratio: VIDEO_ASPECT_RATIO,
+          resolution: VIDEO_RESOLUTION,
+        };
+    const logMeta = { frameId: frame.frameId, label: frame.label, videoModel: model, provider };
+
+    set({
+      videoGenStatus: 'loading', videoGenError: null, videoGenResult: null,
+      videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
+    });
 
     const fail = (message: string, responseBody?: unknown) => {
       set({ videoGenStatus: 'error', videoGenError: message });
       logEvent({ tab: 'video_gen', action: 'generateVideo', meta: logMeta, metaOut: responseBody, errorMessage: message });
     };
 
-    if (!WEBHOOKS.videoGen) {
-      fail('PUBLIC_WEBHOOK_VIDEO_GEN_URL is not set in .env');
+    const endpoint = leonardo ? WEBHOOKS.videoGenLeonardo : WEBHOOKS.videoGen;
+    if (!endpoint) {
+      fail(`PUBLIC_WEBHOOK_VIDEO_${leonardo ? 'LEONARDO' : 'GEN'}_URL is not set in .env`);
       return;
     }
 
-    // Step 1: kick off the n8n run — it responds with the execution id immediately
-    // and keeps polling OpenRouter in the background.
     let jobId: string | null = null;
     try {
-      console.log('[generateVideo] request payload:', payload);
-      const { data } = await axios.post(WEBHOOKS.videoGen, payload);
+      const { data } = await axios.post(endpoint, payload);
       const startPayload = Array.isArray(data) ? data[0] : data;
       jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
       if (!jobId) throw new Error('Webhook did not return a job_id');
@@ -2708,17 +2850,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    // Step 2: poll the n8n execution until "Aggregate Video" has the clip.
     let result: any;
     try {
       // Seedance itself takes ~5 min for an 8s clip, so the image-gen default of
       // 60 attempts (5 min) times out right as the run finishes. 120 = 10 min.
-      result = await pollCreativeExecution(jobId, () => get().videoGenStatus !== 'loading', 'Aggregate Video', 120);
+      result = await pollCreativeExecution(
+        jobId, () => get().videoGenStatus !== 'loading',
+        leonardo ? 'Aggregate Video Leo' : 'Aggregate Video', 120,
+      );
     } catch (e) {
       fail(`Video generation failed: ${humanizeError(e)}`, (e as any)?.responseBody ?? (e as any)?.response?.data);
       return;
     }
-    if (result === null) return; // operator navigated away / reset mid-poll
+    if (result === null) return;
 
     if (typeof result.video_url !== 'string' || !result.video_url) {
       fail(result.error ? String(result.error) : 'Run finished but returned no video', result);
@@ -2728,20 +2872,73 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       videoGenStatus: 'success',
       videoGenResult: {
-        imageUrl: typeof result.image_url === 'string' ? result.image_url : '',
+        imageUrl: frame.url,
         videoUrl: result.video_url,
-        imageCost: Number(result.image_cost) || 0,
+        imageCost: 0,
         videoCost: Number(result.video_cost) || 0,
-        model: String(result.video_model || VIDEO_MODEL),
+        model: String(result.video_model || model),
         jobId: String(jobId),
-        prompt,
+        prompt: frame.videoPrompt,
+        openrouterId: String(result.openrouter_id || ''),
+        provider,
+        credits: Number(result.credits) || 0,
       },
     });
     logEvent({
       tab: 'video_gen', action: 'generateVideo', meta: logMeta,
-      metaOut: { image_cost: result.image_cost, video_cost: result.video_cost, video_model: result.video_model },
+      metaOut: { video_cost: result.video_cost, video_model: result.video_model },
+    });
+
+    // Captions are effectively mandatory for sound-off viewing, so there is
+    // nothing to opt into — fetch them as soon as the clip lands.
+    // The caption pass pulls the clip from OpenRouter by job id. A Leonardo
+    // run has no such id, so it simply skips — no captions on that path yet.
+    void get().fetchVideoCaptions();
+  },
+
+  fetchVideoCaptions: async () => {
+    const openrouterId = get().videoGenResult?.openrouterId;
+    if (!openrouterId) return;
+
+    set({ videoGenCaptionsStatus: 'loading', videoGenCaptionsError: null, videoGenCaptions: [] });
+
+    const fail = (message: string) => {
+      set({ videoGenCaptionsStatus: 'error', videoGenCaptionsError: message });
+      logEvent({ tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId }, errorMessage: message });
+    };
+
+    if (!WEBHOOKS.videoTranscribe) {
+      fail('PUBLIC_WEBHOOK_VIDEO_TRANSCRIBE_URL is not set in .env');
+      return;
+    }
+
+    let data: any;
+    try {
+      // Synchronous — an 8s clip transcribes in seconds, well inside the edge cap.
+      const res = await axios.post(WEBHOOKS.videoTranscribe, {
+        openrouter_id: openrouterId,
+        model: TRANSCRIBE_MODEL,
+      });
+      data = Array.isArray(res.data) ? res.data[0] : res.data;
+    } catch (e) {
+      console.error(e);
+      fail(`Captions failed: ${humanizeError(e)}`);
+      return;
+    }
+
+    const cues = groupWordsIntoCues(normalizeWords(data?.words));
+    if (!cues.length) {
+      fail(data?.error ? String(data.error) : 'Transcription returned no word timings');
+      return;
+    }
+
+    set({ videoGenCaptionsStatus: 'success', videoGenCaptions: cues });
+    logEvent({
+      tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId },
+      metaOut: { cues: cues.length, cost: data?.cost },
     });
   },
+
 
   sendToTelegram: async (creativeId) => {
     const logMeta = { creativeId };

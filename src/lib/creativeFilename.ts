@@ -137,3 +137,11 @@ export const buildBatchFilename = (meta: CreativeFileMeta): string =>
 // when the user runs a partial selection like A+D).
 export const buildCreativeFilename = (meta: CreativeFileMeta, variant: number | string): string =>
   `${buildBatchFilename(meta)}_${variant}`;
+
+// Video Generator assets. That tab has no campaign / angle / concept behind it,
+// so the stage segments collapse to a single "video_gen" marker, matching how
+// Creative Gen collapses to "creativeonly":
+//   aiimg_video_gen_16921_2   — still #2 from execution 16921
+//   aivid_video_gen_16921     — the clip animated from it
+export const videoGenFileName = (kind: 'image' | 'video', id: string | number): string =>
+  `${kind === 'video' ? 'aivid' : 'aiimg'}_video_gen_${String(id).replace(/[^a-zA-Z0-9]+/g, '_')}`;
