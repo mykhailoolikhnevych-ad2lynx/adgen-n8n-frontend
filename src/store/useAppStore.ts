@@ -1781,7 +1781,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, metaOut: result });
     } catch (e) {
       console.error('[createBinomOffer]', e);
-      const msg = humanizeError(e);
+      // The workflow's Respond node answers ok:false with HTTP 400, so axios
+      // throws and the useful { error, step } payload lives on the response.
+      const failBody = (e as any)?.response?.data;
+      const failOuter = Array.isArray(failBody) ? failBody[0] : failBody;
+      const msg = failOuter?.error
+        ? `${failOuter.error}${failOuter.step ? ` (step: ${failOuter.step})` : ''}`
+        : humanizeError(e);
       set({ binomOfferStatus: 'error', binomOfferError: msg, binomOfferResult: null });
       get().showError(`Binom Offer Creator failed: ${msg}`);
       logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
