@@ -124,6 +124,8 @@ export const AMO_DOMAIN_TO_TRACKER: Record<string, BinomTracker> = {
 };
 
 // Resolve a trackingUrl to its Binom tracker via AMO_DOMAIN_TO_TRACKER.
+// Some ads skip the branded AMO domain and link straight at the tracker host
+// (pumas.nnctrack.com/click.php?key=...), so match those directly first.
 // Returns null if the URL is missing, unparseable, or the host isn't in the
 // map yet — the UI keeps its current selection in that case.
 export function getTrackerFromTrackingUrl(
@@ -132,6 +134,9 @@ export function getTrackerFromTrackingUrl(
   if (!url) return null;
   try {
     const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    if ((BINOM_TRACKERS as readonly string[]).includes(host)) {
+      return host as BinomTracker;
+    }
     return AMO_DOMAIN_TO_TRACKER[host] ?? null;
   } catch {
     return null;
