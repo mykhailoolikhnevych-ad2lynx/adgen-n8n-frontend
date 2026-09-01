@@ -598,17 +598,18 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             </div>
             <div>
               <label className="text-xs font-medium uppercase text-slate-500">New AMO Channel *</label>
+              {/* 'auto' (порожній &channel= в URL офера) поки прихований з опцій —
+                  воркфлоу його вже вміє, повернути коли підтвердимо на AMO. */}
               <Combobox
                 value={newAmoChannel}
                 onChange={setNewAmoChannel}
-                options={['same', 'auto']}
+                options={['same']}
                 placeholder="Клікни або введи…"
                 inputClassName="text-sm rounded-md bg-white px-2"
               />
             </div>
             <p className="text-xs text-slate-600 col-span-2 -mt-1">
-              <code>same</code> залишає AMO-домен / channel як в оригінальному оголошенні.{' '}
-              <code>auto</code> ставить порожній <code>{'&channel='}</code> в URL офера — AMO підбере канал сам.
+              <code>same</code> залишає AMO-домен / channel як в оригінальному оголошенні.
             </p>
           </div>
 
