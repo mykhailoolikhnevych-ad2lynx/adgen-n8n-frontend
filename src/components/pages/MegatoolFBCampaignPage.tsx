@@ -277,8 +277,12 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
   }, [selectedFbAds]);
   const closeBinomOffer = useAppStore((s) => s.closeBinomOffer);
   const resetBinomOffer = useAppStore((s) => s.resetBinomOffer);
+  const resetBinomForm = useAppStore((s) => s.resetBinomForm);
   const closeNbCampaign = useAppStore((s) => s.closeNbCampaign);
   const resetNbCampaign = useAppStore((s) => s.resetNbCampaign);
+  const resetNbForm = useAppStore((s) => s.resetNbForm);
+  const resetTtCampaign = useAppStore((s) => s.resetTtCampaign);
+  const resetTtForm = useAppStore((s) => s.resetTtForm);
   const destination = useAppStore((s) => s.megatoolBinomForm.destination);
   const setBinomForm = useAppStore((s) => s.setBinomForm);
   const setDestination = (v: 'NB' | 'TT') => setBinomForm({ destination: v });
@@ -303,14 +307,22 @@ export const MegatoolFBCampaignPage = ({ onOpenBinomOffer }: MegatoolFBCampaignP
     const trimmed = campaignId.trim();
     if (!trimmed) { setIdError(true); return; }
     setIdError(false);
-    // Fetching a new campaign invalidates the previous selection and any
-    // Binom / NB state built from it — reset all three so sub-tabs can't
-    // carry stale state across campaigns.
+    // Fetching a new campaign invalidates the previous selection and everything
+    // built from it. Wipe the sub-tab run results AND their form fields so
+    // Create Binom Offer opens exactly as it would on a fresh page load —
+    // otherwise tracker / group / campaign name / headlines from the previous
+    // campaign quietly carry over. `destination` is picked on THIS tab, so it's
+    // restored right after the form reset.
     clearSelectedFbAd();
     closeBinomOffer();
     resetBinomOffer();
+    resetBinomForm();
+    setBinomForm({ destination });
     closeNbCampaign();
     resetNbCampaign();
+    resetNbForm();
+    resetTtCampaign();
+    resetTtForm();
     void fetchFbCampaign(trimmed);
   };
 
