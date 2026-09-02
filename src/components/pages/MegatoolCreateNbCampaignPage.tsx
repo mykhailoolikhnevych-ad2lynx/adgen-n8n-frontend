@@ -20,17 +20,16 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
 };
 
 const START_DATE_OPTIONS = [
-  { label: 'Зараз', value: 'now' },
   { label: 'Зараз +3 год', value: 'now+3h' },
   { label: 'Завтра', value: 'tomorrow' },
   { label: 'Післязавтра', value: 'tomorrow+1' },
   { label: 'Через 3 дні', value: 'tomorrow+2' },
 ] as const;
 
-type StartDate = 'now' | 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+type StartDate = 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
 
 /** Relative offsets ignore the timezone picker — they're anchored to "now". */
-const RELATIVE_START_DATES: StartDate[] = ['now', 'now+3h'];
+const RELATIVE_START_DATES: StartDate[] = ['now+3h'];
 type StartTimezone = 'PDT' | 'EEST';
 
 // Flip to true when the n8n workflow supports body.startTimezone again. The

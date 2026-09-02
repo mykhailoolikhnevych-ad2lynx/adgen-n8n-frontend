@@ -348,10 +348,10 @@ export interface CreateNbCampaignInput {
   /** Per-adset budget in USD/day. Each adset gets this; total spend is
    *  budget * adsetSizes.length. */
   budget: number;
-  startDate: 'now' | 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+  startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
   /** Timezone the 01:00 start hour is anchored to. `PDT` = Pacific Daylight
    *  Time (matches NB's own timezone). `EEST` = Eastern European Summer Time
-   *  (Kyiv). Ignored when startDate = 'now' / 'now+3h'. Optional because the UI picker
+   *  (Kyiv). Ignored when startDate = 'now+3h'. Optional because the UI picker
    *  is currently gated off — the workflow defaults to PDT server-side. */
   startTimezone?: 'PDT' | 'EEST';
   /** Ads to create. Order matters — they're distributed left-to-right across
@@ -651,7 +651,7 @@ interface AppState {
     bidType: 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
     targetCpaDollars: number;
     manualEventId: string | null;
-    startDate: 'now' | 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+    startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
     startTimezone: 'PDT' | 'EEST';
     adStates: { adId: string; headline: string; description: string }[];
   };
@@ -817,6 +817,21 @@ const humanizeError = (e: any): string => {
   if (e instanceof SyntaxError) return 'Invalid JSON in response';
   if (e instanceof Error) return e.message;
   return String(e);
+};
+
+// Every MEGATOOL workflow's Respond node answers a failure with HTTP 400 and a
+// { ok:false, error, step? } body — axios then throws and the useful message is
+// only in e.response.data. Returns that message (with the same `(step: …)`
+// suffix the ok:false branches use), or null if there isn't one.
+const errorFromResponseBody = (e: any): string | null => {
+  let body = e?.response?.data;
+  if (typeof body === 'string') {
+    try { body = JSON.parse(body); } catch { return null; }
+  }
+  if (Array.isArray(body)) body = body[0];
+  const msg = body?.error;
+  if (typeof msg !== 'string' || !msg.trim()) return null;
+  return `${msg}${body.step ? ` (step: ${body.step})` : ''}`;
 };
 
 const WEBHOOKS = {
@@ -1251,7 +1266,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     bidType: 'MAX_CONVERSION',
     targetCpaDollars: 5,
     manualEventId: null,
-    startDate: 'now',
+    startDate: 'now+3h',
     startTimezone: 'PDT',
     adStates: [],
   },
@@ -1636,7 +1651,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       logEvent({ tab: 'megatool-fb', action: 'fetchFbCampaign', meta: logMeta, metaOut: { totalAds: fbData.totalAds, adsets: fbData.adsets.length } });
     } catch (e) {
       console.error('[fetchFbCampaign]', e);
-      const msg = humanizeError(e);
+      // The workflow answers non-ok with HTTP 400 + { ok:false, error }, so the
+      // real message lives in the response body, not in the axios error.
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
       set({ fbCampaignStatus: 'error', fbCampaignError: msg, fbCampaignData: null });
       get().showError(`FB Campaign Reader failed: ${msg}`);
       logEvent({ tab: 'megatool-fb', action: 'fetchFbCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
@@ -1698,7 +1715,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       bidType: 'MAX_CONVERSION',
       targetCpaDollars: 5,
       manualEventId: null,
-      startDate: 'now',
+      startDate: 'now+3h',
       startTimezone: 'PDT',
       adStates: [],
     },
@@ -1781,13 +1798,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, metaOut: result });
     } catch (e) {
       console.error('[createBinomOffer]', e);
-      // The workflow's Respond node answers ok:false with HTTP 400, so axios
-      // throws and the useful { error, step } payload lives on the response.
-      const failBody = (e as any)?.response?.data;
-      const failOuter = Array.isArray(failBody) ? failBody[0] : failBody;
-      const msg = failOuter?.error
-        ? `${failOuter.error}${failOuter.step ? ` (step: ${failOuter.step})` : ''}`
-        : humanizeError(e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
       set({ binomOfferStatus: 'error', binomOfferError: msg, binomOfferResult: null });
       get().showError(`Binom Offer Creator failed: ${msg}`);
       logEvent({ tab: 'megatool-binom', action: 'createBinomOffer', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
@@ -1841,7 +1852,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: result });
     } catch (e) {
       console.error('[createNbCampaign]', e);
-      const msg = humanizeError(e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
       set({ nbCampaignStatus: 'error', nbCampaignError: msg, nbCampaignResult: null });
       get().showError(`NB Campaign Creator failed: ${msg}`);
       logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
@@ -1889,7 +1900,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       logEvent({ tab: 'megatool-tt', action: 'createTtCampaign', meta: logMeta, metaOut: result });
     } catch (e) {
       console.error('[createTtCampaign]', e);
-      const msg = humanizeError(e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
       set({ ttCampaignStatus: 'error', ttCampaignError: msg, ttCampaignResult: null });
       get().showError(`TT Campaign Creator failed: ${msg}`);
       logEvent({ tab: 'megatool-tt', action: 'createTtCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
@@ -1952,7 +1963,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ nbAccountsStatus: 'success', nbAccountsList: finalItems, nbAccountsError: null });
     } catch (e) {
       console.error('[fetchNbAccounts]', e);
-      const msg = humanizeError(e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
       set({ nbAccountsStatus: 'error', nbAccountsError: msg, nbAccountsList: [] });
     }
   },
@@ -1991,7 +2002,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ ttAccountsStatus: 'success', ttAccountsList: items, ttAccountsError: null });
     } catch (e) {
       console.error('[fetchTtAccounts]', e);
-      set({ ttAccountsStatus: 'error', ttAccountsError: humanizeError(e), ttAccountsList: [] });
+      set({ ttAccountsStatus: 'error', ttAccountsError: errorFromResponseBody(e) ?? humanizeError(e), ttAccountsList: [] });
     }
   },
 
@@ -2028,7 +2039,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (e) {
       console.error('[fetchTtAccountContext]', e);
-      set({ ttContextStatus: 'error', ttContextError: humanizeError(e), ttAccountContext: null });
+      set({ ttContextStatus: 'error', ttContextError: errorFromResponseBody(e) ?? humanizeError(e), ttAccountContext: null });
     }
   },
 
@@ -2078,7 +2089,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ nbEventsStatus: 'success', nbEvents: events, nbEventsError: null, nbEventsAccountId: adAccountId });
     } catch (e) {
       console.error('[fetchNbEvents]', e);
-      const msg = humanizeError(e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
       set({ nbEventsStatus: 'error', nbEventsError: msg, nbEvents: null, nbEventsAccountId: adAccountId });
     }
   },
