@@ -2253,7 +2253,7 @@ const FB_TO_NB_MODULE: KBModule = {
           rows: [
             { k: 'Campaign Name', v: 'Ім\'я NB-кампанії — за замовчуванням наслідує Binom, можна редагувати.' },
             { k: 'Budget (daily USD)', v: 'Daily budget адсету. Пайплайн множить на 100 для NB (мінорні одиниці).' },
-            { k: 'Start Date', v: 'now / now+3h / tomorrow / tomorrow+1 / tomorrow+2. Пайплайн обчислює startTime з урахуванням timezone (now та now+3h — відносно поточного моменту, timezone не впливає).' },
+            { k: 'Start Date', v: 'now+3h / tomorrow / tomorrow+1 / tomorrow+2. Пайплайн обчислює startTime з урахуванням timezone (now+3h — відносно поточного моменту, timezone не впливає).' },
             { k: 'Start Timezone', v: 'PDT (00:00 PDT) або EEST (14:00 PDT — це той самий момент, що ранок EEST).' },
             { k: 'Bid Type + Bid Rate / ROAS', v: 'Успадковуються з Binom Offer форми. TARGET_ROAS має пріоритет — якщо roas > 0, він виграє над TARGET_CPA. Trackingid все одно передається у всіх режимах.' },
             { k: 'Adset sizes', v: 'Масив цифр, який каже, як розкидати обрані оголошення по адсетах. Приклад: 4 обраних + adsetSizes=[2,2] → 2 адсети по 2 оголошення. Сума має дорівнювати кількості обраних оголошень.' },
