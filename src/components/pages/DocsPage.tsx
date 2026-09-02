@@ -2308,7 +2308,7 @@ const FB_TO_NB_MODULE: KBModule = {
         {
           kind: 'warn',
           title: 'Fetch нової FB-кампанії = повний reset',
-          text: 'Коли ти вставляєш інший Campaign ID і тиснеш Fetch — clearSelectedFbAd + closeBinomOffer + resetBinomOffer + closeNbCampaign + resetNbCampaign. Це навмисно: інакше в NB-форму заповзуть tracker / offer / creative з попередньої кампанії. Якщо хочеш зберегти проміжок — скопіюй Binom URL кудись у нотатки перед fetch.',
+          text: 'Коли ти вставляєш інший Campaign ID і тиснеш Fetch — Create Binom Offer скидається повністю, як при першому відкритті: clearSelectedFbAd + closeBinomOffer + resetBinomOffer + resetBinomForm + closeNbCampaign + resetNbCampaign + resetNbForm + resetTtCampaign + resetTtForm. Зберігається лише DESTINATION (його обирають на цій же вкладці). Це навмисно: інакше в Binom / NB форму заповзуть tracker / group / назва кампанії / хедлайни з попередньої кампанії. Якщо хочеш зберегти проміжок — скопіюй Binom URL кудись у нотатки перед fetch.',
         },
       ],
     },
