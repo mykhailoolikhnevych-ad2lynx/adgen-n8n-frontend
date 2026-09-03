@@ -30,3 +30,6 @@ pnpm-debug.log*
 apps_script/
 apps_script_folder/
 
+# n8n workflow exports — kept local, imported straight into n8n
+n8n files/
+
