@@ -5,10 +5,14 @@
 // draw the caption over each frame, and record the canvas plus the original
 // audio track back out as a file.
 //
-// REQUIRES CORS on the clip URL. `crossOrigin = 'anonymous'` fails to load
-// without `Access-Control-Allow-Origin`, and without it a canvas that has drawn
-// the video is tainted and refuses to be captured. The n8n `Respond Video` node
-// sends that header for exactly this reason.
+// The clip is pulled through `fetch` and played from a `blob:` URL rather than
+// pointed at directly with `crossOrigin = 'anonymous'`. A blob URL is
+// same-origin, so the canvas is never tainted — and, unlike a CORS media load,
+// it cannot be poisoned by the opaque cache entry the on-page preview player
+// (which sets no `crossOrigin`) leaves behind for the very same URL. That cache
+// collision is why the export worked on a dev machine and failed for users.
+// `Respond Video` still needs `Access-Control-Allow-Origin` for the fetch, but
+// a failure there now surfaces as an HTTP status instead of a bare media error.
 //
 // Recording is real-time — an 8s clip takes 8s. That is fine at this length and
 // buys us the audio track for free, which the alternatives (WebCodecs, mp4box
@@ -16,10 +20,16 @@
 
 import { cueAt, type CaptionCue } from '@/lib/captions';
 
-const once = (el: EventTarget, ev: string): Promise<void> =>
+const once = (el: HTMLMediaElement, ev: string): Promise<void> =>
   new Promise((res, rej) => {
     el.addEventListener(ev, () => res(), { once: true });
-    el.addEventListener('error', () => rej(new Error(`video failed to load (${ev})`)), { once: true });
+    el.addEventListener('error', () => {
+      // MediaError separates "network died" (2) from "cannot decode" (3) from
+      // "nothing here I can play" (4) — without it every cause reads the same.
+      const err = el.error;
+      const detail = err ? ` — MediaError ${err.code}${err.message ? `: ${err.message}` : ''}` : '';
+      rej(new Error(`video failed to load (${ev})${detail}`));
+    }, { once: true });
   });
 
 /** First container the browser will actually record. Chrome takes mp4/H.264
@@ -74,9 +84,7 @@ export interface ExportResult {
   extension: string;
 }
 
-/** Renders `videoUrl` with `cues` burned in and resolves with the encoded file.
- *  `onProgress` receives 0..1 as playback advances. */
-export const burnCaptions = async (
+const renderWithCaptions = async (
   videoUrl: string,
   cues: CaptionCue[],
   onProgress?: (fraction: number) => void,
@@ -85,7 +93,6 @@ export const burnCaptions = async (
   if (!mimeType) throw new Error('This browser cannot record video (MediaRecorder unsupported)');
 
   const video = document.createElement('video');
-  video.crossOrigin = 'anonymous';
   video.src = videoUrl;
   video.playsInline = true;
   await once(video, 'loadedmetadata');
@@ -159,6 +166,23 @@ export const burnCaptions = async (
 
   onProgress?.(1);
   return { blob: new Blob(chunks, { type: mimeType }), extension: extensionFor(mimeType) };
+};
+
+/** Renders `videoUrl` with `cues` burned in and resolves with the encoded file.
+ *  `onProgress` receives 0..1 as playback advances. */
+export const burnCaptions = async (
+  videoUrl: string,
+  cues: CaptionCue[],
+  onProgress?: (fraction: number) => void,
+): Promise<ExportResult> => {
+  const res = await fetch(videoUrl);
+  if (!res.ok) throw new Error(`Could not fetch the clip: HTTP ${res.status}`);
+  const objectUrl = URL.createObjectURL(await res.blob());
+  try {
+    return await renderWithCaptions(objectUrl, cues, onProgress);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 };
 
 /** Fetches a cross-origin asset as a blob so the download can carry our own
