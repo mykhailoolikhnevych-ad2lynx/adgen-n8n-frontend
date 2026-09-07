@@ -611,11 +611,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             </p>
             {newAmoChannel.trim().toLowerCase() === 'auto' && (
               <p className="text-xs text-slate-600 col-span-2 -mt-1">
-                <code>auto</code> публікує нову статтю через RSOC API
-                (<code>POST /api/amo/rsoc-articles</code>) на домен{' '}
-                <code>{newAmoDomain && newAmoDomain !== 'same' ? newAmoDomain : 'з оригінального оголошення'}</code>{' '}
-                з <code>traffic_source_slug = {destination === 'TT' ? 'tiktok' : 'newsbreak'}</code>;
-                channel призначає AMO.
+                <code>auto</code> публікує нову статтю на Workspace; channel призначає AMO.
               </p>
             )}
           </div>
