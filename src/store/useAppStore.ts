@@ -1754,8 +1754,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       const destination = get().megatoolBinomForm.destination;
       const ttPixelCodeRaw = get().megatoolBinomForm.ttPixelCode ?? '';
       const ttPixelCode = ttPixelCodeRaw.trim();
+      // Operator email — the workflow forwards it as X-Auth-Email when
+      // newAmoChannel === 'auto' and it has to publish a fresh article through
+      // the RSOC API (POST /api/amo/rsoc-articles). Same per-user auth pattern
+      // as the RSOC publish/options proxies.
+      const ident = await getAuthEmail();
+      const email = ident?.email ?? 'unknown@unknown';
       const payload = {
         trackingUrl: input.trackingUrl,
+        email,
         newAmoDomain: input.newAmoDomain,
         newAmoChannel: input.newAmoChannel,
         newBinomGroup: input.newBinomGroup,
