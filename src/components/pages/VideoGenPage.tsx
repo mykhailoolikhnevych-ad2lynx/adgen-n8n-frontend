@@ -7,6 +7,8 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import {
   MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
+  ANIMATE_ASPECT_RATIOS, ANIMATE_RESOLUTIONS, ANIMATE_RESOLUTION_DEFAULT,
+  ANIMATE_PROMPT, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
 import { cueAt, toSrt } from '@/lib/captions';
 import { burnCaptions, downloadAs, saveBlob } from '@/lib/videoExport';
@@ -35,6 +37,51 @@ const FRAME_HELP =
   'Чотири варіанти першого кадру. Обери той, що подобається, і тисни «Generate video from selected».';
 
 const VIDEO_HELP = 'Обраний кадр, оживлений з твоєю реплікою. Seedance генерує ~5 хвилин.';
+
+const MODE_HELP =
+  'From article — модель пише 4 сцени зі статті, рендерить кадри й оживляє обраний з реплікою (ліпсінк). ' +
+  'Animate image — завантажуєш готовий статичний банер, і він оживає як є: текст і композиція не змінюються, ' +
+  'додається лише легкий рух, підсвітка та фонова музика.';
+
+const ANIMATE_HELP =
+  'Завантаж готовий банер (PNG / JPG / WebP) і тисни Generate. Промпт універсальний — ' +
+  'нічого описувати не треба, модель дивиться на саме зображення. За потреби промпт можна відредагувати.';
+
+const ANIMATE_RESULT_HELP =
+  'Оживлені банери з фоновою музикою, зациклені. Seedance генерує ~5 хвилин. ' +
+  'Нові відео додаються знизу й не стирають попередні — прибрати їх можна лише кнопкою Clear results.';
+
+const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+// Seedance is picky about the start frame — it wants a direct, non-redirecting
+// JPEG or PNG and has rejected WebP outright. Re-encode anything else to PNG
+// here rather than discovering it as an opaque provider error five minutes in.
+const toFrameDataUrl = async (file: File): Promise<{ dataUrl: string; width: number; height: number }> => {
+  const bitmap = await createImageBitmap(file);
+  try {
+    if (file.type === 'image/png' || file.type === 'image/jpeg') {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () =>
+          typeof reader.result === 'string'
+            ? resolve(reader.result)
+            : reject(new Error('FileReader returned non-string result'));
+        reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'));
+        reader.readAsDataURL(file);
+      });
+      return { dataUrl, width: bitmap.width, height: bitmap.height };
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 2D context unavailable');
+    ctx.drawImage(bitmap, 0, 0);
+    return { dataUrl: canvas.toDataURL('image/png'), width: bitmap.width, height: bitmap.height };
+  } finally {
+    bitmap.close();
+  }
+};
 
 const StatusBar = ({ status }: { status: Status }) => (
   <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center gap-2 shrink-0">
@@ -74,7 +121,94 @@ export const VideoGenPage = () => {
   const videoGenCaptionsError = useAppStore((s) => s.videoGenCaptionsError);
   const fetchVideoCaptions = useAppStore((s) => s.fetchVideoCaptions);
 
+  const animateUploadedImage = useAppStore((s) => s.animateUploadedImage);
+  const videoGenAnimateStatus = useAppStore((s) => s.videoGenAnimateStatus);
+  const videoGenAnimateError = useAppStore((s) => s.videoGenAnimateError);
+  const videoGenAnimateResults = useAppStore((s) => s.videoGenAnimateResults);
+  const clearVideoGenAnimateResults = useAppStore((s) => s.clearVideoGenAnimateResults);
+
   const [showPrompt, setShowPrompt] = useState(false);
+
+  // ------------------------------------------------------------- Animate mode
+  // Local, not the store: the tab is kept alive across switches, so component
+  // state survives just as well, and the File itself has no business in zustand.
+  const [mode, setMode] = useState<VideoGenMode>('scene');
+  const [animateFile, setAnimateFile] = useState<File | null>(null);
+  const [animatePreview, setAnimatePreview] = useState<string | null>(null);
+  const [animateDims, setAnimateDims] = useState<{ w: number; h: number } | null>(null);
+  const [animateAspect, setAnimateAspect] = useState<string>('9:16');
+  const [animateResolution, setAnimateResolution] = useState<string>(ANIMATE_RESOLUTION_DEFAULT);
+  const [animatePrompt, setAnimatePrompt] = useState(ANIMATE_PROMPT);
+  const [animateFileError, setAnimateFileError] = useState<string | null>(null);
+  // Which clips have their prompt expanded, by execution id — one flag per card
+  // rather than one for the whole panel.
+  const [shownPrompts, setShownPrompts] = useState<Set<string>>(new Set());
+  const toggleClipPrompt = (jobId: string) =>
+    setShownPrompts((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0);
+  const prevAnimatePreview = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (prevAnimatePreview.current) URL.revokeObjectURL(prevAnimatePreview.current);
+    if (animateFile) {
+      const url = URL.createObjectURL(animateFile);
+      setAnimatePreview(url);
+      prevAnimatePreview.current = url;
+    } else {
+      setAnimatePreview(null);
+      prevAnimatePreview.current = null;
+    }
+    return () => {
+      if (prevAnimatePreview.current) {
+        URL.revokeObjectURL(prevAnimatePreview.current);
+        prevAnimatePreview.current = null;
+      }
+    };
+  }, [animateFile]);
+
+  const acceptAnimateFile = (picked: File | null) => {
+    if (!picked) return;
+    if (!ACCEPTED_TYPES.includes(picked.type)) {
+      setAnimateFileError('Unsupported file type. Use PNG, JPG, or WebP.');
+      return;
+    }
+    setAnimateFileError(null);
+    setAnimateFile(picked);
+    // Read the real pixels so the ratio sent to the video model matches the
+    // banner instead of whatever was last picked.
+    void createImageBitmap(picked)
+      .then((bmp) => {
+        setAnimateDims({ w: bmp.width, h: bmp.height });
+        setAnimateAspect(nearestAspectRatio(bmp.width, bmp.height));
+        bmp.close();
+      })
+      .catch(() => setAnimateFileError('Could not read the image dimensions.'));
+  };
+
+  const runAnimate = async () => {
+    if (!animateFile) return;
+    setAnimateFileError(null);
+    try {
+      const { dataUrl } = await toFrameDataUrl(animateFile);
+      await animateUploadedImage({
+        imageDataUrl: dataUrl,
+        prompt: animatePrompt,
+        aspectRatio: animateAspect,
+        resolution: animateResolution,
+        fileName: animateFile.name,
+      });
+    } catch (e) {
+      setAnimateFileError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+
   // Driven off the player's own clock so the overlay matches what you hear.
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playhead, setPlayhead] = useState(0);
@@ -99,6 +233,17 @@ export const VideoGenPage = () => {
   const downloadSrt = () => {
     const name = videoGenFileName('video', videoGenResult?.jobId ?? 'clip');
     saveBlob(new Blob([toSrt(videoGenCaptions)], { type: 'text/plain;charset=utf-8' }), `${name}.srt`);
+  };
+
+  // Animate mode ships the clip as it comes back — there is no spoken line, so
+  // nothing to burn in.
+  const downloadVideo = async (clip: { videoUrl: string; jobId: string }) => {
+    setExportError(null);
+    try {
+      await downloadAs(clip.videoUrl, `${videoGenFileName('video', clip.jobId)}.mp4`);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const downloadStill = async (url: string, frameId: string) => {
@@ -129,7 +274,8 @@ export const VideoGenPage = () => {
 
   const framesLoading = videoGenFramesStatus === 'loading';
   const videoLoading = videoGenStatus === 'loading';
-  const busy = framesLoading || videoLoading;
+  const animateLoading = videoGenAnimateStatus === 'loading';
+  const busy = framesLoading || videoLoading || animateLoading;
 
   const words = countWords(videoGenLine);
   const tooLong = words > MAX_LINE_WORDS;
@@ -146,6 +292,295 @@ export const VideoGenPage = () => {
   if (videoLoading) videoLabel = 'Generating… (~5 min)';
   else if (!selected) videoLabel = 'Pick an image first';
 
+  const modeToggle = (
+    <div>
+      <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400 mb-1">
+        Mode
+        <InfoTooltip text={MODE_HELP} iconSize={11} />
+      </label>
+      <div className="grid grid-cols-2 gap-1.5">
+        {([
+          ['scene', 'From article'],
+          ['animate', 'Animate image'],
+        ] as [VideoGenMode, string][]).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setMode(value)}
+            disabled={busy}
+            className={`rounded-md border px-2 py-2 text-xs leading-tight transition disabled:opacity-50 ${
+              mode === value
+                ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                : 'border-input bg-white hover:bg-slate-50'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  // ------------------------------------------------------- Animate image layout
+  if (mode === 'animate') {
+    let animateLabel = 'Generate video';
+    if (animateLoading) animateLabel = 'Generating… (~5 min)';
+    else if (!animateFile) animateLabel = 'Upload a creative first';
+
+    return (
+      <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
+        {/* 1. Input */}
+        <div className="w-[400px] shrink-0 bg-white rounded-xl border p-4 overflow-y-auto shadow-sm">
+          <div className="flex flex-col gap-4">
+            <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2">
+              1. Input
+              <InfoTooltip text={ANIMATE_HELP} />
+            </h2>
+
+            {modeToggle}
+
+            <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Creative image
+              </label>
+              <label
+                onDragEnter={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  dragCounter.current += 1;
+                  if (e.dataTransfer.types.includes('Files')) setIsDragging(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  dragCounter.current -= 1;
+                  if (dragCounter.current <= 0) { dragCounter.current = 0; setIsDragging(false); }
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  e.dataTransfer.dropEffect = 'copy';
+                }}
+                onDrop={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  dragCounter.current = 0;
+                  setIsDragging(false);
+                  acceptAnimateFile(e.dataTransfer.files?.[0] ?? null);
+                }}
+                className={`cursor-pointer flex flex-col items-center justify-center rounded-md border-2 border-dashed px-3 py-4 text-sm font-medium transition-colors w-full text-center ${
+                  isDragging
+                    ? 'border-blue-500 bg-blue-50 text-blue-700'
+                    : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <span>{animateFile ? 'Replace creative' : 'Upload creative'}</span>
+                <span className="mt-0.5 text-[11px] font-normal text-slate-500">
+                  or drag &amp; drop here
+                </span>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  className="hidden"
+                  disabled={busy}
+                  onChange={(e) => {
+                    acceptAnimateFile(e.target.files?.[0] ?? null);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+              {animateFile && (
+                <p className="mt-1 text-xs text-slate-500 truncate">
+                  {animateFile.name}
+                  {animateDims && ` · ${animateDims.w}×${animateDims.h}`}
+                </p>
+              )}
+              {animatePreview && (
+                <img
+                  src={animatePreview}
+                  alt="Preview"
+                  className="mt-2 max-h-52 w-full object-contain rounded border bg-slate-50"
+                />
+              )}
+              {animateFileError && (
+                <p className="mt-1 text-xs text-red-600">{animateFileError}</p>
+              )}
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-600 space-y-2">
+              <div className="flex justify-between gap-3">
+                <span>Video</span>
+                <span className="font-mono text-slate-800 truncate">{VIDEO_MODEL}</span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>Aspect ratio</span>
+                <select
+                  value={animateAspect}
+                  onChange={(e) => setAnimateAspect(e.target.value)}
+                  disabled={busy}
+                  className="text-xs border rounded-md px-2 py-1 bg-white disabled:opacity-50"
+                >
+                  {ANIMATE_ASPECT_RATIOS.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>Resolution</span>
+                <select
+                  value={animateResolution}
+                  onChange={(e) => setAnimateResolution(e.target.value)}
+                  disabled={busy}
+                  className="text-xs border rounded-md px-2 py-1 bg-white disabled:opacity-50"
+                >
+                  {ANIMATE_RESOLUTIONS.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
+              {/* Duration is not shown: it is always 8s and there is nothing to
+                  decide. It still goes to the API as VIDEO_DURATION_SEC. */}
+              {/* Not a rate-card number: an 8s 1080p clip has billed ~$0.94 in
+                  practice, roughly 3x the 480p floor. Worth seeing before the click. */}
+              <p className="text-[11px] text-slate-500 pt-1">
+                {animateResolution === '1080p'
+                  ? 'Ready to ship — keeps the banner text sharp. ~$0.94 per clip.'
+                  : `${animateResolution} is cheaper but softens small text — use it for tests.`}
+              </p>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <label className="text-[10px] font-bold uppercase text-gray-400">
+                  Animation prompt
+                </label>
+                {animatePrompt !== ANIMATE_PROMPT && (
+                  <button
+                    type="button"
+                    onClick={() => setAnimatePrompt(ANIMATE_PROMPT)}
+                    className="text-[11px] text-blue-600 hover:underline"
+                  >
+                    Reset to default
+                  </button>
+                )}
+              </div>
+              <Textarea
+                value={animatePrompt}
+                onChange={(e) => setAnimatePrompt(e.target.value)}
+                rows={10}
+                className="text-[11px] font-mono leading-relaxed resize-y"
+                disabled={busy}
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Universal — it never names what is in the banner, so the same prompt fits any creative.
+              </p>
+            </div>
+
+            <Button
+              onClick={() => void runAnimate()}
+              disabled={!animateFile || busy}
+              className="w-full"
+            >
+              {animateLabel}
+            </Button>
+          </div>
+        </div>
+
+        {/* 2. Video */}
+        <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
+          <div className="flex flex-col gap-4 flex-1 min-h-0">
+            {/* Clips accumulate; only this button removes them. Same rule as the
+                generated batches in Creative Gen and Creative Edit. */}
+            <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
+              <h2 className="flex items-center gap-1.5 font-bold text-xl">
+                2. Video
+                <InfoTooltip text={ANIMATE_RESULT_HELP} />
+              </h2>
+              {videoGenAnimateResults.length > 0 && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={clearVideoGenAnimateResults}
+                  disabled={animateLoading}
+                  title="Remove every generated clip from this panel"
+                >
+                  Clear results ({videoGenAnimateResults.length})
+                </Button>
+              )}
+            </div>
+
+            <StatusBar status={videoGenAnimateStatus} />
+
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
+              {videoGenAnimateStatus === 'error' && videoGenAnimateError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 whitespace-pre-wrap">
+                  {videoGenAnimateError}
+                </div>
+              )}
+
+              {videoGenAnimateResults.length === 0 && !animateLoading && videoGenAnimateStatus !== 'error' && (
+                <div className="text-gray-400 italic">Upload a creative and press Generate</div>
+              )}
+
+              {videoGenAnimateResults.map((clip, i) => (
+                <div key={clip.jobId} className="flex flex-col gap-2">
+                  <div className="text-[10px] font-bold uppercase text-gray-400">
+                    Generation #{i + 1}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
+                    <span>
+                      Video <span className="font-mono text-slate-900">${clip.videoCost.toFixed(4)}</span>
+                    </span>
+                    <span>Execution <span className="font-mono text-slate-900">{clip.jobId}</span></span>
+                    <a href={clip.videoUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                      Open mp4
+                    </a>
+                  </div>
+
+                  {/* Only the newest clip autoplays — a stack of them all playing
+                      at once is unusable. */}
+                  <video
+                    src={clip.videoUrl}
+                    controls
+                    loop
+                    autoPlay={i === videoGenAnimateResults.length - 1}
+                    className="rounded-lg border bg-black w-full max-w-[300px] block"
+                  />
+
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => void downloadVideo(clip)}
+                      className="font-medium text-blue-600 hover:underline"
+                    >
+                      Download video
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleClipPrompt(clip.jobId)}
+                      className="text-slate-600 hover:text-slate-900"
+                    >
+                      {shownPrompts.has(clip.jobId) ? 'Hide' : 'Show'} prompt
+                    </button>
+                  </div>
+                  {shownPrompts.has(clip.jobId) && (
+                    <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50 border rounded-lg p-2">
+                      {clip.prompt}
+                    </pre>
+                  )}
+                </div>
+              ))}
+
+              {animateLoading && (
+                <div className="text-gray-400 italic">
+                  Animating the uploaded banner — Seedance takes about 5 minutes.
+                </div>
+              )}
+
+              {exportError && <div className="text-xs text-red-600">{exportError}</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
       {/* 1. Input */}
@@ -155,6 +590,8 @@ export const VideoGenPage = () => {
             1. Input
             <InfoTooltip text={INPUT_HELP} />
           </h2>
+
+          {modeToggle}
 
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-600 space-y-1">
             <div className="flex justify-between gap-3"><span>Scenes</span><span className="font-mono text-slate-800 truncate">{PROMPT_MODEL}</span></div>

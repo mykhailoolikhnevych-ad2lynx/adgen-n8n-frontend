@@ -49,6 +49,74 @@ export const TRANSCRIBE_MODEL = 'openai/whisper-1';
 // the model rushes the delivery or cuts the line off mid-sentence.
 export const MAX_LINE_WORDS = 24;
 
+// ---------------------------------------------------------------- Animate mode
+//
+// The second mode of the tab: no article and no scene writing — the operator
+// uploads a finished static banner and it gets animated as-is. Same video leg as
+// the scene mode (the still is parked in `video_frames` and Seedance is handed
+// its webhook URL), only the frame comes from an upload instead of a generation.
+export type VideoGenMode = 'scene' | 'animate';
+
+// Whatever the banner is, one of these is what it actually is. Auto-detected
+// from the uploaded file's own pixels, then overridable.
+export const ANIMATE_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const;
+
+// A banner is mostly typography, and 480p turns a headline into mush — the whole
+// point of this mode is that the text survives. 1080p is the only tier that
+// actually ships, so it is the default despite costing roughly $0.94 for an 8s
+// clip against ~$0.32 at 480p.
+export const ANIMATE_RESOLUTIONS = ['480p', '720p', '1080p'] as const;
+export const ANIMATE_RESOLUTION_DEFAULT = '1080p';
+
+/** Snap real pixel dimensions to the closest ratio the video API accepts. */
+export const nearestAspectRatio = (width: number, height: number): string => {
+  const r = width / height;
+  const value = (s: string): number => {
+    const [w, h] = s.split(':').map(Number);
+    return w / h;
+  };
+  return [...ANIMATE_ASPECT_RATIOS].reduce((best, cand) =>
+    Math.abs(value(cand) - r) < Math.abs(value(best) - r) ? cand : best,
+  );
+};
+
+// One prompt for every banner, because the operator supplies no description of
+// what is in the image — the model is looking at it and we are not. So instead
+// of naming elements (the way the hand-written examples do: "the purple hearts",
+// "the red fabric banner") this addresses them by CATEGORY, and each rule is
+// conditional — "if there is fabric, it waves". A banner with none of a category
+// simply skips that line.
+//
+// The two things that break these renders are the model redrawing the artwork
+// and the model rewriting the text, so both come first. Everything else is
+// deliberately small: shimmer, breeze, pulse. The failure mode of "too subtle"
+// is a boring clip; the failure mode of "too much" is a garbled banner.
+//
+// Aspect ratio, duration and the loop are NOT mentioned here. The first two are
+// real fields in the /api/v1/videos body, and the loop is enforced structurally
+// — the same still is sent as both `first_frame` and `last_frame`, so the clip
+// has to end where it started. Asking for it in prose as well only adds tokens
+// the model can contradict.
+export const ANIMATE_PROMPT = `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
+
+TEXT NEVER CHANGES: every word, letter and number keeps its exact spelling, font, size, color and position. No new text, no translation, no subtitles. Letters never warp, slide, bounce or fade, and stay sharp and readable in every frame.
+
+MOTION — subtle, and only where it is physically natural. Apply only what matches the image:
+- text and CTA buttons: a soft light shimmer sweeps across them every 2-3 seconds with a faint brightness pulse; the letters and shapes themselves stay still
+- fabric, banners, flags, clothing: gentle realistic wind, shallow folds travelling across the surface, corners fluttering; printed text stays readable
+- plants, flowers, leaves, hair: sway in a light breeze
+- water, smoke, steam, fire: slow natural flow
+- sky and clouds: drift very slowly; light and shadows shift subtly
+- vehicles, buildings, furniture, products: completely still, at most a soft highlight passing along an edge
+- icons, hearts, keys, arrows, sparkles: slight floating drift and a soft glow pulse, never covering text
+- people and animals: micro-motion only — slow blinking, quiet breathing, a tiny shift of head or hand. Face, clothing and pose unchanged, mouth closed, nobody speaks or walks
+
+CAMERA: locked-off and static, at most a barely perceptible handheld breath. No zoom, pan, tilt, orbit, cut or reframing.
+
+AUDIO: quiet instrumental background music matching the mood of the image — soft piano, warm ambient pads, gentle and unobtrusive, mixed low. No vocals, no lyrics, no voiceover, no speech, no sound effects.
+
+AVOID: new or distorted letters, subtitles, watermarks, extra objects, things appearing or disappearing, morphing or melting shapes, flicker, colour shift, scene change, camera movement.`;
+
 // Distilled from the creative team's PHOTO and VIDEO templates plus their system
 // prompt doc, with the gaps those docs had filled in: an explicit 9:16 rule, a
 // no-on-screen-text negative, and a hard requirement that the 4 variants differ.

@@ -519,6 +519,13 @@ interface AppState {
   videoGenCaptionsError: string | null;
   videoGenError: string | null;
   videoGenResult: VideoGenResult | null;
+  /** Animate mode keeps its own status and a growing list of clips — runs stack
+   *  up the way generations do in Creative Gen, and only "Clear results" removes
+   *  them. Separate from videoGenStatus/videoGenResult so the two modes cannot
+   *  overwrite each other's panel. */
+  videoGenAnimateStatus: 'idle' | 'loading' | 'success' | 'error';
+  videoGenAnimateError: string | null;
+  videoGenAnimateResults: VideoGenResult[];
   articleHtml: string | null;
   articleStatus: ArticleStatus;
   articleError: string | null;
@@ -760,6 +767,16 @@ interface AppState {
   generateVideo: () => Promise<void>;
   /** Phase 3 — transcribe the clip for word-level caption timings. */
   fetchVideoCaptions: () => Promise<void>;
+  /** Animate mode — park an uploaded banner in `video_frames`, then run the same
+   *  video leg on it. Appends to videoGenAnimateResults; nothing is replaced. */
+  animateUploadedImage: (args: {
+    imageDataUrl: string;
+    prompt: string;
+    aspectRatio: string;
+    resolution: string;
+    fileName: string;
+  }) => Promise<void>;
+  clearVideoGenAnimateResults: () => void;
   sendToTelegram: (creativeId: string) => Promise<void>;
   toggleAngleTranslation: (angleId: string) => Promise<void>;
   toggleConceptTranslation: (conceptId: string) => Promise<void>;
@@ -845,6 +862,9 @@ const WEBHOOKS = {
   videoFrames: import.meta.env.PUBLIC_WEBHOOK_VIDEO_FRAMES_URL,
   videoTranscribe: import.meta.env.PUBLIC_WEBHOOK_VIDEO_TRANSCRIBE_URL,
   videoGenLeonardo: import.meta.env.PUBLIC_WEBHOOK_VIDEO_LEONARDO_URL,
+  // Animate mode — parks an uploaded banner in `video_frames` and hands back the
+  // frame_id the video leg already knows how to consume.
+  videoUploadFrame: import.meta.env.PUBLIC_WEBHOOK_VIDEO_UPLOAD_FRAME_URL,
   telegram: import.meta.env.PUBLIC_WEBHOOK_TELEGRAM_URL,
   translate: import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL,
   article: import.meta.env.PUBLIC_WEBHOOK_ARTICLE_URL,
@@ -1200,6 +1220,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   videoGenFrames: [], videoGenFramesStatus: 'idle', videoGenFramesError: null,
   videoGenSelectedFrameId: null,
   videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
+  videoGenAnimateStatus: 'idle', videoGenAnimateError: null, videoGenAnimateResults: [],
   videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   articleInputs: null, offerArticleOpen: false,
@@ -2962,6 +2983,113 @@ export const useAppStore = create<AppState>((set, get) => ({
       metaOut: { cues: cues.length, cost: data?.cost },
     });
   },
+
+  animateUploadedImage: async ({ imageDataUrl, prompt, aspectRatio, resolution, fileName }) => {
+    const logMeta = { fileName, aspectRatio, resolution, videoModel: VIDEO_MODEL };
+
+    // Only the status is reset — already-finished clips stay in the list.
+    set({ videoGenAnimateStatus: 'loading', videoGenAnimateError: null });
+
+    const fail = (message: string, responseBody?: unknown) => {
+      set({ videoGenAnimateStatus: 'error', videoGenAnimateError: message });
+      logEvent({ tab: 'video_gen', action: 'animateUploadedImage', meta: logMeta, metaOut: responseBody, errorMessage: message });
+    };
+
+    if (!WEBHOOKS.videoUploadFrame) {
+      fail('PUBLIC_WEBHOOK_VIDEO_UPLOAD_FRAME_URL is not set in .env');
+      return;
+    }
+    if (!WEBHOOKS.videoGen) {
+      fail('PUBLIC_WEBHOOK_VIDEO_GEN_URL is not set in .env');
+      return;
+    }
+
+    // Step 1 — park the upload in the video_frames datatable. OpenRouter fetches
+    // the first frame server-side over https and will not take a data URI, and
+    // the project has no image hosting, so n8n serves it from the datatable.
+    let frameId = '';
+    let frameUrl = '';
+    try {
+      const { data } = await axios.post(WEBHOOKS.videoUploadFrame, { image: imageDataUrl });
+      const payload = Array.isArray(data) ? data[0] : data;
+      frameId = String(payload?.frame_id ?? '');
+      frameUrl = String(payload?.url ?? '');
+      if (!frameId) throw new Error('Upload webhook did not return a frame_id');
+    } catch (e) {
+      console.error(e);
+      fail(`Image upload failed: ${humanizeError(e)}`, (e as any)?.response?.data);
+      return;
+    }
+
+    // Step 2 — identical to the scene mode from here on: the video leg only ever
+    // needed a frame_id and a prompt.
+    let jobId: string | null = null;
+    try {
+      const { data } = await axios.post(WEBHOOKS.videoGen, {
+        frame_id: frameId,
+        video_prompt: prompt,
+        video_model: VIDEO_MODEL,
+        duration: VIDEO_DURATION_SEC,
+        aspect_ratio: aspectRatio,
+        resolution,
+        // Send the same still as `last_frame` too, so the clip is forced to end
+        // exactly where it started. A structural loop the model cannot drift out
+        // of, which is why the prompt no longer asks for one. Scene runs omit
+        // this — pinning the last frame of a talking head would fight the
+        // lip-sync.
+        loop_frame: true,
+      });
+      const startPayload = Array.isArray(data) ? data[0] : data;
+      jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
+      if (!jobId) throw new Error('Webhook did not return a job_id');
+    } catch (e) {
+      console.error(e);
+      fail(`Video generation failed: ${humanizeError(e)}`, (e as any)?.response?.data);
+      return;
+    }
+
+    let result: any;
+    try {
+      result = await pollCreativeExecution(
+        jobId, () => get().videoGenAnimateStatus !== 'loading', 'Aggregate Video', 120,
+      );
+    } catch (e) {
+      fail(`Video generation failed: ${humanizeError(e)}`, (e as any)?.responseBody ?? (e as any)?.response?.data);
+      return;
+    }
+    if (result === null) return;
+
+    if (typeof result.video_url !== 'string' || !result.video_url) {
+      fail(result.error ? String(result.error) : 'Run finished but returned no video', result);
+      return;
+    }
+
+    const clip: VideoGenResult = {
+      imageUrl: String(result.image_url || frameUrl),
+      videoUrl: result.video_url,
+      imageCost: 0,
+      videoCost: Number(result.video_cost) || 0,
+      model: String(result.video_model || VIDEO_MODEL),
+      jobId: String(jobId),
+      prompt,
+      openrouterId: String(result.openrouter_id || ''),
+      provider: 'openrouter',
+      credits: 0,
+    };
+    // Append — the newest clip lands at the bottom of the panel, same as a new
+    // batch does in Creative Gen.
+    set((s) => ({
+      videoGenAnimateStatus: 'success',
+      videoGenAnimateResults: [...s.videoGenAnimateResults, clip],
+    }));
+    logEvent({
+      tab: 'video_gen', action: 'animateUploadedImage', meta: logMeta,
+      metaOut: { frame_id: frameId, video_cost: result.video_cost, video_model: result.video_model },
+    });
+  },
+
+  clearVideoGenAnimateResults: () =>
+    set({ videoGenAnimateResults: [], videoGenAnimateStatus: 'idle', videoGenAnimateError: null }),
 
 
   sendToTelegram: async (creativeId) => {
