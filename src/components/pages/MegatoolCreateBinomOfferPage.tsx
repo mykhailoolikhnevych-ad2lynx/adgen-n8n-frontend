@@ -598,12 +598,10 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             </div>
             <div>
               <label className="text-xs font-medium uppercase text-slate-500">New AMO Channel *</label>
-              {/* 'auto' (порожній &channel= в URL офера) поки прихований з опцій —
-                  воркфлоу його вже вміє, повернути коли підтвердимо на AMO. */}
               <Combobox
                 value={newAmoChannel}
                 onChange={setNewAmoChannel}
-                options={['same']}
+                options={['same', 'auto']}
                 placeholder="Клікни або введи…"
                 inputClassName="text-sm rounded-md bg-white px-2"
               />
@@ -611,6 +609,15 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             <p className="text-xs text-slate-600 col-span-2 -mt-1">
               <code>same</code> залишає AMO-домен / channel як в оригінальному оголошенні.
             </p>
+            {newAmoChannel.trim().toLowerCase() === 'auto' && (
+              <p className="text-xs text-slate-600 col-span-2 -mt-1">
+                <code>auto</code> публікує нову статтю через RSOC API
+                (<code>POST /api/amo/rsoc-articles</code>) на домен{' '}
+                <code>{newAmoDomain && newAmoDomain !== 'same' ? newAmoDomain : 'з оригінального оголошення'}</code>{' '}
+                з <code>traffic_source_slug = {destination === 'TT' ? 'tiktok' : 'newsbreak'}</code>;
+                channel призначає AMO.
+              </p>
+            )}
           </div>
 
           <div>
