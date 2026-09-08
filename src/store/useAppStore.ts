@@ -777,6 +777,9 @@ interface AppState {
     aspectRatio: string;
     resolution: string;
     fileName: string;
+    /** False for the travelling-camera presets, which cannot end where they
+     *  began. See AnimatePreset.loop. */
+    loop: boolean;
   }) => Promise<void>;
   clearVideoGenAnimateResults: () => void;
   sendToTelegram: (creativeId: string) => Promise<void>;
@@ -2740,7 +2743,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Step 2: poll until the run finishes, then extract the images.
     let result: any;
     try {
-      result = await pollCreativeExecution(jobId, () => !get().creatives.some(c => c.id === creativeId));
+      // A batch here renders several images in one run and has been timing out
+      // on the shared 5-minute default, so this leg gets 10 minutes. 'Aggregate
+      // Images' is the default result node, repeated only because maxAttempts
+      // sits behind it in the signature.
+      result = await pollCreativeExecution(
+        jobId, () => !get().creatives.some(c => c.id === creativeId), 'Aggregate Images', 120,
+      );
     } catch (e) {
       const msg = humanizeError(e);
       get().showError(msg.startsWith('Creative generation') ? msg : `Creative generation failed: ${msg}`);
@@ -3018,13 +3027,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  animateUploadedImage: async ({ imageDataUrl, prompt, videoModel, aspectRatio, resolution, fileName }) => {
+  animateUploadedImage: async ({
+    imageDataUrl, prompt, videoModel, aspectRatio, resolution, fileName, loop,
+  }) => {
     const spec = animateModelFor(videoModel);
-    // With a last frame the loop is structural; without one the prompt has to
-    // ask for it. `sentPrompt` is what gets stored on the clip, so "Show prompt"
+    // Pin both ends only when the preset wants a loop AND the model can take a
+    // last frame. When a loop is wanted but cannot be pinned, the prompt has to
+    // ask for it instead. `sentPrompt` is stored on the clip, so "Show prompt"
     // always reflects what actually went out.
-    const sentPrompt = spec.supportsLastFrame ? prompt : prompt + ANIMATE_LOOP_RULE;
-    const logMeta = { fileName, aspectRatio, resolution, videoModel: spec.value };
+    const pinLastFrame = loop && spec.supportsLastFrame;
+    const sentPrompt = loop && !spec.supportsLastFrame ? prompt + ANIMATE_LOOP_RULE : prompt;
+    const logMeta = { fileName, aspectRatio, resolution, videoModel: spec.value, loop };
 
     // Only the status is reset — already-finished clips stay in the list.
     set({ videoGenAnimateStatus: 'loading', videoGenAnimateError: null });
@@ -3082,10 +3095,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         aspect_ratio: aspectRatio,
         resolution,
         // Send the same still as `last_frame` too, so the clip is forced to end
-        // exactly where it started — a loop the model cannot drift out of.
-        // Off for models that only accept a first frame, and off for scene runs,
-        // where pinning the last frame would fight the lip-sync.
-        loop_frame: spec.supportsLastFrame,
+        // exactly where it started — a loop the model cannot drift out of. Off
+        // for models that only accept a first frame, off for the travelling-
+        // camera presets, and off for scene runs where it would fight lip-sync.
+        loop_frame: pinLastFrame,
       });
       const startPayload = Array.isArray(data) ? data[0] : data;
       jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
