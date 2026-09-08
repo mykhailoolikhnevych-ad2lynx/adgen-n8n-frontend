@@ -2740,7 +2740,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Step 2: poll until the run finishes, then extract the images.
     let result: any;
     try {
-      result = await pollCreativeExecution(jobId, () => !get().creatives.some(c => c.id === creativeId));
+      // A batch here renders several images in one run and has been timing out
+      // on the shared 5-minute default, so this leg gets 10 minutes. 'Aggregate
+      // Images' is the default result node, repeated only because maxAttempts
+      // sits behind it in the signature.
+      result = await pollCreativeExecution(
+        jobId, () => !get().creatives.some(c => c.id === creativeId), 'Aggregate Images', 120,
+      );
     } catch (e) {
       const msg = humanizeError(e);
       get().showError(msg.startsWith('Creative generation') ? msg : `Creative generation failed: ${msg}`);
