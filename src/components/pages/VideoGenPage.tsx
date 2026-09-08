@@ -7,8 +7,9 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import {
   MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
-  ANIMATE_ASPECT_RATIOS, ANIMATE_RESOLUTIONS, ANIMATE_RESOLUTION_DEFAULT,
-  ANIMATE_PROMPT, nearestAspectRatio, type VideoGenMode,
+  ANIMATE_ASPECT_RATIOS, ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
+  ANIMATE_PROMPT, animateModelFor, bestResolutionFor, clampResolution,
+  nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
 import { cueAt, toSrt } from '@/lib/captions';
 import { burnCaptions, downloadAs, saveBlob } from '@/lib/videoExport';
@@ -137,7 +138,18 @@ export const VideoGenPage = () => {
   const [animatePreview, setAnimatePreview] = useState<string | null>(null);
   const [animateDims, setAnimateDims] = useState<{ w: number; h: number } | null>(null);
   const [animateAspect, setAnimateAspect] = useState<string>('9:16');
-  const [animateResolution, setAnimateResolution] = useState<string>(ANIMATE_RESOLUTION_DEFAULT);
+  const [animateModel, setAnimateModel] = useState<string>(ANIMATE_MODEL_DEFAULT);
+  const [animateResolution, setAnimateResolution] = useState<string>(
+    bestResolutionFor(animateModelFor(ANIMATE_MODEL_DEFAULT)),
+  );
+
+  // The tiers differ per model (2.0-fast has no 1080p, Wan 2.7 has no 480p), so
+  // switching models has to move the picked resolution somewhere the new model
+  // actually accepts.
+  const pickAnimateModel = (value: string) => {
+    setAnimateModel(value);
+    setAnimateResolution((r) => clampResolution(r, animateModelFor(value)));
+  };
   const [animatePrompt, setAnimatePrompt] = useState(ANIMATE_PROMPT);
   const [animateFileError, setAnimateFileError] = useState<string | null>(null);
   // Which clips have their prompt expanded, by execution id — one flag per card
@@ -199,6 +211,7 @@ export const VideoGenPage = () => {
       await animateUploadedImage({
         imageDataUrl: dataUrl,
         prompt: animatePrompt,
+        videoModel: animateModel,
         aspectRatio: animateAspect,
         resolution: animateResolution,
         fileName: animateFile.name,
@@ -276,6 +289,7 @@ export const VideoGenPage = () => {
   const videoLoading = videoGenStatus === 'loading';
   const animateLoading = videoGenAnimateStatus === 'loading';
   const busy = framesLoading || videoLoading || animateLoading;
+  const animateSpec = animateModelFor(animateModel);
 
   const words = countWords(videoGenLine);
   const tooLong = words > MAX_LINE_WORDS;
@@ -404,9 +418,22 @@ export const VideoGenPage = () => {
             </div>
 
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-600 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <span>Model</span>
+                <select
+                  value={animateModel}
+                  onChange={(e) => pickAnimateModel(e.target.value)}
+                  disabled={busy}
+                  className="text-xs border rounded-md px-2 py-1 bg-white disabled:opacity-50"
+                >
+                  {ANIMATE_VIDEO_MODELS.map((m) => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
               <div className="flex justify-between gap-3">
-                <span>Video</span>
-                <span className="font-mono text-slate-800 truncate">{VIDEO_MODEL}</span>
+                <span />
+                <span className="font-mono text-[10px] text-slate-400 truncate">{animateModel}</span>
               </div>
               <div className="flex items-center justify-between gap-3">
                 <span>Aspect ratio</span>
@@ -429,20 +456,24 @@ export const VideoGenPage = () => {
                   disabled={busy}
                   className="text-xs border rounded-md px-2 py-1 bg-white disabled:opacity-50"
                 >
-                  {ANIMATE_RESOLUTIONS.map((r) => (
+                  {animateSpec.resolutions.map((r) => (
                     <option key={r} value={r}>{r}</option>
                   ))}
                 </select>
               </div>
               {/* Duration is not shown: it is always 8s and there is nothing to
                   decide. It still goes to the API as VIDEO_DURATION_SEC. */}
-              {/* Not a rate-card number: an 8s 1080p clip has billed ~$0.94 in
-                  practice, roughly 3x the 480p floor. Worth seeing before the click. */}
               <p className="text-[11px] text-slate-500 pt-1">
-                {animateResolution === '1080p'
-                  ? 'Ready to ship — keeps the banner text sharp. ~$0.94 per clip.'
-                  : `${animateResolution} is cheaper but softens small text — use it for tests.`}
+                {animateResolution === bestResolutionFor(animateSpec)
+                  ? `The highest ${animateSpec.label} offers — best for keeping banner text sharp.`
+                  : 'Cheaper, but softens small text — use it for test runs.'}
               </p>
+              {!animateSpec.supportsLastFrame && (
+                <p className="text-[11px] text-amber-700">
+                  {animateSpec.label} accepts a first frame only, so the loop is asked for in the
+                  prompt instead of being pinned by a matching last frame — expect a softer loop.
+                </p>
+              )}
             </div>
 
             <div>
