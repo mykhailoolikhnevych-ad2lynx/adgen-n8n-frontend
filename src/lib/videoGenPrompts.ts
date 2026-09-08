@@ -57,16 +57,81 @@ export const MAX_LINE_WORDS = 24;
 // its webhook URL), only the frame comes from an upload instead of a generation.
 export type VideoGenMode = 'scene' | 'animate';
 
-// Whatever the banner is, one of these is what it actually is. Auto-detected
-// from the uploaded file's own pixels, then overridable.
-export const ANIMATE_ASPECT_RATIOS = ['9:16', '4:5', '1:1', '16:9'] as const;
+// The models Animate mode can run, with the capability differences that
+// actually change the request. Values verified against OpenRouter's video
+// catalog (GET /api/v1/videos/models) — note the slug punctuation is NOT
+// consistent across Seedance generations: dots in 2.0, hyphens in 1-5.
+//
+// Scene mode deliberately stays on 1.5-pro whatever is picked here: 2.0's
+// input-image moderation rejects its generated stills as "may contain real
+// person". That filter reads the uploaded image here too, so a banner built
+// around a large, frontal, unobstructed face may come back as
+// InputImageSensitiveContentDetected — switching to 1.5 Pro is the way out.
+export interface AnimateModel {
+  label: string;
+  value: string;
+  /** Every tier the model accepts, cheapest first. Highest is the default,
+   *  since a banner is mostly typography and low tiers smear the text. */
+  resolutions: string[];
+  /** wan-3.0 takes a first frame only. Without a last frame the loop stops
+   *  being structural, so the prompt has to carry it instead. */
+  supportsLastFrame: boolean;
+}
 
-// A banner is mostly typography, and 480p turns a headline into mush — the whole
-// point of this mode is that the text survives. 1080p is the only tier that
-// actually ships, so it is the default despite costing roughly $0.94 for an 8s
-// clip against ~$0.32 at 480p.
-export const ANIMATE_RESOLUTIONS = ['480p', '720p', '1080p'] as const;
-export const ANIMATE_RESOLUTION_DEFAULT = '1080p';
+export const ANIMATE_VIDEO_MODELS: AnimateModel[] = [
+  {
+    label: 'Seedance 2.0 Fast',
+    value: 'bytedance/seedance-2.0-fast',
+    resolutions: ['480p', '720p'],
+    supportsLastFrame: true,
+  },
+  {
+    label: 'Seedance 1.5 Pro',
+    value: 'bytedance/seedance-1-5-pro',
+    resolutions: ['480p', '720p', '1080p'],
+    supportsLastFrame: true,
+  },
+  {
+    label: 'Wan 3.0',
+    value: 'alibaba/wan-3.0',
+    resolutions: ['480p', '720p', '1080p'],
+    supportsLastFrame: false,
+  },
+  // 2.7 has no 480p tier at all — the cheap test run is not available here.
+  {
+    label: 'Wan 2.7',
+    value: 'alibaba/wan-2.7',
+    resolutions: ['720p', '1080p'],
+    supportsLastFrame: true,
+  },
+];
+
+export const ANIMATE_MODEL_DEFAULT = 'bytedance/seedance-2.0-fast';
+
+export const animateModelFor = (value: string): AnimateModel =>
+  ANIMATE_VIDEO_MODELS.find((m) => m.value === value) ?? ANIMATE_VIDEO_MODELS[0];
+
+/** Best tier the model offers — what a banner always wants. */
+export const bestResolutionFor = (model: AnimateModel): string =>
+  model.resolutions[model.resolutions.length - 1];
+
+const TIER_ORDER = ['480p', '720p', '1080p'];
+
+/** Move a picked resolution onto one the model actually accepts, staying as
+ *  close to the operator's choice as possible. Switching to a model without the
+ *  current tier (Wan 2.7 has no 480p) lands on the next one up, not on the most
+ *  expensive one available. */
+export const clampResolution = (current: string, model: AnimateModel): string => {
+  if (model.resolutions.includes(current)) return current;
+  const want = TIER_ORDER.indexOf(current);
+  return model.resolutions.find((r) => TIER_ORDER.indexOf(r) >= want) ?? bestResolutionFor(model);
+};
+
+// Whatever the banner is, one of these is what it actually is. Auto-detected
+// from the uploaded file's own pixels, then overridable. These five are the
+// intersection of all three models' aspect_ratio enums — Seedance also takes
+// 21:9 and 9:21, which no banner needs. NOT 4:5: no model here accepts it.
+export const ANIMATE_ASPECT_RATIOS = ['9:16', '3:4', '1:1', '4:3', '16:9'] as const;
 
 /** Snap real pixel dimensions to the closest ratio the video API accepts. */
 export const nearestAspectRatio = (width: number, height: number): string => {
@@ -116,6 +181,12 @@ CAMERA: locked-off and static, at most a barely perceptible handheld breath. No 
 AUDIO: quiet instrumental background music matching the mood of the image — soft piano, warm ambient pads, gentle and unobtrusive, mixed low. No vocals, no lyrics, no voiceover, no speech, no sound effects.
 
 AVOID: new or distorted letters, subtitles, watermarks, extra objects, things appearing or disappearing, morphing or melting shapes, flicker, colour shift, scene change, camera movement.`;
+
+// Appended only for models that cannot take a last frame. Everywhere else the
+// loop is structural — the same still is pinned at both ends — and repeating it
+// in prose would just be a rule the model can contradict.
+export const ANIMATE_LOOP_RULE =
+  '\n\nLOOP: the last frame matches the first in composition, lighting and animation phase, so it repeats with no visible jump.';
 
 // Distilled from the creative team's PHOTO and VIDEO templates plus their system
 // prompt doc, with the gaps those docs had filled in: an explicit 9:16 rule, a

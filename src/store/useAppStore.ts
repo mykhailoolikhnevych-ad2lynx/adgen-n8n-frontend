@@ -8,7 +8,8 @@ import { adLanguagesForGeo } from '@/lib/geos';
 import {
   SCENE_SYSTEM_PROMPT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL, FRAME_COUNT,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
-  LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT, type VideoProvider,
+  LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT,
+  animateModelFor, ANIMATE_LOOP_RULE, type VideoProvider,
 } from '@/lib/videoGenPrompts';
 import { normalizeWords, groupWordsIntoCues, type CaptionCue } from '@/lib/captions';
 
@@ -772,6 +773,7 @@ interface AppState {
   animateUploadedImage: (args: {
     imageDataUrl: string;
     prompt: string;
+    videoModel: string;
     aspectRatio: string;
     resolution: string;
     fileName: string;
@@ -2984,8 +2986,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  animateUploadedImage: async ({ imageDataUrl, prompt, aspectRatio, resolution, fileName }) => {
-    const logMeta = { fileName, aspectRatio, resolution, videoModel: VIDEO_MODEL };
+  animateUploadedImage: async ({ imageDataUrl, prompt, videoModel, aspectRatio, resolution, fileName }) => {
+    const spec = animateModelFor(videoModel);
+    // With a last frame the loop is structural; without one the prompt has to
+    // ask for it. `sentPrompt` is what gets stored on the clip, so "Show prompt"
+    // always reflects what actually went out.
+    const sentPrompt = spec.supportsLastFrame ? prompt : prompt + ANIMATE_LOOP_RULE;
+    const logMeta = { fileName, aspectRatio, resolution, videoModel: spec.value };
 
     // Only the status is reset — already-finished clips stay in the list.
     set({ videoGenAnimateStatus: 'loading', videoGenAnimateError: null });
@@ -3027,17 +3034,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const { data } = await axios.post(WEBHOOKS.videoGen, {
         frame_id: frameId,
-        video_prompt: prompt,
-        video_model: VIDEO_MODEL,
+        video_prompt: sentPrompt,
+        video_model: spec.value,
         duration: VIDEO_DURATION_SEC,
         aspect_ratio: aspectRatio,
         resolution,
         // Send the same still as `last_frame` too, so the clip is forced to end
-        // exactly where it started. A structural loop the model cannot drift out
-        // of, which is why the prompt no longer asks for one. Scene runs omit
-        // this — pinning the last frame of a talking head would fight the
-        // lip-sync.
-        loop_frame: true,
+        // exactly where it started — a loop the model cannot drift out of.
+        // Off for models that only accept a first frame, and off for scene runs,
+        // where pinning the last frame would fight the lip-sync.
+        loop_frame: spec.supportsLastFrame,
       });
       const startPayload = Array.isArray(data) ? data[0] : data;
       jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
@@ -3069,9 +3075,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       videoUrl: result.video_url,
       imageCost: 0,
       videoCost: Number(result.video_cost) || 0,
-      model: String(result.video_model || VIDEO_MODEL),
+      model: String(result.video_model || spec.value),
       jobId: String(jobId),
-      prompt,
+      prompt: sentPrompt,
       openrouterId: String(result.openrouter_id || ''),
       provider: 'openrouter',
       credits: 0,
