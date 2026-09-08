@@ -8,7 +8,8 @@ import {
   MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
   ANIMATE_ASPECT_RATIOS, ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
-  ANIMATE_PROMPT, animateModelFor, bestResolutionFor, clampResolution,
+  ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, animatePresetFor,
+  animateModelFor, bestResolutionFor, clampResolution,
   nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
 import { cueAt, toSrt } from '@/lib/captions';
@@ -154,7 +155,17 @@ export const VideoGenPage = () => {
     setAnimateModel(value);
     setAnimateResolution((r) => clampResolution(r, animateModelFor(value)));
   };
-  const [animatePrompt, setAnimatePrompt] = useState(ANIMATE_PROMPT);
+  const [animatePresetId, setAnimatePresetId] = useState(ANIMATE_PRESET_DEFAULT);
+  const [animatePrompt, setAnimatePrompt] = useState(
+    animatePresetFor(ANIMATE_PRESET_DEFAULT).prompt,
+  );
+
+  // Picking a preset replaces the prompt outright — it is a starting point, and
+  // keeping half of a previous one would produce contradictory instructions.
+  const pickPreset = (id: string) => {
+    setAnimatePresetId(id);
+    setAnimatePrompt(animatePresetFor(id).prompt);
+  };
   const [animateFileError, setAnimateFileError] = useState<string | null>(null);
   // Which clips have their prompt expanded, by execution id — one flag per card
   // rather than one for the whole panel.
@@ -219,6 +230,7 @@ export const VideoGenPage = () => {
         aspectRatio: animateAspect,
         resolution: animateResolution,
         fileName: animateFile.name,
+        loop: animatePreset.loop,
       });
     } catch (e) {
       setAnimateFileError(e instanceof Error ? e.message : String(e));
@@ -323,6 +335,7 @@ export const VideoGenPage = () => {
   const animateLoading = videoGenAnimateStatus === 'loading';
   const busy = framesLoading || videoLoading || animateLoading;
   const animateSpec = animateModelFor(animateModel);
+  const animatePreset = animatePresetFor(animatePresetId);
 
   const words = countWords(videoGenLine);
   const tooLong = words > MAX_LINE_WORDS;
@@ -510,17 +523,48 @@ export const VideoGenPage = () => {
             </div>
 
             <div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Motion preset
+              </label>
+              <div className="grid grid-cols-2 gap-1.5">
+                {ANIMATE_PRESETS.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => pickPreset(p.id)}
+                    disabled={busy}
+                    title={p.hint}
+                    className={`rounded-md border px-2 py-2 text-xs leading-tight transition disabled:opacity-50 ${
+                      animatePresetId === p.id
+                        ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
+                        : 'border-input bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-500 mt-1">{animatePreset.hint}</p>
+              {!animatePreset.loop && (
+                <p className="text-[11px] text-amber-700 mt-1">
+                  The camera travels, so the clip cannot end where it began — no seamless loop
+                  on this preset.
+                </p>
+              )}
+            </div>
+
+            <div>
               <div className="flex items-center justify-between gap-2 mb-1">
                 <label className="text-[10px] font-bold uppercase text-gray-400">
                   Animation prompt
                 </label>
-                {animatePrompt !== ANIMATE_PROMPT && (
+                {animatePrompt !== animatePreset.prompt && (
                   <button
                     type="button"
-                    onClick={() => setAnimatePrompt(ANIMATE_PROMPT)}
+                    onClick={() => setAnimatePrompt(animatePreset.prompt)}
                     className="text-[11px] text-blue-600 hover:underline"
                   >
-                    Reset to default
+                    Reset to preset
                   </button>
                 )}
               </div>
@@ -532,7 +576,8 @@ export const VideoGenPage = () => {
                 disabled={busy}
               />
               <p className="text-[11px] text-slate-500 mt-1">
-                Universal — it never names what is in the banner, so the same prompt fits any creative.
+                Rules are by category, never by name, so a preset fits any creative — anything the
+                banner does not contain is simply skipped. Edit freely; the run sends what is here.
               </p>
             </div>
 

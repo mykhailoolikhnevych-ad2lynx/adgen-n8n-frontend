@@ -162,28 +162,145 @@ export const nearestAspectRatio = (width: number, height: number): string => {
 // — the same still is sent as both `first_frame` and `last_frame`, so the clip
 // has to end where it started. Asking for it in prose as well only adds tokens
 // the model can contradict.
-export const ANIMATE_PROMPT = `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
 
-TEXT NEVER CHANGES: every word, letter and number keeps its exact spelling, font, size, color and position. No new text, no translation, no subtitles. Letters never warp, slide, bounce or fade, and stay sharp and readable in every frame.
+// The blocks every preset shares. Preserving the artwork and preserving the text
+// are non-negotiable whatever the motion is, so they are written once.
+const TEXT_RULE =
+  'TEXT NEVER CHANGES: every word, letter and number keeps its exact spelling, font, size, color and position. No new text, no translation, no subtitles. Letters never warp, slide, bounce or fade, and stay sharp and readable in every frame.';
 
-MOTION — subtle, and only where it is physically natural. Apply only what matches the image:
-- text and CTA buttons: a soft light shimmer sweeps across them every 2-3 seconds with a faint brightness pulse; the letters and shapes themselves stay still
+const AUDIO_RULE =
+  'AUDIO: quiet instrumental background music matching the mood of the image — soft piano, warm ambient pads, gentle and unobtrusive, mixed low. No vocals, no lyrics, no voiceover, no speech, no sound effects.';
+
+const AVOID_BASE =
+  'new or distorted letters, subtitles, watermarks, extra objects, things appearing or disappearing, morphing or melting shapes, flicker, colour shift, scene change';
+
+// Motion rules by category rather than by name — the operator describes nothing,
+// so a rule only fires if the image happens to contain that kind of thing.
+const SUBTLE_MOTION = `- text and CTA buttons: a soft light shimmer sweeps across them every 2-3 seconds with a faint brightness pulse; the letters and shapes themselves stay still
 - fabric, banners, flags, clothing: gentle realistic wind, shallow folds travelling across the surface, corners fluttering; printed text stays readable
 - plants, flowers, leaves, hair: sway in a light breeze
 - water, smoke, steam, fire: slow natural flow
 - sky and clouds: drift very slowly; light and shadows shift subtly
 - vehicles, buildings, furniture, products: completely still, at most a soft highlight passing along an edge
 - icons, hearts, keys, arrows, sparkles: slight floating drift and a soft glow pulse, never covering text
-- people and animals: micro-motion only — slow blinking, quiet breathing, a tiny shift of head or hand. Face, clothing and pose unchanged, mouth closed, nobody speaks or walks
+- people and animals: micro-motion only — slow blinking, quiet breathing, a tiny shift of head or hand. Face, clothing and pose unchanged, mouth closed, nobody speaks or walks`;
+
+export interface AnimatePreset {
+  id: string;
+  label: string;
+  hint: string;
+  /**
+   * Whether the same still can be pinned as both first and last frame.
+   *
+   * False for anything with a travelling camera — a clip that ends where it
+   * started cannot also have moved somewhere, so pinning both ends would fight
+   * the motion the preset exists to produce.
+   */
+  loop: boolean;
+  prompt: string;
+}
+
+export const ANIMATE_PRESETS: AnimatePreset[] = [
+  {
+    id: 'subtle',
+    label: 'Subtle',
+    hint: 'Locked camera, shimmer and micro-motion. Safest for text — start here.',
+    loop: true,
+    prompt: `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
+
+${TEXT_RULE}
+
+MOTION — subtle, and only where it is physically natural. Apply only what matches the image:
+${SUBTLE_MOTION}
 
 CAMERA: locked-off and static, at most a barely perceptible handheld breath. No zoom, pan, tilt, orbit, cut or reframing.
 
-AUDIO: quiet instrumental background music matching the mood of the image — soft piano, warm ambient pads, gentle and unobtrusive, mixed low. No vocals, no lyrics, no voiceover, no speech, no sound effects.
+${AUDIO_RULE}
 
-AVOID: new or distorted letters, subtitles, watermarks, extra objects, things appearing or disappearing, morphing or melting shapes, flicker, colour shift, scene change, camera movement.`;
+AVOID: ${AVOID_BASE}, camera movement.`,
+  },
+  {
+    id: 'wind',
+    label: 'Wind & fabric',
+    hint: 'Camera still, but cloth, flags, foliage and sky move for real. For outdoor photo banners.',
+    loop: true,
+    prompt: `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
 
-// Appended only for models that cannot take a last frame. Everywhere else the
-// loop is structural — the same still is pinned at both ends — and repeating it
+${TEXT_RULE}
+
+MOTION — the scene is outdoors in a light, steady wind. Apply only what matches the image:
+- fabric banners, flags, awnings, curtains and clothing behave as real flexible cloth: the wind moves them from one side to the other, natural folds and shallow ripples travel across the surface, edges and corners flutter. They stay attached to their supports, never tear, stretch excessively or fold over
+- text printed on moving fabric follows the surface with slight natural perspective deformation, but stays sharp, complete and readable — no letter is ever lost
+- trees, plants, flowers, grass and hair sway in the same wind, in the same direction
+- water ripples, smoke and steam drift with the wind
+- sky and clouds move slowly across the frame; light and shadows shift subtly as they pass
+- rigid objects — vehicles, buildings, poles, signage, products — do not move at all
+- overlaid graphics, CTA buttons and captions are NOT part of the scene: they stay perfectly fixed, with only a soft light shimmer passing across them every 2-3 seconds
+- people and animals: micro-motion only — blinking, quiet breathing, clothing and hair moving in the wind. Mouths stay closed, nobody speaks or walks
+
+The wind is moderate and natural, never violent.
+
+CAMERA: locked-off and static, at most a barely perceptible handheld breath. No zoom, pan, tilt, orbit, cut or reframing.
+
+${AUDIO_RULE}
+
+AVOID: ${AVOID_BASE}, camera movement.`,
+  },
+  {
+    id: 'orbit',
+    label: 'Cinematic orbit',
+    hint: 'Slow arc around the scene for real parallax. Overlaid text stays pinned. Cannot loop.',
+    loop: false,
+    prompt: `PRESERVE THE ARTWORK: keep every element, its design, colours, lighting, style and text exactly as in the source image. Nothing is redrawn, restyled, added, removed or replaced. The viewpoint changes only because the camera moves — the artwork itself never changes.
+
+${TEXT_RULE} All headline, CTA and overlaid graphic elements are pinned flat to the frame: they stay in exactly the same screen position at the same size for the whole clip, and the camera move does NOT drag, tilt, skew or parallax them.
+
+MOTION:
+- the camera arcs slowly and smoothly around the scene, revealing real parallax between foreground, subject and background
+- everything in the photographed scene holds its own position; only the viewpoint changes
+- plants, fabric, water, smoke and clouds add their own gentle natural movement on top
+- people and animals: micro-motion only — blinking, quiet breathing, a small shift of head or hand. Mouths stay closed, nobody speaks
+- headline text, CTA buttons and decorative overlays get only a soft glow shimmer and a faint brightness pulse, always in their fixed screen positions
+
+CAMERA: one continuous, slow, smooth arc in a single direction. Gentle and cinematic, no acceleration, no sudden moves, no rotation of the horizon, no zoom, no cuts. The move is small — this is a subtle reveal, not a fly-around.
+
+${AUDIO_RULE}
+
+AVOID: ${AVOID_BASE}, fast or jerky camera motion, the camera passing through objects, overlaid text drifting or skewing with the camera.`,
+  },
+  {
+    id: 'walkin',
+    label: 'Walk-in (UGC)',
+    hint: 'Handheld push forward, phone-footage feel. Overlaid text stays pinned. Cannot loop.',
+    loop: false,
+    prompt: `PRESERVE THE ARTWORK: keep every element, its design, colours, lighting, style and text exactly as in the source image. Nothing is redrawn, restyled, added, removed or replaced. The viewpoint changes only because the camera moves — the artwork itself never changes.
+
+${TEXT_RULE} All headline, CTA and overlaid graphic elements are pinned flat to the frame: they stay in exactly the same screen position at the same size for the whole clip, and the camera move does NOT drag, tilt, skew or parallax them.
+
+MOTION:
+- the camera moves forward at a natural, moderately brisk walking pace, as if someone is walking into the scene filming on a phone
+- make clear forward progress: by the end the subject is noticeably closer and larger than at the start
+- mild, realistic handheld motion — small natural bounce and sway, never shaky or nauseating
+- real parallax between the ground, the subject and the background as the camera advances
+- plants, fabric, water, smoke and clouds add their own gentle natural movement
+- people and animals: micro-motion only — blinking, quiet breathing, a small shift of head or hand. Mouths stay closed, nobody speaks
+- headline text, CTA buttons and decorative overlays get only a soft glow shimmer and a faint brightness pulse, always in their fixed screen positions
+
+CAMERA: continuous forward travel with a natural handheld feel. No digital zoom, no rotation, no cuts, no sudden reframing, no reversing.
+
+${AUDIO_RULE}
+
+AVOID: ${AVOID_BASE}, shaky or nauseating camera motion, digital zoom, the camera passing through objects, overlaid text drifting or skewing with the camera.`,
+  },
+];
+
+export const ANIMATE_PRESET_DEFAULT = 'subtle';
+
+export const animatePresetFor = (id: string): AnimatePreset =>
+  ANIMATE_PRESETS.find((p) => p.id === id) ?? ANIMATE_PRESETS[0];
+
+// Appended only when a preset wants a loop and the model cannot pin a last
+// frame. Where the last frame IS pinned the loop is structural, and repeating it
 // in prose would just be a rule the model can contradict.
 export const ANIMATE_LOOP_RULE =
   '\n\nLOOP: the last frame matches the first in composition, lighting and animation phase, so it repeats with no visible jump.';
