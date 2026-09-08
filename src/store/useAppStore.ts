@@ -951,6 +951,38 @@ const isExecutionDone = (meta: any): boolean => {
   return false;
 };
 
+// Wait for a run to finish WITHOUT pulling its data back. Every node on the
+// frame-upload leg carries the banner's base64, so `?includeData=true` there
+// would drag megabytes into the browser for a result we can derive from the
+// execution id alone. Throws on failure or timeout.
+const waitForExecution = async (
+  jobId: string,
+  intervalMs: number,
+  maxAttempts: number,
+): Promise<void> => {
+  const url = `${N8N_EXECUTIONS_URL}/${jobId}`;
+  const headers = { 'X-N8N-API-KEY': N8N_EXECUTIONS_API_KEY };
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    let meta: any;
+    try {
+      meta = (await axios.get(url, { headers })).data;
+    } catch (e) {
+      console.warn('[waitForExecution] poll error (will keep polling):', e);
+      continue;
+    }
+    if (!isExecutionDone(meta)) continue;
+
+    const status = String(meta?.status ?? '').toLowerCase();
+    if (status === 'error' || status === 'failed' || status === 'crashed') {
+      throw new Error(`run ended with status "${meta?.status}"`);
+    }
+    return;
+  }
+  throw new Error(`run did not finish within ${Math.round((intervalMs * maxAttempts) / 1000)}s`);
+};
+
 // Pull a human-readable error out of an n8n execution payload. Returns null when
 // the execution actually succeeded.
 const extractExecutionError = (full: any): string | null => {
@@ -3014,14 +3046,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Step 1 — park the upload in the video_frames datatable. OpenRouter fetches
     // the first frame server-side over https and will not take a data URI, and
     // the project has no image hosting, so n8n serves it from the datatable.
+    //
+    // The leg answers the moment it starts, with only { job_id }, so the row is
+    // NOT written yet when this resolves — a proxy would otherwise kill the
+    // connection at 100s on a large upload. Two consequences: the frame id has
+    // to be derived rather than read (`Prep Uploaded Frame` builds it from the
+    // same $execution.id the responder returns), and the run has to be waited
+    // out before the id is handed on. Calling generate_video early would have
+    // OpenRouter fetch the frame URL before the row exists.
     let frameId = '';
-    let frameUrl = '';
     try {
       const { data } = await axios.post(WEBHOOKS.videoUploadFrame, { image: imageDataUrl });
       const payload = Array.isArray(data) ? data[0] : data;
-      frameId = String(payload?.frame_id ?? '');
-      frameUrl = String(payload?.url ?? '');
-      if (!frameId) throw new Error('Upload webhook did not return a frame_id');
+      const uploadJobId = String(payload?.job_id ?? payload?.execution_id ?? payload?.id ?? '');
+      if (!uploadJobId) throw new Error('Upload webhook did not return a job_id');
+      frameId = `up-${uploadJobId}`;
+      // Short leg — a datatable insert, not a model call. Poll it tightly so the
+      // wait costs a beat rather than a full 5s tick.
+      await waitForExecution(uploadJobId, 1000, 120);
     } catch (e) {
       console.error(e);
       fail(`Image upload failed: ${humanizeError(e)}`, (e as any)?.response?.data);
@@ -3071,7 +3113,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const clip: VideoGenResult = {
-      imageUrl: String(result.image_url || frameUrl),
+      imageUrl: String(result.image_url || ''),
       videoUrl: result.video_url,
       imageCost: 0,
       videoCost: Number(result.video_cost) || 0,
