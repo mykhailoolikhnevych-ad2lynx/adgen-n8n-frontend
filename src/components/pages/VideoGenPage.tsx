@@ -12,7 +12,7 @@ import {
   nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
 import { cueAt, toSrt } from '@/lib/captions';
-import { burnCaptions, downloadAs, saveBlob } from '@/lib/videoExport';
+import { burnCaptions, upscaleVideo, downloadAs, saveBlob } from '@/lib/videoExport';
 import { videoGenFileName } from '@/lib/creativeFilename';
 
 type Status = 'idle' | 'loading' | 'success' | 'error';
@@ -53,6 +53,10 @@ const ANIMATE_RESULT_HELP =
   'Нові відео додаються знизу й не стирають попередні — прибрати їх можна лише кнопкою Clear results.';
 
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+
+// Short side, so a 9:16 clip lands on 1080x1920 and a 16:9 one on 1920x1080 —
+// what Meta and TikTok ask for.
+const UPSCALE_SHORT_SIDE = 1080;
 
 // Seedance is picky about the start frame — it wants a direct, non-redirecting
 // JPEG or PNG and has rejected WebP outright. Re-encode anything else to PNG
@@ -256,6 +260,35 @@ export const VideoGenPage = () => {
       await downloadAs(clip.videoUrl, `${videoGenFileName('video', clip.jobId)}.mp4`);
     } catch (e) {
       setExportError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // Real-time, like the caption burn — an 8s clip takes 8s and the tab must stay
+  // open. Only one export runs at a time, so a single slot tracks which clip.
+  const [upscaleJob, setUpscaleJob] = useState<{ jobId: string; pct: number } | null>(null);
+  // 0 means "use the scale-aware default". Anything else overrides it, including
+  // values well past what anyone would ship — the high end exists so the effect
+  // can be made obvious enough to confirm it is being applied at all.
+  const [sharpen, setSharpen] = useState(0);
+
+  const downloadUpscaled = async (clip: { videoUrl: string; jobId: string }) => {
+    setExportError(null);
+    setUpscaleJob({ jobId: clip.jobId, pct: 0 });
+    try {
+      const { blob, extension } = await upscaleVideo(
+        clip.videoUrl,
+        UPSCALE_SHORT_SIDE,
+        (pct) => setUpscaleJob({ jobId: clip.jobId, pct }),
+        sharpen || undefined,
+      );
+      // The setting goes in the name, so a batch downloaded at different
+      // strengths can actually be told apart afterwards.
+      const tag = sharpen ? `_s${sharpen.toFixed(1)}` : '';
+      saveBlob(blob, `${videoGenFileName('video', clip.jobId)}_1080${tag}.${extension}`);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUpscaleJob(null);
     }
   };
 
@@ -538,6 +571,36 @@ export const VideoGenPage = () => {
 
             <StatusBar status={videoGenAnimateStatus} />
 
+            {videoGenAnimateResults.length > 0 && (
+              <div className="shrink-0 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
+                <div className="flex items-center gap-3">
+                  <label className="text-[10px] font-bold uppercase text-gray-500 shrink-0">
+                    Upscale sharpness
+                  </label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={4}
+                    step={0.1}
+                    value={sharpen}
+                    disabled={upscaleJob !== null}
+                    onChange={(e) => setSharpen(Number(e.target.value))}
+                    className="flex-1 accent-blue-600 disabled:opacity-50"
+                  />
+                  <span className="font-mono text-xs text-slate-800 w-14 text-right shrink-0">
+                    {sharpen ? sharpen.toFixed(1) : 'auto'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  {sharpen === 0 && 'Scale-aware default — ~1.35 at 1.5×, ~1.55 at 2.25×.'}
+                  {sharpen > 0 && sharpen < 1 && 'Below 1 softens the image. Not useful — drag right.'}
+                  {sharpen >= 1 && sharpen <= 1.8 && 'Shipping range. Sharpens edges without visible halos.'}
+                  {sharpen > 1.8 && sharpen <= 2.6 && 'Strong. Halos start to show on hard edges.'}
+                  {sharpen > 2.6 && 'Deliberately over-sharpened — for confirming the pass is applied, not for shipping.'}
+                </p>
+              </div>
+            )}
+
             <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
               {videoGenAnimateStatus === 'error' && videoGenAnimateError && (
                 <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 whitespace-pre-wrap">
@@ -578,9 +641,24 @@ export const VideoGenPage = () => {
                     <button
                       type="button"
                       onClick={() => void downloadVideo(clip)}
-                      className="font-medium text-blue-600 hover:underline"
+                      disabled={upscaleJob !== null}
+                      className="font-medium text-blue-600 hover:underline disabled:text-slate-400"
                     >
                       Download video
+                    </button>
+                    {/* Resample, not restoration — see upscaleVideo. Offered
+                        because the platforms want a 1080-short-side file even
+                        when the render was cheap. */}
+                    <button
+                      type="button"
+                      onClick={() => void downloadUpscaled(clip)}
+                      disabled={upscaleJob !== null}
+                      title="Re-encodes the clip at 1080 on the short side. Adds pixels, not detail — generate at 1080p for genuinely sharp text."
+                      className="text-blue-600 hover:underline disabled:text-slate-400"
+                    >
+                      {upscaleJob?.jobId === clip.jobId
+                        ? `Upscaling ${Math.round(upscaleJob.pct * 100)}%…`
+                        : 'Download upscaled 1080'}
                     </button>
                     <button
                       type="button"
