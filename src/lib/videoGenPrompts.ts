@@ -220,6 +220,45 @@ ${AUDIO_RULE}
 AVOID: ${AVOID_BASE}, camera movement.`,
   },
   {
+    id: 'kinetic',
+    label: 'Animated text',
+    hint: 'The headline itself moves — glow sweep, brightness pulse, a small springy settle. Loops.',
+    loop: true,
+    // The one preset where the text is allowed to move, which makes it the one
+    // most likely to come back misspelled: a model that is redrawing letters
+    // frame to frame will eventually redraw them wrong. Hence the split below —
+    // a text block may move as a rigid piece, but the letterforms inside it are
+    // as fixed as in every other preset.
+    //
+    // Pinning first == last frame forces the cycle to close, but it also tempts
+    // a model to satisfy both endpoints by doing nothing at all, so the prompt
+    // has to demand that the middle of the clip visibly differs.
+    prompt: `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed or replaced.
+
+TEXT — IT MOVES, BUT IT IS NEVER REWRITTEN: every word, letter, number and punctuation mark keeps its exact spelling, font, weight, colour and proportions for the whole clip. A block of text may move as one rigid piece, but the letterforms inside it never warp, stretch, melt, wobble individually, swap, duplicate or disappear. No new text, no translation, no subtitles. The text stays sharp and fully readable in every single frame.
+
+TEXT MOTION — this is the point of the shot. Animate each text block as one solid unit:
+- a soft bright glow sweeps slowly across the lettering, edge to edge, about once every 2-3 seconds
+- a gentle pulse of brightness follows the glow through
+- the block rises and settles by a very small amount, or breathes in scale by a few percent — smooth and springy, never a hard or fast bounce
+- separate lines may settle in sequence, the headline leading and the CTA following
+- the CTA button gets a glossy highlight sweep and a soft brightness pulse; its shape and size do not change
+- keep every movement small: no text travels more than a few percent of the frame, nothing leaves its own area, overlaps another element or touches the frame edge
+- the motion is clearly visible — the middle of the clip must look different from the start, not almost identical
+- the glow sweep and the settle each complete a whole number of cycles, ending exactly where they began
+
+SCENE MOTION — kept minimal so the text stays the focus:
+- background, photography and objects stay essentially still, with only a very subtle drift of light
+- plants, fabric, water, smoke and clouds may move gently if the image contains them
+- people and animals: micro-motion only — blinking, quiet breathing. Mouths stay closed, nobody speaks
+
+CAMERA: locked-off and static. No zoom, pan, tilt, orbit, cut or reframing.
+
+${AUDIO_RULE}
+
+AVOID: ${AVOID_BASE}, letters changing shape or spelling, letters animating one by one, text flickering or vanishing, harsh or fast bouncing, text sliding off its area, camera movement.`,
+  },
+  {
     id: 'wind',
     label: 'Wind & fabric',
     hint: 'Camera still, but cloth, flags, foliage and sky move for real. For outdoor photo banners.',
