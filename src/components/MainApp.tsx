@@ -47,8 +47,9 @@ const BASE_NAV: { value: Page; label: string }[] = [
   { value: 'creatives', label: 'Creatives' },
 ];
 
+// Video generator is admin-only too, but it sits ahead of Creative Gen rather
+// than in here — it is rendered with the standalone tabs, before the divider.
 const ADMIN_NAV: { value: Page; label: string }[] = [
-  { value: 'video-gen', label: 'Video generator' },
   { value: 'dashboard', label: 'Dashboard' },
 ];
 
@@ -362,6 +363,22 @@ export default function MainApp() {
                 </>
               ) : (
                 <>
+              {/* Video generator leads the standalone group. Admin-only, so it
+                  simply is not rendered for everyone else. */}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setPage('video-gen')}
+                  className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                    page === 'video-gen'
+                      ? 'bg-white text-black'
+                      : 'text-white/80 hover:bg-white/10 hover:text-white'
+                  }`}
+                  aria-current={page === 'video-gen' ? 'page' : undefined}
+                >
+                  Video generator
+                </button>
+              )}
               {/* Creative Gen — standalone creative generation, set slightly apart
                   from the pipeline tabs (Keywords → … → Creatives) by a divider. */}
               <button

@@ -111,22 +111,6 @@ export const ANIMATE_MODEL_DEFAULT = 'bytedance/seedance-2.0-fast';
 export const animateModelFor = (value: string): AnimateModel =>
   ANIMATE_VIDEO_MODELS.find((m) => m.value === value) ?? ANIMATE_VIDEO_MODELS[0];
 
-/** Best tier the model offers — what a banner always wants. */
-export const bestResolutionFor = (model: AnimateModel): string =>
-  model.resolutions[model.resolutions.length - 1];
-
-const TIER_ORDER = ['480p', '720p', '1080p'];
-
-/** Move a picked resolution onto one the model actually accepts, staying as
- *  close to the operator's choice as possible. Switching to a model without the
- *  current tier (Wan 2.7 has no 480p) lands on the next one up, not on the most
- *  expensive one available. */
-export const clampResolution = (current: string, model: AnimateModel): string => {
-  if (model.resolutions.includes(current)) return current;
-  const want = TIER_ORDER.indexOf(current);
-  return model.resolutions.find((r) => TIER_ORDER.indexOf(r) >= want) ?? bestResolutionFor(model);
-};
-
 // Whatever the banner is, one of these is what it actually is. Auto-detected
 // from the uploaded file's own pixels, then overridable. These five are the
 // intersection of all three models' aspect_ratio enums — Seedance also takes
