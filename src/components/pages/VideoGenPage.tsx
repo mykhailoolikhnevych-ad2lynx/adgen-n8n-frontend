@@ -9,8 +9,7 @@ import {
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
   ANIMATE_ASPECT_RATIOS, ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
   ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, animatePresetFor,
-  animateModelFor, bestResolutionFor, clampResolution,
-  nearestAspectRatio, type VideoGenMode,
+  animateModelFor, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
 import { cueAt, toSrt } from '@/lib/captions';
 import { burnCaptions, upscaleVideo, downloadAs, saveBlob } from '@/lib/videoExport';
@@ -58,6 +57,12 @@ const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
 // Short side, so a 9:16 clip lands on 1080x1920 and a 16:9 one on 1920x1080 —
 // what Meta and TikTok ask for.
 const UPSCALE_SHORT_SIDE = 1080;
+
+// Fixed edge emphasis, well past the scale-aware default. Deliberate: every clip
+// is now rendered at the model's cheapest tier, so the upscale is doing more
+// work than it was designed for and is pushed hard to compensate. Expect visible
+// halos on hard edges — that is the trade being made for the cheaper render.
+const UPSCALE_SHARPEN = 4.0;
 
 // Seedance is picky about the start frame — it wants a direct, non-redirecting
 // JPEG or PNG and has rejected WebP outright. Re-encode anything else to PNG
@@ -144,17 +149,7 @@ export const VideoGenPage = () => {
   const [animateDims, setAnimateDims] = useState<{ w: number; h: number } | null>(null);
   const [animateAspect, setAnimateAspect] = useState<string>('9:16');
   const [animateModel, setAnimateModel] = useState<string>(ANIMATE_MODEL_DEFAULT);
-  const [animateResolution, setAnimateResolution] = useState<string>(
-    bestResolutionFor(animateModelFor(ANIMATE_MODEL_DEFAULT)),
-  );
 
-  // The tiers differ per model (2.0-fast has no 1080p, Wan 2.7 has no 480p), so
-  // switching models has to move the picked resolution somewhere the new model
-  // actually accepts.
-  const pickAnimateModel = (value: string) => {
-    setAnimateModel(value);
-    setAnimateResolution((r) => clampResolution(r, animateModelFor(value)));
-  };
   const [animatePresetId, setAnimatePresetId] = useState(ANIMATE_PRESET_DEFAULT);
   const [animatePrompt, setAnimatePrompt] = useState(
     animatePresetFor(ANIMATE_PRESET_DEFAULT).prompt,
@@ -278,10 +273,6 @@ export const VideoGenPage = () => {
   // Real-time, like the caption burn — an 8s clip takes 8s and the tab must stay
   // open. Only one export runs at a time, so a single slot tracks which clip.
   const [upscaleJob, setUpscaleJob] = useState<{ jobId: string; pct: number } | null>(null);
-  // 0 means "use the scale-aware default". Anything else overrides it, including
-  // values well past what anyone would ship — the high end exists so the effect
-  // can be made obvious enough to confirm it is being applied at all.
-  const [sharpen, setSharpen] = useState(0);
 
   const downloadUpscaled = async (clip: { videoUrl: string; jobId: string }) => {
     setExportError(null);
@@ -291,12 +282,9 @@ export const VideoGenPage = () => {
         clip.videoUrl,
         UPSCALE_SHORT_SIDE,
         (pct) => setUpscaleJob({ jobId: clip.jobId, pct }),
-        sharpen || undefined,
+        UPSCALE_SHARPEN,
       );
-      // The setting goes in the name, so a batch downloaded at different
-      // strengths can actually be told apart afterwards.
-      const tag = sharpen ? `_s${sharpen.toFixed(1)}` : '';
-      saveBlob(blob, `${videoGenFileName('video', clip.jobId)}_1080${tag}.${extension}`);
+      saveBlob(blob, `${videoGenFileName('video', clip.jobId)}_1080.${extension}`);
     } catch (e) {
       setExportError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -336,6 +324,9 @@ export const VideoGenPage = () => {
   const busy = framesLoading || videoLoading || animateLoading;
   const animateSpec = animateModelFor(animateModel);
   const animatePreset = animatePresetFor(animatePresetId);
+  // Always render at the model's cheapest tier and recover the resolution in the
+  // upscale on download. `resolutions` is ordered cheapest first.
+  const animateResolution = animateSpec.resolutions[0];
 
   const words = countWords(videoGenLine);
   const tooLong = words > MAX_LINE_WORDS;
@@ -468,7 +459,7 @@ export const VideoGenPage = () => {
                 <span>Model</span>
                 <select
                   value={animateModel}
-                  onChange={(e) => pickAnimateModel(e.target.value)}
+                  onChange={(e) => setAnimateModel(e.target.value)}
                   disabled={busy}
                   className="text-xs border rounded-md px-2 py-1 bg-white disabled:opacity-50"
                 >
@@ -494,25 +485,16 @@ export const VideoGenPage = () => {
                   ))}
                 </select>
               </div>
-              <div className="flex items-center justify-between gap-3">
+              {/* Not a choice any more: always the model's cheapest tier, with
+                  the resolution recovered by the upscale on download. Duration
+                  is hidden for the same reason — always 8s, nothing to decide. */}
+              <div className="flex justify-between gap-3">
                 <span>Resolution</span>
-                <select
-                  value={animateResolution}
-                  onChange={(e) => setAnimateResolution(e.target.value)}
-                  disabled={busy}
-                  className="text-xs border rounded-md px-2 py-1 bg-white disabled:opacity-50"
-                >
-                  {animateSpec.resolutions.map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
+                <span className="font-mono text-slate-800">{animateResolution}</span>
               </div>
-              {/* Duration is not shown: it is always 8s and there is nothing to
-                  decide. It still goes to the API as VIDEO_DURATION_SEC. */}
               <p className="text-[11px] text-slate-500 pt-1">
-                {animateResolution === bestResolutionFor(animateSpec)
-                  ? `The highest ${animateSpec.label} offers — best for keeping banner text sharp.`
-                  : 'Cheaper, but softens small text — use it for test runs.'}
+                Rendered at the cheapest tier {animateSpec.label} offers, then upscaled to 1080 on
+                download.
               </p>
               {!animateSpec.supportsLastFrame && (
                 <p className="text-[11px] text-amber-700">
@@ -615,36 +597,6 @@ export const VideoGenPage = () => {
             </div>
 
             <StatusBar status={videoGenAnimateStatus} />
-
-            {videoGenAnimateResults.length > 0 && (
-              <div className="shrink-0 rounded-lg border border-slate-200 bg-slate-50 p-2.5">
-                <div className="flex items-center gap-3">
-                  <label className="text-[10px] font-bold uppercase text-gray-500 shrink-0">
-                    Upscale sharpness
-                  </label>
-                  <input
-                    type="range"
-                    min={0}
-                    max={4}
-                    step={0.1}
-                    value={sharpen}
-                    disabled={upscaleJob !== null}
-                    onChange={(e) => setSharpen(Number(e.target.value))}
-                    className="flex-1 accent-blue-600 disabled:opacity-50"
-                  />
-                  <span className="font-mono text-xs text-slate-800 w-14 text-right shrink-0">
-                    {sharpen ? sharpen.toFixed(1) : 'auto'}
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-500 mt-1">
-                  {sharpen === 0 && 'Scale-aware default — ~1.35 at 1.5×, ~1.55 at 2.25×.'}
-                  {sharpen > 0 && sharpen < 1 && 'Below 1 softens the image. Not useful — drag right.'}
-                  {sharpen >= 1 && sharpen <= 1.8 && 'Shipping range. Sharpens edges without visible halos.'}
-                  {sharpen > 1.8 && sharpen <= 2.6 && 'Strong. Halos start to show on hard edges.'}
-                  {sharpen > 2.6 && 'Deliberately over-sharpened — for confirming the pass is applied, not for shipping.'}
-                </p>
-              </div>
-            )}
 
             <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
               {videoGenAnimateStatus === 'error' && videoGenAnimateError && (
