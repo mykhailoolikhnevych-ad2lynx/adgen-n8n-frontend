@@ -165,6 +165,8 @@ const SUBTLE_MOTION = `- text and CTA buttons: a soft light shimmer sweeps acros
 export interface AnimatePreset {
   id: string;
   label: string;
+  /** Shown under the picker. Ukrainian, like the rest of the tab's help text —
+   *  the prompts themselves stay English, which is what the models want. */
   hint: string;
   /**
    * Whether the same still can be pinned as both first and last frame.
@@ -181,7 +183,7 @@ export const ANIMATE_PRESETS: AnimatePreset[] = [
   {
     id: 'subtle',
     label: 'Subtle',
-    hint: 'Locked camera, shimmer and micro-motion. Safest for text — start here.',
+    hint: 'Камера нерухома, легкий блиск і мікрорух. Найбезпечніше для тексту — починай звідси.',
     loop: true,
     prompt: `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
 
@@ -199,7 +201,7 @@ AVOID: ${AVOID_BASE}, camera movement.`,
   {
     id: 'kinetic',
     label: 'Animated text',
-    hint: 'The headline itself moves — glow sweep, brightness pulse, a small springy settle. Loops.',
+    hint: 'Рухається сам заголовок — хвиля світла, пульс яскравості, легке пружне похитування. Зациклено.',
     loop: true,
     // The one preset where the text is allowed to move, which makes it the one
     // most likely to come back misspelled: a model that is redrawing letters
@@ -238,7 +240,7 @@ AVOID: ${AVOID_BASE}, letters changing shape or spelling, letters animating one 
   {
     id: 'wind',
     label: 'Wind & fabric',
-    hint: 'Camera still, but cloth, flags, foliage and sky move for real. For outdoor photo banners.',
+    hint: 'Камера нерухома, але тканина, прапори, листя і небо реально рухаються. Для вуличних фото-банерів.',
     loop: true,
     prompt: `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
 
@@ -265,7 +267,7 @@ AVOID: ${AVOID_BASE}, camera movement.`,
   {
     id: 'orbit',
     label: 'Cinematic orbit',
-    hint: 'Slow arc around the scene for real parallax. Overlaid text stays pinned. Cannot loop.',
+    hint: 'Повільна дуга навколо сцени з реальним паралаксом. Накладений текст лишається на місці. Без зациклення.',
     loop: false,
     prompt: `PRESERVE THE ARTWORK: keep every element, its design, colours, lighting, style and text exactly as in the source image. Nothing is redrawn, restyled, added, removed or replaced. The viewpoint changes only because the camera moves — the artwork itself never changes.
 
@@ -287,7 +289,7 @@ AVOID: ${AVOID_BASE}, fast or jerky camera motion, the camera passing through ob
   {
     id: 'walkin',
     label: 'Walk-in (UGC)',
-    hint: 'Handheld push forward, phone-footage feel. Overlaid text stays pinned. Cannot loop.',
+    hint: 'Рух уперед з рук, ефект зйомки на телефон. Накладений текст лишається на місці. Без зациклення.',
     loop: false,
     prompt: `PRESERVE THE ARTWORK: keep every element, its design, colours, lighting, style and text exactly as in the source image. Nothing is redrawn, restyled, added, removed or replaced. The viewpoint changes only because the camera moves — the artwork itself never changes.
 

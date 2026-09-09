@@ -7,7 +7,7 @@ import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import {
   MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
-  ANIMATE_ASPECT_RATIOS, ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
+  ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
   ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, animatePresetFor,
   animateModelFor, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
@@ -472,29 +472,27 @@ export const VideoGenPage = () => {
                 <span />
                 <span className="font-mono text-[10px] text-slate-400 truncate">{animateModel}</span>
               </div>
-              <div className="flex items-center justify-between gap-3">
+              {/* Read-only, because it is not really ours to choose: the upload
+                  is sent as the video's first frame, so the clip comes out the
+                  shape of the image whatever aspect_ratio asks for. Reporting
+                  the detected value is honest; a picker here would not be. */}
+              <div className="flex justify-between gap-3">
                 <span>Aspect ratio</span>
-                <select
-                  value={animateAspect}
-                  onChange={(e) => setAnimateAspect(e.target.value)}
-                  disabled={busy}
-                  className="text-xs border rounded-md px-2 py-1 bg-white disabled:opacity-50"
-                >
-                  {ANIMATE_ASPECT_RATIOS.map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
+                <span className="font-mono text-slate-800">
+                  {animateDims ? animateAspect : '—'}
+                </span>
               </div>
-              {/* Not a choice any more: always the model's cheapest tier, with
-                  the resolution recovered by the upscale on download. Duration
-                  is hidden for the same reason — always 8s, nothing to decide. */}
+              {/* Not a choice either: always the model's cheapest tier, with the
+                  resolution recovered by the upscale on download. Duration is
+                  hidden for the same reason — always 8s, nothing to decide. */}
               <div className="flex justify-between gap-3">
                 <span>Resolution</span>
                 <span className="font-mono text-slate-800">{animateResolution}</span>
               </div>
               <p className="text-[11px] text-slate-500 pt-1">
-                Rendered at the cheapest tier {animateSpec.label} offers, then upscaled to 1080 on
-                download.
+                Формат береться з завантаженої картинки — відео завжди виходить такої ж форми.
+                Рендер у найдешевшій якості {animateSpec.label}, далі апскейл до 1080 при
+                завантаженні.
               </p>
               {!animateSpec.supportsLastFrame && (
                 <p className="text-[11px] text-amber-700">
@@ -529,8 +527,8 @@ export const VideoGenPage = () => {
               <p className="text-[11px] text-slate-500 mt-1">{animatePreset.hint}</p>
               {!animatePreset.loop && (
                 <p className="text-[11px] text-amber-700 mt-1">
-                  The camera travels, so the clip cannot end where it began — no seamless loop
-                  on this preset.
+                  Камера рухається, тож ролик не може закінчитись там, де почався — на цьому
+                  пресеті безшовного циклу не буде.
                 </p>
               )}
             </div>
