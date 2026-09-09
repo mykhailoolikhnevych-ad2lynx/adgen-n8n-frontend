@@ -97,13 +97,6 @@ export const ANIMATE_VIDEO_MODELS: AnimateModel[] = [
     resolutions: ['480p', '720p', '1080p'],
     supportsLastFrame: false,
   },
-  // 2.7 has no 480p tier at all — the cheap test run is not available here.
-  {
-    label: 'Wan 2.7',
-    value: 'alibaba/wan-2.7',
-    resolutions: ['720p', '1080p'],
-    supportsLastFrame: true,
-  },
 ];
 
 export const ANIMATE_MODEL_DEFAULT = 'bytedance/seedance-2.0-fast';
