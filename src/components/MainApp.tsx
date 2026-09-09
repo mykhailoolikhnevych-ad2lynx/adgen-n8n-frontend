@@ -363,22 +363,20 @@ export default function MainApp() {
                 </>
               ) : (
                 <>
-              {/* Video generator leads the standalone group. Admin-only, so it
-                  simply is not rendered for everyone else. */}
-              {isAdmin && (
-                <button
-                  type="button"
-                  onClick={() => setPage('video-gen')}
-                  className={`rounded px-3 py-1.5 text-sm transition-colors ${
-                    page === 'video-gen'
-                      ? 'bg-white text-black'
-                      : 'text-white/80 hover:bg-white/10 hover:text-white'
-                  }`}
-                  aria-current={page === 'video-gen' ? 'page' : undefined}
-                >
-                  Video generator
-                </button>
-              )}
+              {/* Video generator leads the standalone group and is open to
+                  everyone; the page itself limits non-admins to Animate image. */}
+              <button
+                type="button"
+                onClick={() => setPage('video-gen')}
+                className={`rounded px-3 py-1.5 text-sm transition-colors ${
+                  page === 'video-gen'
+                    ? 'bg-white text-black'
+                    : 'text-white/80 hover:bg-white/10 hover:text-white'
+                }`}
+                aria-current={page === 'video-gen' ? 'page' : undefined}
+              >
+                Video generator
+              </button>
               {/* Creative Gen — standalone creative generation, set slightly apart
                   from the pipeline tabs (Keywords → … → Creatives) by a divider. */}
               <button
@@ -541,11 +539,11 @@ export default function MainApp() {
               <OfferArticlePage onClose={handleCloseOffer} />
             </KeepAlive>
           )}
-          {isAdmin && (
-            <KeepAlive active={!megatool && page === 'video-gen'}>
-              <VideoGenPage />
-            </KeepAlive>
-          )}
+          {/* Open to everyone, but only in Animate image mode — the article
+              pipeline inside it stays admin-only. */}
+          <KeepAlive active={!megatool && page === 'video-gen'}>
+            <VideoGenPage isAdmin={isAdmin} />
+          </KeepAlive>
           {isAdmin && (
             <KeepAlive active={!megatool && page === 'dashboard'}>
               {/* Read-only analytics: filters and sub-tab survive, but the rows are

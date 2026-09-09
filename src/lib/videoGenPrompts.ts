@@ -310,9 +310,23 @@ ${AUDIO_RULE}
 
 AVOID: ${AVOID_BASE}, shaky or nauseating camera motion, digital zoom, the camera passing through objects, overlaid text drifting or skewing with the camera.`,
   },
+  // The operator writes the prompt and picks the loop setting, so `prompt` and
+  // `loop` here are only placeholders — the page supplies both from its own
+  // state. Kept in the same table so the picker stays a plain map.
+  {
+    id: 'custom',
+    label: 'Custom',
+    hint: 'Свій промпт. Пиши англійською — моделі так стабільніші.',
+    loop: true,
+    prompt: '',
+  },
 ];
 
 export const ANIMATE_PRESET_DEFAULT = 'subtle';
+
+/** The one preset whose prompt and loop setting come from the operator rather
+ *  than from the table above. */
+export const ANIMATE_CUSTOM_PRESET_ID = 'custom';
 
 export const animatePresetFor = (id: string): AnimatePreset =>
   ANIMATE_PRESETS.find((p) => p.id === id) ?? ANIMATE_PRESETS[0];

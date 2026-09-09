@@ -8,7 +8,7 @@ import {
   MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
   ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
-  ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, animatePresetFor,
+  ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, ANIMATE_CUSTOM_PRESET_ID, animatePresetFor,
   animateModelFor, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
 import { cueAt, toSrt } from '@/lib/captions';
@@ -109,7 +109,7 @@ const StatusBar = ({ status }: { status: Status }) => (
 
 const countWords = (s: string): number => s.trim().split(/\s+/).filter(Boolean).length;
 
-export const VideoGenPage = () => {
+export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const videoGenLine = useAppStore((s) => s.videoGenLine);
   const videoGenArticleUrl = useAppStore((s) => s.videoGenArticleUrl);
   const videoGenFrames = useAppStore((s) => s.videoGenFrames);
@@ -143,7 +143,11 @@ export const VideoGenPage = () => {
   // ------------------------------------------------------------- Animate mode
   // Local, not the store: the tab is kept alive across switches, so component
   // state survives just as well, and the File itself has no business in zustand.
-  const [mode, setMode] = useState<VideoGenMode>('scene');
+  // The article pipeline stays admin-only; everyone else gets Animate image and
+  // no toggle. Derived rather than seeded into state because isAdmin resolves
+  // asynchronously — a non-admin must land on 'animate' whatever the timing.
+  const [modeChoice, setModeChoice] = useState<VideoGenMode>('scene');
+  const mode: VideoGenMode = isAdmin ? modeChoice : 'animate';
   const [animateFile, setAnimateFile] = useState<File | null>(null);
   const [animatePreview, setAnimatePreview] = useState<string | null>(null);
   const [animateDims, setAnimateDims] = useState<{ w: number; h: number } | null>(null);
@@ -151,16 +155,19 @@ export const VideoGenPage = () => {
   const [animateModel, setAnimateModel] = useState<string>(ANIMATE_MODEL_DEFAULT);
 
   const [animatePresetId, setAnimatePresetId] = useState(ANIMATE_PRESET_DEFAULT);
-  const [animatePrompt, setAnimatePrompt] = useState(
-    animatePresetFor(ANIMATE_PRESET_DEFAULT).prompt,
-  );
+  // Only used by the Custom preset; the others send their own prompt untouched.
+  const [customPrompt, setCustomPrompt] = useState('');
+  // Free text says nothing about whether the clip should loop, and pinning the
+  // same still at both ends would fight a prompt that moves the camera — so on
+  // Custom it has to be asked rather than inferred.
+  const [customLoop, setCustomLoop] = useState(true);
 
-  // Picking a preset replaces the prompt outright — it is a starting point, and
-  // keeping half of a previous one would produce contradictory instructions.
-  const pickPreset = (id: string) => {
-    setAnimatePresetId(id);
-    setAnimatePrompt(animatePresetFor(id).prompt);
-  };
+  const animatePreset = animatePresetFor(animatePresetId);
+  const isCustom = animatePreset.id === ANIMATE_CUSTOM_PRESET_ID;
+  // What actually goes to the model, and whether both ends get pinned.
+  const animatePrompt = isCustom ? customPrompt : animatePreset.prompt;
+  const animateLoop = isCustom ? customLoop : animatePreset.loop;
+
   const [animateFileError, setAnimateFileError] = useState<string | null>(null);
   // Which clips have their prompt expanded, by execution id — one flag per card
   // rather than one for the whole panel.
@@ -225,7 +232,7 @@ export const VideoGenPage = () => {
         aspectRatio: animateAspect,
         resolution: animateResolution,
         fileName: animateFile.name,
-        loop: animatePreset.loop,
+        loop: animateLoop,
       });
     } catch (e) {
       setAnimateFileError(e instanceof Error ? e.message : String(e));
@@ -323,7 +330,6 @@ export const VideoGenPage = () => {
   const animateLoading = videoGenAnimateStatus === 'loading';
   const busy = framesLoading || videoLoading || animateLoading;
   const animateSpec = animateModelFor(animateModel);
-  const animatePreset = animatePresetFor(animatePresetId);
   // Always render at the model's cheapest tier and recover the resolution in the
   // upscale on download. `resolutions` is ordered cheapest first.
   const animateResolution = animateSpec.resolutions[0];
@@ -343,7 +349,8 @@ export const VideoGenPage = () => {
   if (videoLoading) videoLabel = 'Generating… (~5 min)';
   else if (!selected) videoLabel = 'Pick an image first';
 
-  const modeToggle = (
+  // Nothing to toggle for a non-admin — Animate image is the only mode they have.
+  const modeToggle = !isAdmin ? null : (
     <div>
       <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400 mb-1">
         Mode
@@ -357,7 +364,7 @@ export const VideoGenPage = () => {
           <button
             key={value}
             type="button"
-            onClick={() => setMode(value)}
+            onClick={() => setModeChoice(value)}
             disabled={busy}
             className={`rounded-md border px-2 py-2 text-xs leading-tight transition disabled:opacity-50 ${
               mode === value
@@ -374,9 +381,11 @@ export const VideoGenPage = () => {
 
   // ------------------------------------------------------- Animate image layout
   if (mode === 'animate') {
+    const promptMissing = !animatePrompt.trim();
     let animateLabel = 'Generate video';
     if (animateLoading) animateLabel = 'Generating… (~5 min)';
     else if (!animateFile) animateLabel = 'Upload a creative first';
+    else if (promptMissing) animateLabel = 'Write a prompt first';
 
     return (
       <div className="flex h-full w-full gap-4 p-4 bg-slate-100 overflow-hidden">
@@ -511,7 +520,7 @@ export const VideoGenPage = () => {
                   <button
                     key={p.id}
                     type="button"
-                    onClick={() => pickPreset(p.id)}
+                    onClick={() => setAnimatePresetId(p.id)}
                     disabled={busy}
                     title={p.hint}
                     className={`rounded-md border px-2 py-2 text-xs leading-tight transition disabled:opacity-50 ${
@@ -533,37 +542,43 @@ export const VideoGenPage = () => {
               )}
             </div>
 
+            {/* The built-in presets ship a long, fixed prompt that nobody needs
+                to read, so the box only appears when the operator is the one
+                writing it. "Show prompt" on a finished clip still reveals what
+                was actually sent, whichever preset produced it. */}
+            {isCustom && (
             <div>
-              <div className="flex items-center justify-between gap-2 mb-1">
-                <label className="text-[10px] font-bold uppercase text-gray-400">
-                  Animation prompt
-                </label>
-                {animatePrompt !== animatePreset.prompt && (
-                  <button
-                    type="button"
-                    onClick={() => setAnimatePrompt(animatePreset.prompt)}
-                    className="text-[11px] text-blue-600 hover:underline"
-                  >
-                    Reset to preset
-                  </button>
-                )}
-              </div>
+              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                Animation prompt
+              </label>
               <Textarea
-                value={animatePrompt}
-                onChange={(e) => setAnimatePrompt(e.target.value)}
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
                 rows={10}
+                placeholder="Describe the motion in English. Say what must NOT change too — the composition and every letter of the text."
                 className="text-[11px] font-mono leading-relaxed resize-y"
                 disabled={busy}
               />
+              <label className="flex items-center gap-2 mt-2 text-[11px] text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={customLoop}
+                  onChange={(e) => setCustomLoop(e.target.checked)}
+                  disabled={busy}
+                  className="accent-blue-600"
+                />
+                Зациклити (той самий кадр на початку і в кінці)
+              </label>
               <p className="text-[11px] text-slate-500 mt-1">
-                Rules are by category, never by name, so a preset fits any creative — anything the
-                banner does not contain is simply skipped. Edit freely; the run sends what is here.
+                Вимкни, якщо в промпті камера рухається — інакше ролик змусить закінчитись там,
+                де почався, і рух зламається.
               </p>
             </div>
+            )}
 
             <Button
               onClick={() => void runAnimate()}
-              disabled={!animateFile || busy}
+              disabled={!animateFile || promptMissing || busy}
               className="w-full"
             >
               {animateLabel}
