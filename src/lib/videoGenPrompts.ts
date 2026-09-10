@@ -49,6 +49,13 @@ export const TRANSCRIBE_MODEL = 'openai/whisper-1';
 // the model rushes the delivery or cuts the line off mid-sentence.
 export const MAX_LINE_WORDS = 24;
 
+// Videos an operator may generate per day. The real gate is in n8n — it counts
+// per email in the `video_quota` datatable and refuses the run before any model
+// is called, so a page that never learned about the limit cannot spend past it.
+// This copy exists only so the UI can show the allowance and label the counter;
+// keep it in sync with the DAILY_LIMIT in the workflow's "Quota Gate" node.
+export const VIDEO_DAILY_LIMIT = 5;
+
 // ---------------------------------------------------------------- Animate mode
 //
 // The second mode of the tab: no article and no scene writing — the operator
@@ -99,7 +106,20 @@ export const ANIMATE_VIDEO_MODELS: AnimateModel[] = [
   },
 ];
 
-export const ANIMATE_MODEL_DEFAULT = 'bytedance/seedance-2.0-fast';
+// The default model follows the loop setting, because the two models differ on
+// exactly the capability a loop needs. When the clip has to end where it began,
+// Seedance can be handed the same still as first AND last frame and the cycle
+// closes structurally. Wan 3.0 takes a first frame only, so on a looping preset
+// the loop degrades to a request in prose (see ANIMATE_LOOP_RULE) — fine when
+// nothing is looping anyway, which is why it takes everything else.
+//
+// Still a default, not a lock: the picker stays editable. Changing it sticks
+// until the loop setting itself changes, at which point the rule reapplies.
+export const ANIMATE_MODEL_LOOP = 'bytedance/seedance-2.0-fast';
+export const ANIMATE_MODEL_NO_LOOP = 'alibaba/wan-3.0';
+
+export const animateModelForLoop = (loop: boolean): string =>
+  loop ? ANIMATE_MODEL_LOOP : ANIMATE_MODEL_NO_LOOP;
 
 export const animateModelFor = (value: string): AnimateModel =>
   ANIMATE_VIDEO_MODELS.find((m) => m.value === value) ?? ANIMATE_VIDEO_MODELS[0];
@@ -165,6 +185,8 @@ const SUBTLE_MOTION = `- text and CTA buttons: a soft light shimmer sweeps acros
 export interface AnimatePreset {
   id: string;
   label: string;
+  /** Shown under the picker. Ukrainian, like the rest of the tab's help text —
+   *  the prompts themselves stay English, which is what the models want. */
   hint: string;
   /**
    * Whether the same still can be pinned as both first and last frame.
@@ -181,7 +203,7 @@ export const ANIMATE_PRESETS: AnimatePreset[] = [
   {
     id: 'subtle',
     label: 'Subtle',
-    hint: 'Locked camera, shimmer and micro-motion. Safest for text — start here.',
+    hint: 'Камера нерухома, легкий блиск і мікрорух. Найбезпечніше для тексту — починай звідси.',
     loop: true,
     prompt: `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
 
@@ -199,7 +221,7 @@ AVOID: ${AVOID_BASE}, camera movement.`,
   {
     id: 'kinetic',
     label: 'Animated text',
-    hint: 'The headline itself moves — glow sweep, brightness pulse, a small springy settle. Loops.',
+    hint: 'Рухається сам заголовок — хвиля світла, пульс яскравості, легке пружне похитування. Зациклено.',
     loop: true,
     // The one preset where the text is allowed to move, which makes it the one
     // most likely to come back misspelled: a model that is redrawing letters
@@ -238,7 +260,7 @@ AVOID: ${AVOID_BASE}, letters changing shape or spelling, letters animating one 
   {
     id: 'wind',
     label: 'Wind & fabric',
-    hint: 'Camera still, but cloth, flags, foliage and sky move for real. For outdoor photo banners.',
+    hint: 'Камера нерухома, але тканина, прапори, листя і небо реально рухаються. Для вуличних фото-банерів.',
     loop: true,
     prompt: `PRESERVE EXACTLY: keep the composition, layout, crop, background, colors, lighting, style and every element exactly as in the source image. Nothing is redrawn, restyled, added, removed, resized or moved.
 
@@ -265,7 +287,7 @@ AVOID: ${AVOID_BASE}, camera movement.`,
   {
     id: 'orbit',
     label: 'Cinematic orbit',
-    hint: 'Slow arc around the scene for real parallax. Overlaid text stays pinned. Cannot loop.',
+    hint: 'Повільна дуга навколо сцени з реальним паралаксом. Накладений текст лишається на місці. Без зациклення.',
     loop: false,
     prompt: `PRESERVE THE ARTWORK: keep every element, its design, colours, lighting, style and text exactly as in the source image. Nothing is redrawn, restyled, added, removed or replaced. The viewpoint changes only because the camera moves — the artwork itself never changes.
 
@@ -287,7 +309,7 @@ AVOID: ${AVOID_BASE}, fast or jerky camera motion, the camera passing through ob
   {
     id: 'walkin',
     label: 'Walk-in (UGC)',
-    hint: 'Handheld push forward, phone-footage feel. Overlaid text stays pinned. Cannot loop.',
+    hint: 'Рух уперед з рук, ефект зйомки на телефон. Накладений текст лишається на місці. Без зациклення.',
     loop: false,
     prompt: `PRESERVE THE ARTWORK: keep every element, its design, colours, lighting, style and text exactly as in the source image. Nothing is redrawn, restyled, added, removed or replaced. The viewpoint changes only because the camera moves — the artwork itself never changes.
 
@@ -308,9 +330,34 @@ ${AUDIO_RULE}
 
 AVOID: ${AVOID_BASE}, shaky or nauseating camera motion, digital zoom, the camera passing through objects, overlaid text drifting or skewing with the camera.`,
   },
+  // The operator writes the prompt and picks the loop setting, so `prompt` and
+  // `loop` here are only placeholders — the page supplies both from its own
+  // state. Kept in the same table so the picker stays a plain map.
+  {
+    id: 'custom',
+    label: 'Custom',
+    hint: 'Свій промпт. Пиши англійською — моделі так стабільніші.',
+    loop: true,
+    prompt: '',
+  },
 ];
 
 export const ANIMATE_PRESET_DEFAULT = 'subtle';
+
+// A preset describes motion, so a still cannot show what it does — each one gets
+// a short silent loop of the SAME reference banner, rendered once through that
+// preset, sitting in `public/motion/`. Convention over configuration: the picker
+// points a <video> at these paths and hides the thumbnail if the file 404s, so
+// dropping a new clip in is the whole install step and a preset with no clip yet
+// degrades to its text hint. Regenerate them all from one banner whenever a
+// preset's prompt changes materially — a stale clip is worse than none.
+export const motionSampleSrc = (presetId: string): string => `/motion/${presetId}.mp4`;
+/** First frame, so a row costs one small image until the operator hovers it. */
+export const motionPosterSrc = (presetId: string): string => `/motion/${presetId}.jpg`;
+
+/** The one preset whose prompt and loop setting come from the operator rather
+ *  than from the table above. */
+export const ANIMATE_CUSTOM_PRESET_ID = 'custom';
 
 export const animatePresetFor = (id: string): AnimatePreset =>
   ANIMATE_PRESETS.find((p) => p.id === id) ?? ANIMATE_PRESETS[0];

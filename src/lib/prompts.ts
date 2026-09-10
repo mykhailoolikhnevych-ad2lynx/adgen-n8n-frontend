@@ -11,10 +11,17 @@ import { getAuthEmail } from '@/lib/identity';
 // n8n's Data Table auto-assigns `id` as an integer on insert. We keep the type
 // as `string | number` because the user only ever roundtrips it back to the
 // save webhook — no client-side arithmetic needed.
+/** Which generator a saved prompt belongs to. One shared `prompt_bases` table
+ *  backs both, so every consumer filters by this. Rows written before the
+ *  column existed have no value and read back as 'image' — which is what they
+ *  all are. */
+export type PromptKind = 'image' | 'video';
+
 export interface SavedPrompt {
   id: string | number;
   name: string;
   prompt: string;
+  kind: PromptKind;
   /** Free-form Ukrainian summary the admin writes by hand. Surfaced as the
    *  InfoTooltip text next to each saved prompt in Column3 so operators see
    *  what the prompt does at a glance, without having to read the body. */
@@ -59,6 +66,7 @@ export const listPrompts = async (): Promise<SavedPrompt[]> => {
       id: typeof r.id === 'number' ? r.id : String(r.id),
       name: String(r.name ?? ''),
       prompt: String(r.prompt ?? ''),
+      kind: r.kind === 'video' ? 'video' as const : 'image' as const,
       ua_description: r.ua_description ? String(r.ua_description) : undefined,
       image: r.image ? String(r.image) : undefined,
       updated_at: r.updated_at ? String(r.updated_at) : undefined,
@@ -73,6 +81,7 @@ export const savePrompt = async (input: {
   id?: string | number;
   name: string;
   prompt: string;
+  kind: PromptKind;
   ua_description?: string;
   image?: string;
 }): Promise<SavedPrompt> => {
@@ -84,6 +93,7 @@ export const savePrompt = async (input: {
   const body: Record<string, unknown> = {
     name: input.name,
     prompt: input.prompt,
+    kind: input.kind,
     ua_description: input.ua_description ?? '',
     image: input.image ?? '',
     email: ident?.email ?? 'unknown@unknown',
@@ -101,6 +111,7 @@ export const savePrompt = async (input: {
     id: saved.id ?? input.id ?? '',
     name: String(saved.name ?? input.name),
     prompt: String(saved.prompt ?? input.prompt),
+    kind: saved.kind === 'video' || saved.kind === 'image' ? saved.kind : input.kind,
     ua_description: saved.ua_description != null
       ? String(saved.ua_description)
       : input.ua_description,
