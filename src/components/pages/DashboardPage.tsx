@@ -747,14 +747,22 @@ const ACTION_PALETTE = [
 // the three Megatool pipeline pages (FB Campaign Reader → Create Binom Offer →
 // Create NB Campaign) into a single filter so the operator doesn't have to
 // select each one individually.
+//
+// Every value logEvent actually writes must appear here, or its events are
+// unreachable by the filter (they still show while no pill is selected, which
+// is what makes an omission easy to miss). The current set is: creatives,
+// creative_gen, creative-edit, keywords, angles, article, video_gen,
+// megatool-fb, megatool-binom, megatool-nb, megatool-tt.
 const TAB_OPTIONS: { label: string; tabs: string[] }[] = [
   { label: 'creatives',     tabs: ['creatives'] },
   { label: 'creative_gen',  tabs: ['creative_gen'] },
   { label: 'creative-edit', tabs: ['creative-edit'] },
+  { label: 'video_gen',     tabs: ['video_gen'] },
   { label: 'keywords',      tabs: ['keywords'] },
   { label: 'angles',        tabs: ['angles'] },
   { label: 'article',       tabs: ['article'] },
   { label: 'FB-NB',         tabs: ['megatool-fb', 'megatool-binom', 'megatool-nb'] },
+  { label: 'FB-TT',         tabs: ['megatool-fb', 'megatool-tt'] },
 ];
 
 const GraphView = ({ rows }: { rows: UsageRow[] }) => {
