@@ -49,6 +49,13 @@ export const TRANSCRIBE_MODEL = 'openai/whisper-1';
 // the model rushes the delivery or cuts the line off mid-sentence.
 export const MAX_LINE_WORDS = 24;
 
+// Videos an operator may generate per day. The real gate is in n8n — it counts
+// per email in the `video_quota` datatable and refuses the run before any model
+// is called, so a page that never learned about the limit cannot spend past it.
+// This copy exists only so the UI can show the allowance and label the counter;
+// keep it in sync with the DAILY_LIMIT in the workflow's "Quota Gate" node.
+export const VIDEO_DAILY_LIMIT = 5;
+
 // ---------------------------------------------------------------- Animate mode
 //
 // The second mode of the tab: no article and no scene writing — the operator
@@ -99,7 +106,20 @@ export const ANIMATE_VIDEO_MODELS: AnimateModel[] = [
   },
 ];
 
-export const ANIMATE_MODEL_DEFAULT = 'bytedance/seedance-2.0-fast';
+// The default model follows the loop setting, because the two models differ on
+// exactly the capability a loop needs. When the clip has to end where it began,
+// Seedance can be handed the same still as first AND last frame and the cycle
+// closes structurally. Wan 3.0 takes a first frame only, so on a looping preset
+// the loop degrades to a request in prose (see ANIMATE_LOOP_RULE) — fine when
+// nothing is looping anyway, which is why it takes everything else.
+//
+// Still a default, not a lock: the picker stays editable. Changing it sticks
+// until the loop setting itself changes, at which point the rule reapplies.
+export const ANIMATE_MODEL_LOOP = 'bytedance/seedance-2.0-fast';
+export const ANIMATE_MODEL_NO_LOOP = 'alibaba/wan-3.0';
+
+export const animateModelForLoop = (loop: boolean): string =>
+  loop ? ANIMATE_MODEL_LOOP : ANIMATE_MODEL_NO_LOOP;
 
 export const animateModelFor = (value: string): AnimateModel =>
   ANIMATE_VIDEO_MODELS.find((m) => m.value === value) ?? ANIMATE_VIDEO_MODELS[0];
@@ -323,6 +343,17 @@ AVOID: ${AVOID_BASE}, shaky or nauseating camera motion, digital zoom, the camer
 ];
 
 export const ANIMATE_PRESET_DEFAULT = 'subtle';
+
+// A preset describes motion, so a still cannot show what it does — each one gets
+// a short silent loop of the SAME reference banner, rendered once through that
+// preset, sitting in `public/motion/`. Convention over configuration: the picker
+// points a <video> at these paths and hides the thumbnail if the file 404s, so
+// dropping a new clip in is the whole install step and a preset with no clip yet
+// degrades to its text hint. Regenerate them all from one banner whenever a
+// preset's prompt changes materially — a stale clip is worse than none.
+export const motionSampleSrc = (presetId: string): string => `/motion/${presetId}.mp4`;
+/** First frame, so a row costs one small image until the operator hovers it. */
+export const motionPosterSrc = (presetId: string): string => `/motion/${presetId}.jpg`;
 
 /** The one preset whose prompt and loop setting come from the operator rather
  *  than from the table above. */

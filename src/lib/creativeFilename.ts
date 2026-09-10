@@ -138,10 +138,54 @@ export const buildBatchFilename = (meta: CreativeFileMeta): string =>
 export const buildCreativeFilename = (meta: CreativeFileMeta, variant: number | string): string =>
   `${buildBatchFilename(meta)}_${variant}`;
 
+// Video model value -> short code, the same idea as IMAGE_MODEL_CODES above.
+const VIDEO_MODEL_CODES: Record<string, string> = {
+  'bytedance/seedance-2.0-fast': 'sd20f',
+  'bytedance/seedance-1-5-pro': 'sd15p',
+  'alibaba/wan-3.0': 'wan30',
+};
+
+const videoModelCode = (model: string): string => VIDEO_MODEL_CODES[model] || 'unk';
+
+/** The tail segments that make an Animate-mode clip self-describing, mirroring
+ *  the ratio / model / preset tail every image file already carries. */
+export interface VideoGenFileMeta {
+  aspectRatio: string;  // "1:1"
+  videoModel: string;   // "alibaba/wan-3.0"
+  /** The motion preset's visible label, or the saved prompt's name. */
+  preset: string;       // "Animated text"
+}
+
 // Video Generator assets. That tab has no campaign / angle / concept behind it,
 // so the stage segments collapse to a single "video_gen" marker, matching how
-// Creative Gen collapses to "creativeonly":
+// Creative Gen collapses to "creativeonly". With `meta` the name then carries
+// the same ratio / model / preset tail as an image file, so a folder of
+// downloads still says which preset produced each clip:
 //   aiimg_video_gen_16921_2   — still #2 from execution 16921
-//   aivid_video_gen_16921     — the clip animated from it
-export const videoGenFileName = (kind: 'image' | 'video', id: string | number): string =>
-  `${kind === 'video' ? 'aivid' : 'aiimg'}_video_gen_${String(id).replace(/[^a-zA-Z0-9]+/g, '_')}`;
+//   aivid_video_gen_16921     — a scene clip (no preset behind it)
+//   aivid_video_gen_11_wan30_animated_text_53005
+//                             — Animate: 1:1, Wan 3.0, "Animated text" preset
+//
+// The execution id goes LAST on an Animate clip, unlike the batch number in an
+// image name. Deliberate: it is the only segment that changes between two runs
+// of the same preset, so keeping it at the end makes a folder of downloads sort
+// into preset groups — which is the question these names exist to answer.
+export const videoGenFileName = (
+  kind: 'image' | 'video',
+  id: string | number,
+  meta?: VideoGenFileMeta,
+): string => {
+  const prefix = `${kind === 'video' ? 'aivid' : 'aiimg'}_video_gen`;
+  const execId = String(id).replace(/[^a-zA-Z0-9]+/g, '_');
+  if (!meta) return `${prefix}_${execId}`;
+  // Saved prompts are named by hand and can run long, so the preset token is
+  // capped — trimmed back to a word boundary rather than cut mid-word.
+  const preset = slug(meta.preset).slice(0, 40).replace(/_+$/, '') || 'preset';
+  return [
+    prefix,
+    ratioCode(meta.aspectRatio),
+    videoModelCode(meta.videoModel),
+    preset,
+    execId,
+  ].join('_');
+};

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { listPrompts, savePrompt, deletePrompt, type SavedPrompt } from '@/lib/prompts';
+import { listPrompts, savePrompt, deletePrompt, type SavedPrompt, type PromptKind } from '@/lib/prompts';
 
 // Docs page: two top-level sections.
 //   - Knowledge Base    : w3schools-style guide for buyers. Module tabs at top,
@@ -10,7 +10,7 @@ import { listPrompts, savePrompt, deletePrompt, type SavedPrompt } from '@/lib/p
 //                         right with prompt / note / table blocks.
 //   - Prompt Bases      : admin-only (same gate as Dashboard).
 
-type Section = 'kb' | 'prompts';
+type Section = 'kb' | 'prompts' | 'prompts-video';
 
 // ---------------------------------------------------------------------------
 // Knowledge Base — typed content model + renderer.
@@ -2963,7 +2963,10 @@ const humanizeError = (e: unknown): string => {
   return String(e);
 };
 
-const PromptBasesView = () => {
+// One shared `prompt_bases` table backs both generators, split by the `kind`
+// column. Each tab lists and writes only its own half, so an image prompt can
+// never leak into the Video Generator's motion picker or the other way round.
+const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
   const [prompts, setPrompts] = useState<SavedPrompt[]>([]);
   const [fetchStatus, setFetchStatus] = useState<FetchStatus>('idle');
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -2994,7 +2997,7 @@ const PromptBasesView = () => {
       try {
         const list = await listPrompts();
         if (cancelled) return;
-        setPrompts(list);
+        setPrompts(list.filter((p) => p.kind === kind));
         setFetchStatus('success');
       } catch (e) {
         if (cancelled) return;
@@ -3003,7 +3006,7 @@ const PromptBasesView = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [kind]);
 
   const resetForm = () => {
     setDraftName('');
@@ -3026,6 +3029,7 @@ const PromptBasesView = () => {
         id: editingId ?? undefined,
         name,
         prompt: body,
+        kind,
         ua_description: draftUaDescription,
         image: draftImage,
       });
@@ -3095,6 +3099,8 @@ const PromptBasesView = () => {
 
   const canSave = draftName.trim().length > 0 && draftBody.trim().length > 0 && busy === null;
 
+  const isVideo = kind === 'video';
+
   return (
     <div className="flex h-full w-full gap-4 overflow-hidden">
       {(() => {
@@ -3111,7 +3117,9 @@ const PromptBasesView = () => {
       <aside className="w-72 shrink-0 bg-white rounded-xl border shadow-sm overflow-y-auto flex flex-col">
         <div className="p-3 border-b sticky top-0 bg-white z-10 space-y-2">
           <div>
-            <h3 className="font-bold text-sm">Saved prompts</h3>
+            <h3 className="font-bold text-sm">
+              {isVideo ? 'Saved video prompts' : 'Saved image prompts'}
+            </h3>
             <p className="text-[11px] text-slate-500 mt-0.5">
               {fetchStatus === 'loading' && 'loading…'}
               {fetchStatus === 'error' && <span className="text-red-600">load failed</span>}
@@ -3220,12 +3228,16 @@ const PromptBasesView = () => {
         />
 
         <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
-          Custom prompt
+          {isVideo ? 'Motion prompt' : 'Custom prompt'}
         </label>
         <Textarea
           value={draftBody}
           onChange={(e) => setDraftBody(e.target.value)}
-          placeholder="Write the full prompt body here…"
+          placeholder={
+            isVideo
+              ? 'Describe the motion in English. Say what must NOT change too — the composition and every letter of the text.'
+              : 'Write the full prompt body here…'
+          }
           rows={14}
           className="font-mono text-sm flex-1 min-h-[260px] mb-4"
           disabled={busy !== null}
@@ -3234,7 +3246,8 @@ const PromptBasesView = () => {
         <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
           UA description{' '}
           <span className="ml-1 normal-case font-normal text-slate-400">
-            — optional, shown in the (i) tooltip in Concepts → Image presets
+            — optional, shown in the (i) tooltip in{' '}
+            {isVideo ? 'Video Generator → Motion preset' : 'Concepts → Image presets'}
           </span>
         </label>
         <Textarea
@@ -3247,8 +3260,10 @@ const PromptBasesView = () => {
         />
 
         <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
-          Creative image{' '}
-          <span className="ml-1 normal-case font-normal text-slate-400">— optional</span>
+          {isVideo ? 'Reference still' : 'Creative image'}{' '}
+          <span className="ml-1 normal-case font-normal text-slate-400">
+            — optional{isVideo && ', a frame showing the look this motion suits'}
+          </span>
         </label>
         <label
           onDragEnter={handleImageDragEnter}
@@ -3348,25 +3363,32 @@ export const DocsPage = ({ isAdmin }: DocsPageProps) => {
         >
           Knowledge Base
         </button>
-        {isAdmin && (
+        {isAdmin && ([
+          ['prompts', 'Prompt image'],
+          ['prompts-video', 'Prompt video'],
+        ] as [Section, string][]).map(([value, label]) => (
           <button
+            key={value}
             type="button"
-            onClick={() => setSection('prompts')}
+            onClick={() => setSection(value)}
             className={`rounded px-3 py-1.5 text-sm transition-colors ${
-              section === 'prompts'
+              section === value
                 ? 'bg-slate-900 text-white'
                 : 'text-slate-700 hover:bg-slate-100'
             }`}
-            aria-current={section === 'prompts' ? 'page' : undefined}
+            aria-current={section === value ? 'page' : undefined}
           >
-            Prompts Base
+            {label}
           </button>
-        )}
+        ))}
       </div>
 
       <div className="flex-1 min-h-0 overflow-hidden">
         {section === 'kb' && <KnowledgeBaseView />}
-        {section === 'prompts' && isAdmin && <PromptBasesView />}
+        {/* Keyed so switching tabs remounts with a clean draft and refetches
+            for the new kind, rather than carrying the other tab's form over. */}
+        {section === 'prompts' && isAdmin && <PromptBasesView key="image" kind="image" />}
+        {section === 'prompts-video' && isAdmin && <PromptBasesView key="video" kind="video" />}
       </div>
     </div>
   );

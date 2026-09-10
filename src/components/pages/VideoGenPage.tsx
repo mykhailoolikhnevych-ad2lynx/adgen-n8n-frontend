@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { useAppStore } from '@/store/useAppStore';
+import { useAppStore, type VideoGenResult } from '@/store/useAppStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
+import { SavedPromptPicker } from '@/components/ui/SavedPromptPicker';
 import {
   MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
-  ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
-  ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, ANIMATE_CUSTOM_PRESET_ID, animatePresetFor,
+  ANIMATE_VIDEO_MODELS, animateModelForLoop,
+  ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, ANIMATE_CUSTOM_PRESET_ID,
+  motionSampleSrc, motionPosterSrc,
   animateModelFor, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
 import { cueAt, toSrt } from '@/lib/captions';
@@ -94,6 +96,104 @@ const toFrameDataUrl = async (file: File): Promise<{ dataUrl: string; width: num
   }
 };
 
+// One row of the Motion preset list. Exactly one is selected at a time — built-in
+// presets, saved video prompts the operator added, and Custom all live in the
+// same single-select list, because they are all answers to the same question:
+// what motion is sent to the model.
+interface MotionOption {
+  /** Radio value. Built-in presets use their own id; saved prompts are
+   *  namespaced so a numeric datatable id can never collide with one. */
+  key: string;
+  label: string;
+  hint: string;
+  /** Empty for Custom, which reads its body from the operator's textarea. */
+  prompt: string;
+  /** Built-in presets know whether their motion can loop. Custom and saved
+   *  prompts are free text, so the operator is asked instead. */
+  loop: boolean;
+  /** Built-in presets only — id of the sample clip under public/motion/. */
+  sampleId?: string;
+  /** Saved prompts only — the optional reference still from the prompt library. */
+  image?: string;
+  /** Saved prompts only — rows the operator added can be taken back out. */
+  savedId?: string;
+}
+
+const SAVED_KEY_PREFIX = 'saved:';
+
+// Motion cannot be shown by a still, so each built-in preset carries a short
+// silent loop of the same reference banner rendered through it. The clip is only
+// fetched when the row is hovered or selected (preload="none" + a poster), and a
+// preset whose clip has not been produced yet simply loses the thumbnail —
+// onError hides it and the text hint carries the row on its own.
+const MotionThumb = ({ option, active, onZoom }: {
+  option: MotionOption;
+  active: boolean;
+  onZoom: (src: string) => void;
+}) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [missing, setMissing] = useState(false);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (active) void el.play().catch(() => {});
+    else el.pause();
+  }, [active]);
+
+  if (option.sampleId && !missing) {
+    const src = motionSampleSrc(option.sampleId);
+    return (
+      <span
+        role="button"
+        tabIndex={0}
+        title="Click to watch full size"
+        // The thumbnail sits inside the row's <label>, so a click here opens the
+        // preview AND selects the row. Both are wanted: clicking a preset's
+        // preview is the operator saying they want that preset.
+        onClick={() => onZoom(src)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onZoom(src); }
+        }}
+        className="shrink-0 rounded border border-slate-300 overflow-hidden hover:ring-2 hover:ring-blue-400 transition block"
+      >
+        <video
+          ref={videoRef}
+          src={src}
+          poster={motionPosterSrc(option.sampleId)}
+          onError={() => setMissing(true)}
+          muted
+          loop
+          playsInline
+          preload="none"
+          // Light ground, not black: with preload="none" a missing clip does not
+          // error until it is first played, so an empty box has to read as an
+          // empty slot rather than as a broken video.
+          className="w-11 h-11 object-cover bg-slate-50 block"
+        />
+      </span>
+    );
+  }
+
+  if (option.image) {
+    return (
+      <img
+        src={option.image}
+        alt=""
+        className="shrink-0 w-11 h-11 object-cover rounded border border-slate-300 block"
+      />
+    );
+  }
+
+  // No sample and no reference still — hold the column so the labels stay aligned.
+  return (
+    <span
+      aria-hidden="true"
+      className="shrink-0 w-11 h-11 rounded border border-dashed border-slate-200 bg-slate-50 block"
+    />
+  );
+};
+
 const StatusBar = ({ status }: { status: Status }) => (
   <div className="-mx-4 bg-slate-200 px-4 py-2 text-sm flex items-center gap-2 shrink-0">
     <span className="font-semibold text-slate-700">Status:</span>
@@ -137,6 +237,7 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const videoGenAnimateError = useAppStore((s) => s.videoGenAnimateError);
   const videoGenAnimateResults = useAppStore((s) => s.videoGenAnimateResults);
   const clearVideoGenAnimateResults = useAppStore((s) => s.clearVideoGenAnimateResults);
+  const videoGenQuota = useAppStore((s) => s.videoGenQuota);
 
   const [showPrompt, setShowPrompt] = useState(false);
 
@@ -152,21 +253,94 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const [animatePreview, setAnimatePreview] = useState<string | null>(null);
   const [animateDims, setAnimateDims] = useState<{ w: number; h: number } | null>(null);
   const [animateAspect, setAnimateAspect] = useState<string>('9:16');
-  const [animateModel, setAnimateModel] = useState<string>(ANIMATE_MODEL_DEFAULT);
+  // Seeded for the default preset (Subtle, which loops). Kept in sync with the
+  // loop setting by the effect below, and overridable in between.
+  const [animateModel, setAnimateModel] = useState<string>(animateModelForLoop(true));
 
-  const [animatePresetId, setAnimatePresetId] = useState(ANIMATE_PRESET_DEFAULT);
+  // The one selected motion, as a MotionOption key.
+  const [motionKey, setMotionKey] = useState<string>(ANIMATE_PRESET_DEFAULT);
+  // Which saved video prompts the operator pulled into the list. Kept as ids so
+  // an edit made in Docs shows up here on the next library load.
+  const [addedPromptIds, setAddedPromptIds] = useState<string[]>([]);
   // Only used by the Custom preset; the others send their own prompt untouched.
   const [customPrompt, setCustomPrompt] = useState('');
   // Free text says nothing about whether the clip should loop, and pinning the
   // same still at both ends would fight a prompt that moves the camera — so on
-  // Custom it has to be asked rather than inferred.
-  const [customLoop, setCustomLoop] = useState(true);
+  // Custom and on saved prompts it has to be asked rather than inferred.
+  const [manualLoop, setManualLoop] = useState(true);
+  // The clip a thumbnail was clicked to enlarge.
+  const [zoomedSample, setZoomedSample] = useState<string | null>(null);
+  // Which row the pointer is over — its sample clip plays while it is.
+  const [hoveredMotionKey, setHoveredMotionKey] = useState<string | null>(null);
 
-  const animatePreset = animatePresetFor(animatePresetId);
-  const isCustom = animatePreset.id === ANIMATE_CUSTOM_PRESET_ID;
+  const savedVideoPrompts = useAppStore((s) => s.savedPrompts).filter((p) => p.kind === 'video');
+
+  // Built-ins first, then whatever the operator added, then Custom last — the
+  // same order the image presets use, so the two panels read alike.
+  const addedPrompts = addedPromptIds
+    .map((id) => savedVideoPrompts.find((p) => String(p.id) === id))
+    .filter((p): p is NonNullable<typeof p> => p != null);
+
+  const motionOptions: MotionOption[] = [
+    ...ANIMATE_PRESETS.filter((p) => p.id !== ANIMATE_CUSTOM_PRESET_ID).map((p) => ({
+      key: p.id,
+      label: p.label,
+      hint: p.hint,
+      prompt: p.prompt,
+      loop: p.loop,
+      sampleId: p.id,
+    })),
+    ...addedPrompts.map((p) => ({
+      key: `${SAVED_KEY_PREFIX}${p.id}`,
+      label: p.name,
+      hint: (p.ua_description && p.ua_description.trim()) || p.prompt,
+      prompt: p.prompt,
+      loop: true,
+      image: p.image,
+      savedId: String(p.id),
+    })),
+    ...ANIMATE_PRESETS.filter((p) => p.id === ANIMATE_CUSTOM_PRESET_ID).map((p) => ({
+      key: p.id,
+      label: p.label,
+      hint: p.hint,
+      prompt: p.prompt,
+      loop: p.loop,
+    })),
+  ];
+
+  // A removed or upstream-deleted saved prompt leaves the selection dangling —
+  // fall back to the default rather than silently sending an empty prompt.
+  const selectedMotion =
+    motionOptions.find((o) => o.key === motionKey) ?? motionOptions[0];
+
+  const isCustom = selectedMotion.key === ANIMATE_CUSTOM_PRESET_ID;
+  const isSavedMotion = selectedMotion.savedId != null;
+  // Free text — built-in presets declare their own loop, everything else asks.
+  const loopIsManual = isCustom || isSavedMotion;
   // What actually goes to the model, and whether both ends get pinned.
-  const animatePrompt = isCustom ? customPrompt : animatePreset.prompt;
-  const animateLoop = isCustom ? customLoop : animatePreset.loop;
+  const animatePrompt = isCustom ? customPrompt : selectedMotion.prompt;
+  const animateLoop = loopIsManual ? manualLoop : selectedMotion.loop;
+
+  // Point the model at whichever one suits the loop setting. Keyed on
+  // animateLoop rather than on the preset, so it fires when the meaning changes
+  // and not merely when the selection does: moving between two looping presets
+  // leaves a hand-picked model alone, while turning the loop on or off puts the
+  // right model back.
+  useEffect(() => {
+    setAnimateModel(animateModelForLoop(animateLoop));
+  }, [animateLoop]);
+
+  const addSavedPrompt = (id: string) => {
+    setAddedPromptIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    // Adding is the operator saying they want this one — select it straight away
+    // rather than making them click the row they just created.
+    setMotionKey(`${SAVED_KEY_PREFIX}${id}`);
+  };
+
+  const removeSavedPrompt = (id: string) => {
+    setAddedPromptIds((prev) => prev.filter((x) => x !== id));
+    if (motionKey === `${SAVED_KEY_PREFIX}${id}`) setMotionKey(ANIMATE_PRESET_DEFAULT);
+  };
 
   const [animateFileError, setAnimateFileError] = useState<string | null>(null);
   // Which clips have their prompt expanded, by execution id — one flag per card
@@ -201,6 +375,13 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
     };
   }, [animateFile]);
 
+  useEffect(() => {
+    if (!zoomedSample) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomedSample(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoomedSample]);
+
   const acceptAnimateFile = (picked: File | null) => {
     if (!picked) return;
     if (!ACCEPTED_TYPES.includes(picked.type)) {
@@ -233,6 +414,10 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
         resolution: animateResolution,
         fileName: animateFile.name,
         loop: animateLoop,
+        // The visible label, not the internal id — a downloaded file should say
+        // what the operator picked in the UI ("Animated text" -> animated_text),
+        // not the id behind it (kinetic).
+        preset: selectedMotion.label,
       });
     } catch (e) {
       setAnimateFileError(e instanceof Error ? e.message : String(e));
@@ -266,12 +451,20 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
     saveBlob(new Blob([toSrt(videoGenCaptions)], { type: 'text/plain;charset=utf-8' }), `${name}.srt`);
   };
 
+  // Animate clips carry the ratio / model / preset tail an image file has, so a
+  // folder of downloads still says which preset produced each one. Scene clips
+  // have no preset behind them and keep the bare name.
+  const clipFileName = (clip: VideoGenResult): string =>
+    videoGenFileName('video', clip.jobId, clip.preset
+      ? { aspectRatio: clip.aspectRatio ?? '', videoModel: clip.model, preset: clip.preset }
+      : undefined);
+
   // Animate mode ships the clip as it comes back — there is no spoken line, so
   // nothing to burn in.
-  const downloadVideo = async (clip: { videoUrl: string; jobId: string }) => {
+  const downloadVideo = async (clip: VideoGenResult) => {
     setExportError(null);
     try {
-      await downloadAs(clip.videoUrl, `${videoGenFileName('video', clip.jobId)}.mp4`);
+      await downloadAs(clip.videoUrl, `${clipFileName(clip)}.mp4`);
     } catch (e) {
       setExportError(e instanceof Error ? e.message : String(e));
     }
@@ -281,7 +474,7 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   // open. Only one export runs at a time, so a single slot tracks which clip.
   const [upscaleJob, setUpscaleJob] = useState<{ jobId: string; pct: number } | null>(null);
 
-  const downloadUpscaled = async (clip: { videoUrl: string; jobId: string }) => {
+  const downloadUpscaled = async (clip: VideoGenResult) => {
     setExportError(null);
     setUpscaleJob({ jobId: clip.jobId, pct: 0 });
     try {
@@ -291,7 +484,7 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
         (pct) => setUpscaleJob({ jobId: clip.jobId, pct }),
         UPSCALE_SHARPEN,
       );
-      saveBlob(blob, `${videoGenFileName('video', clip.jobId)}_1080.${extension}`);
+      saveBlob(blob, `${clipFileName(clip)}_1080.${extension}`);
     } catch (e) {
       setExportError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -382,8 +575,13 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   // ------------------------------------------------------- Animate image layout
   if (mode === 'animate') {
     const promptMissing = !animatePrompt.trim();
+    // The gate itself is in n8n; this only stops a click that is certain to be
+    // refused, once a response has told us the allowance is spent. Admins are
+    // exempt server-side and simply never get a quota back.
+    const quotaSpent = videoGenQuota != null && videoGenQuota.used >= videoGenQuota.limit;
     let animateLabel = 'Generate video';
     if (animateLoading) animateLabel = 'Generating… (~5 min)';
+    else if (quotaSpent) animateLabel = `Daily limit reached (${videoGenQuota.used}/${videoGenQuota.limit})`;
     else if (!animateFile) animateLabel = 'Upload a creative first';
     else if (promptMissing) animateLabel = 'Write a prompt first';
 
@@ -503,38 +701,90 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
                 Рендер у найдешевшій якості {animateSpec.label}, далі апскейл до 1080 при
                 завантаженні.
               </p>
-              {!animateSpec.supportsLastFrame && (
-                <p className="text-[11px] text-amber-700">
-                  {animateSpec.label} accepts a first frame only, so the loop is asked for in the
-                  prompt instead of being pinned by a matching last frame — expect a softer loop.
-                </p>
-              )}
+              {/* The "first frame only" note used to live here. It still drives
+                  behaviour — a model that cannot pin a last frame gets the loop
+                  asked for in the prompt (ANIMATE_LOOP_RULE) — but the default
+                  model is now one of those, so the warning was showing on every
+                  visit and saying nothing the operator can act on. */}
             </div>
 
+            {/* Motion preset — one row per option, exactly one selected. The
+                thumbnail is a real clip of the same reference banner rendered
+                through that preset, because a still cannot show motion: it plays
+                on hover and while selected, and clicking it opens it full size. */}
             <div>
               <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
                 Motion preset
               </label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {ANIMATE_PRESETS.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setAnimatePresetId(p.id)}
-                    disabled={busy}
-                    title={p.hint}
-                    className={`rounded-md border px-2 py-2 text-xs leading-tight transition disabled:opacity-50 ${
-                      animatePresetId === p.id
-                        ? 'border-blue-600 bg-blue-50 text-blue-900 font-semibold'
-                        : 'border-input bg-white hover:bg-slate-50'
-                    }`}
-                  >
-                    {p.label}
-                  </button>
-                ))}
+
+              {savedVideoPrompts.length > 0 && (
+                <div className="mb-1.5">
+                  <SavedPromptPicker
+                    available={savedVideoPrompts.filter(
+                      (p) => !addedPromptIds.includes(String(p.id)),
+                    )}
+                    onPick={addSavedPrompt}
+                    placeholder="Add a saved prompt…"
+                  />
+                </div>
+              )}
+
+              <div className="space-y-0.5">
+                {motionOptions.map((o) => {
+                  const isSelected = selectedMotion.key === o.key;
+                  return (
+                    <label
+                      key={o.key}
+                      onMouseEnter={() => setHoveredMotionKey(o.key)}
+                      onMouseLeave={() =>
+                        setHoveredMotionKey((cur) => (cur === o.key ? null : cur))
+                      }
+                      className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs cursor-pointer transition ${
+                        isSelected
+                          ? 'border-blue-600 bg-blue-50'
+                          : 'border-transparent hover:bg-slate-50'
+                      } ${busy ? 'opacity-50 pointer-events-none' : ''}`}
+                    >
+                      <input
+                        type="radio"
+                        name="motion-preset"
+                        checked={isSelected}
+                        onChange={() => setMotionKey(o.key)}
+                        disabled={busy}
+                        className="shrink-0 accent-blue-600"
+                      />
+                      <MotionThumb
+                        option={o}
+                        active={isSelected || hoveredMotionKey === o.key}
+                        onZoom={setZoomedSample}
+                      />
+                      <span
+                        className={`flex-1 min-w-0 truncate ${
+                          isSelected ? 'font-semibold text-blue-900' : 'font-medium text-slate-800'
+                        }`}
+                        title={o.label}
+                      >
+                        {o.label}
+                      </span>
+                      {o.savedId && (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); removeSavedPrompt(o.savedId!); }}
+                          title="Remove from the list"
+                          aria-label={`Remove ${o.label}`}
+                          className="shrink-0 text-slate-400 hover:text-red-600 leading-none px-0.5"
+                        >
+                          ×
+                        </button>
+                      )}
+                      <InfoTooltip text={o.hint} iconSize={11} />
+                    </label>
+                  );
+                })}
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">{animatePreset.hint}</p>
-              {!animatePreset.loop && (
+
+              <p className="text-[11px] text-slate-500 mt-1">{selectedMotion.hint}</p>
+              {!loopIsManual && !selectedMotion.loop && (
                 <p className="text-[11px] text-amber-700 mt-1">
                   Камера рухається, тож ролик не може закінчитись там, де почався — на цьому
                   пресеті безшовного циклу не буде.
@@ -546,24 +796,28 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
                 to read, so the box only appears when the operator is the one
                 writing it. "Show prompt" on a finished clip still reveals what
                 was actually sent, whichever preset produced it. */}
-            {isCustom && (
+            {loopIsManual && (
             <div>
-              <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
-                Animation prompt
-              </label>
-              <Textarea
-                value={customPrompt}
-                onChange={(e) => setCustomPrompt(e.target.value)}
-                rows={10}
-                placeholder="Describe the motion in English. Say what must NOT change too — the composition and every letter of the text."
-                className="text-[11px] font-mono leading-relaxed resize-y"
-                disabled={busy}
-              />
-              <label className="flex items-center gap-2 mt-2 text-[11px] text-slate-600">
+              {isCustom && (
+                <>
+                  <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
+                    Animation prompt
+                  </label>
+                  <Textarea
+                    value={customPrompt}
+                    onChange={(e) => setCustomPrompt(e.target.value)}
+                    rows={10}
+                    placeholder="Describe the motion in English. Say what must NOT change too — the composition and every letter of the text."
+                    className="text-[11px] font-mono leading-relaxed resize-y"
+                    disabled={busy}
+                  />
+                </>
+              )}
+              <label className={`flex items-center gap-2 text-[11px] text-slate-600 ${isCustom ? 'mt-2' : ''}`}>
                 <input
                   type="checkbox"
-                  checked={customLoop}
-                  onChange={(e) => setCustomLoop(e.target.checked)}
+                  checked={manualLoop}
+                  onChange={(e) => setManualLoop(e.target.checked)}
                   disabled={busy}
                   className="accent-blue-600"
                 />
@@ -578,11 +832,18 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
 
             <Button
               onClick={() => void runAnimate()}
-              disabled={!animateFile || promptMissing || busy}
+              disabled={!animateFile || promptMissing || busy || quotaSpent}
               className="w-full"
             >
               {animateLabel}
             </Button>
+            {videoGenQuota && (
+              <p className={`-mt-2 text-[11px] ${quotaSpent ? 'text-amber-700' : 'text-slate-500'}`}>
+                {quotaSpent
+                  ? `Ліміт на сьогодні вичерпано (${videoGenQuota.used}/${videoGenQuota.limit}). Оновиться опівночі UTC.`
+                  : `Сьогодні використано ${videoGenQuota.used} з ${videoGenQuota.limit} відео.`}
+              </p>
+            )}
           </div>
         </div>
 
@@ -696,6 +957,37 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
             </div>
           </div>
         </div>
+
+        {/* Full-size sample of a motion preset. Same overlay shape as the
+            reference-image preview in the image settings panel. */}
+        {zoomedSample && (
+          <div
+            className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+            onClick={() => setZoomedSample(null)}
+          >
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setZoomedSample(null); }}
+              className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
+              aria-label="Close"
+            >
+              ×
+            </button>
+            <video
+              src={zoomedSample}
+              autoPlay
+              muted
+              loop
+              playsInline
+              controls
+              // Capped rather than filling the viewport: the samples are
+              // encoded small (480 on the short side) to keep the folder light,
+              // and blowing one up to full screen would only show the encoder.
+              className="max-w-[min(92vw,640px)] max-h-[92vh] rounded-md bg-black"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
       </div>
     );
   }

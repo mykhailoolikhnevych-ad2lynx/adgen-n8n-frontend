@@ -9,7 +9,7 @@ import {
   SCENE_SYSTEM_PROMPT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL, FRAME_COUNT,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
   LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT,
-  animateModelFor, ANIMATE_LOOP_RULE, type VideoProvider,
+  animateModelFor, ANIMATE_LOOP_RULE, VIDEO_DAILY_LIMIT, type VideoProvider,
 } from '@/lib/videoGenPrompts';
 import { normalizeWords, groupWordsIntoCues, type CaptionCue } from '@/lib/captions';
 
@@ -459,6 +459,13 @@ export interface VideoGenResult {
   provider: VideoProvider;
   /** Leonardo bills in credits, not dollars — 0 on OpenRouter runs. */
   credits: number;
+  /** Animate mode — the motion preset (or saved prompt name) that produced this
+   *  clip, and the ratio it was rendered at. Both go into the download file
+   *  name, so a folder of finished clips still says which preset each one came
+   *  from. Recorded per clip rather than read back off the panel, which the
+   *  operator may have changed since. Absent on scene runs, which have neither. */
+  preset?: string;
+  aspectRatio?: string;
 }
 
 interface AppState {
@@ -768,6 +775,11 @@ interface AppState {
   generateVideo: () => Promise<void>;
   /** Phase 3 — transcribe the clip for word-level caption timings. */
   fetchVideoCaptions: () => Promise<void>;
+  /** Video Generator daily allowance for the signed-in operator, as last
+   *  reported by n8n. Null until the first run of the session — the count is
+   *  owned server-side and is only echoed back on a generate call, so the page
+   *  never guesses at it. */
+  videoGenQuota: { used: number; limit: number } | null;
   /** Animate mode — park an uploaded banner in `video_frames`, then run the same
    *  video leg on it. Appends to videoGenAnimateResults; nothing is replaced. */
   animateUploadedImage: (args: {
@@ -780,6 +792,9 @@ interface AppState {
     /** False for the travelling-camera presets, which cannot end where they
      *  began. See AnimatePreset.loop. */
     loop: boolean;
+    /** Motion preset id, or the saved prompt's name — recorded on the clip and
+     *  in the usage log so preset choice is traceable after the fact. */
+    preset: string;
   }) => Promise<void>;
   clearVideoGenAnimateResults: () => void;
   sendToTelegram: (creativeId: string) => Promise<void>;
@@ -1258,6 +1273,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   videoGenSelectedFrameId: null,
   videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
   videoGenAnimateStatus: 'idle', videoGenAnimateError: null, videoGenAnimateResults: [],
+  videoGenQuota: null,
   videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   articleInputs: null, offerArticleOpen: false,
@@ -2498,7 +2514,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // state in case admins deleted one between the load and the click.
     const selectedSavedPromptIds = new Set(get().selectedSavedPromptIds);
     const savedPromptsPayload = get().savedPrompts
-      .filter((p) => selectedSavedPromptIds.has(String(p.id)))
+      .filter((p) => p.kind === 'image' && selectedSavedPromptIds.has(String(p.id)))
       .map((p) => ({ id: p.id, name: p.name, prompt: p.prompt }));
 
     const payload = {
@@ -2689,7 +2705,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     const selectedSavedPromptIds = new Set(get().selectedSavedPromptIds);
     const savedPromptsPayload = get().savedPrompts
-      .filter((p) => selectedSavedPromptIds.has(String(p.id)))
+      .filter((p) => p.kind === 'image' && selectedSavedPromptIds.has(String(p.id)))
       .map((p) => ({ id: p.id, name: p.name, prompt: p.prompt }));
 
     const payload = {
@@ -2928,8 +2944,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     let jobId: string | null = null;
     try {
-      const { data } = await axios.post(endpoint, payload);
+      // Scene mode shares the quota-gated webhook, so it identifies itself the
+      // same way. This path is admin-only and admins are exempt, but sending the
+      // real email keeps the counter off the 'unknown' bucket.
+      const ident = await getAuthEmail();
+      const { data } = await axios.post(endpoint, { email: ident?.email ?? 'unknown@unknown', ...payload });
       const startPayload = Array.isArray(data) ? data[0] : data;
+      if (startPayload?.error === 'daily_limit') {
+        const limit = Number(startPayload.limit) || VIDEO_DAILY_LIMIT;
+        const used = Number(startPayload.used) || limit;
+        set({ videoGenQuota: { used, limit } });
+        fail(`Daily limit reached — ${used} of ${limit} videos used today. Resets at midnight UTC.`, startPayload);
+        return;
+      }
       jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
       if (!jobId) throw new Error('Webhook did not return a job_id');
     } catch (e) {
@@ -3028,7 +3055,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   animateUploadedImage: async ({
-    imageDataUrl, prompt, videoModel, aspectRatio, resolution, fileName, loop,
+    imageDataUrl, prompt, videoModel, aspectRatio, resolution, fileName, loop, preset,
   }) => {
     const spec = animateModelFor(videoModel);
     // Pin both ends only when the preset wants a loop AND the model can take a
@@ -3037,7 +3064,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // always reflects what actually went out.
     const pinLastFrame = loop && spec.supportsLastFrame;
     const sentPrompt = loop && !spec.supportsLastFrame ? prompt + ANIMATE_LOOP_RULE : prompt;
-    const logMeta = { fileName, aspectRatio, resolution, videoModel: spec.value, loop };
+    const logMeta = { fileName, aspectRatio, resolution, videoModel: spec.value, loop, preset };
 
     // Only the status is reset — already-finished clips stay in the list.
     set({ videoGenAnimateStatus: 'loading', videoGenAnimateError: null });
@@ -3087,7 +3114,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     // needed a frame_id and a prompt.
     let jobId: string | null = null;
     try {
+      // The email is what the daily quota is counted against, server-side. It
+      // comes from Cloudflare Access via getAuthEmail, so it identifies the
+      // signed-in operator rather than anything the page made up.
+      const ident = await getAuthEmail();
       const { data } = await axios.post(WEBHOOKS.videoGen, {
+        email: ident?.email ?? 'unknown@unknown',
         frame_id: frameId,
         video_prompt: sentPrompt,
         video_model: spec.value,
@@ -3101,6 +3133,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         loop_frame: pinLastFrame,
       });
       const startPayload = Array.isArray(data) ? data[0] : data;
+      // The quota lives in n8n; the run is refused there before any model is
+      // called. Reported as a plain 200 with a flag rather than a 4xx, so it
+      // arrives here as data instead of an axios throw.
+      if (startPayload?.error === 'daily_limit') {
+        const limit = Number(startPayload.limit) || VIDEO_DAILY_LIMIT;
+        const used = Number(startPayload.used) || limit;
+        set({ videoGenQuota: { used, limit } });
+        fail(
+          `Daily limit reached — ${used} of ${limit} videos used today. Resets at midnight UTC.`,
+          startPayload,
+        );
+        return;
+      }
+      if (startPayload?.used != null && startPayload?.limit != null) {
+        set({ videoGenQuota: { used: Number(startPayload.used), limit: Number(startPayload.limit) } });
+      }
       jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
       if (!jobId) throw new Error('Webhook did not return a job_id');
     } catch (e) {
@@ -3136,6 +3184,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       openrouterId: String(result.openrouter_id || ''),
       provider: 'openrouter',
       credits: 0,
+      preset,
+      aspectRatio,
     };
     // Append — the newest clip lands at the bottom of the panel, same as a new
     // batch does in Creative Gen.
@@ -3150,6 +3200,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearVideoGenAnimateResults: () =>
+    // Deliberately does NOT reset videoGenQuota — clearing the panel throws away
+    // the clips, not the fact that the day's allowance was spent on them.
     set({ videoGenAnimateResults: [], videoGenAnimateStatus: 'idle', videoGenAnimateError: null }),
 
 

@@ -212,12 +212,13 @@ export default function MainApp() {
   const NAV_ITEMS = isAdmin ? [...BASE_NAV, ...ADMIN_NAV] : BASE_NAV;
 
   // The shared prompt library used to be re-fetched by ImageGenSettings on every
-  // mount, so a prompt saved in Docs showed up without a hard refresh. Its two
-  // hosts (Creative Gen, Creatives) are now kept mounted, so mounting happens once
-  // — pull the library on tab entry instead, which keeps the old behaviour.
+  // mount, so a prompt saved in Docs showed up without a hard refresh. Its three
+  // hosts (Creative Gen, Creatives, Video Gen) are all kept mounted, so mounting
+  // happens once — pull the library on tab entry instead, which keeps the old
+  // behaviour. One call covers both kinds; each host filters to its own.
   useEffect(() => {
     if (megatool) return;
-    if (page !== 'creative-gen' && page !== 'creatives') return;
+    if (page !== 'creative-gen' && page !== 'creatives' && page !== 'video-gen') return;
     void useAppStore.getState().loadSavedPrompts();
   }, [page, megatool]);
 
