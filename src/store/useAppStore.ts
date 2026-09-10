@@ -3,7 +3,7 @@ import axios from 'axios';
 import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFilename';
 import { logEvent } from '@/lib/usage';
 import { listPrompts, type SavedPrompt } from '@/lib/prompts';
-import { getAuthEmail } from '@/lib/identity';
+import { getAuthEmail, isAdminEmail } from '@/lib/identity';
 import { adLanguagesForGeo } from '@/lib/geos';
 import {
   SCENE_SYSTEM_PROMPT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL, FRAME_COUNT,
@@ -2948,7 +2948,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       // same way. This path is admin-only and admins are exempt, but sending the
       // real email keeps the counter off the 'unknown' bucket.
       const ident = await getAuthEmail();
-      const { data } = await axios.post(endpoint, { email: ident?.email ?? 'unknown@unknown', ...payload });
+      const { data } = await axios.post(endpoint, {
+        email: ident?.email ?? 'unknown@unknown',
+        is_admin: isAdminEmail(ident?.email),
+        ...payload,
+      });
       const startPayload = Array.isArray(data) ? data[0] : data;
       if (startPayload?.error === 'daily_limit') {
         const limit = Number(startPayload.limit) || VIDEO_DAILY_LIMIT;
@@ -3117,9 +3121,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       // The email is what the daily quota is counted against, server-side. It
       // comes from Cloudflare Access via getAuthEmail, so it identifies the
       // signed-in operator rather than anything the page made up.
+      //
+      // `is_admin` rides along rather than being re-derived in n8n: the email is
+      // body-supplied on this call, so a second copy of the admin list server
+      // side would add no security over trusting the flag — only a list to keep
+      // in sync with PUBLIC_ADMIN_EMAILS.
       const ident = await getAuthEmail();
       const { data } = await axios.post(WEBHOOKS.videoGen, {
         email: ident?.email ?? 'unknown@unknown',
+        is_admin: isAdminEmail(ident?.email),
         frame_id: frameId,
         video_prompt: sentPrompt,
         video_model: spec.value,

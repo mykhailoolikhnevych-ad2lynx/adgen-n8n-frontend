@@ -18,7 +18,7 @@ import { MegatoolFBCampaignPage } from './pages/MegatoolFBCampaignPage';
 import { MegatoolCreateBinomOfferPage } from './pages/MegatoolCreateBinomOfferPage';
 import { MegatoolCreateNbCampaignPage } from './pages/MegatoolCreateNbCampaignPage';
 import { TooltipProvider } from './ui/tooltip';
-import { getAuthEmail } from '@/lib/identity';
+import { getAuthEmail, isAdminEmail } from '@/lib/identity';
 
 type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'offer-article' | 'creatives' | 'video-gen' | 'dashboard' | 'docs';
 
@@ -29,16 +29,6 @@ type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-cam
 const MEGATOOL_NAV: { value: MegatoolPage; label: string }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
 ];
-
-// Admin Google emails that get the Dashboard tab. Sourced from PUBLIC_ADMIN_EMAILS
-// (comma-separated) — value lives in local .env for dev and in Vercel's env vars
-// for prod. Never commit real emails to the repo.
-const ADMIN_EMAILS: Set<string> = new Set(
-  String(import.meta.env.PUBLIC_ADMIN_EMAILS ?? '')
-    .split(',')
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.includes('@')),
-);
 
 const BASE_NAV: { value: Page; label: string }[] = [
   { value: 'keywords', label: 'Keywords' },
@@ -205,7 +195,7 @@ export default function MainApp() {
   useEffect(() => {
     (async () => {
       const ident = await getAuthEmail();
-      if (ident?.email && ADMIN_EMAILS.has(ident.email.toLowerCase())) setIsAdmin(true);
+      if (isAdminEmail(ident?.email)) setIsAdmin(true);
     })();
   }, []);
 
