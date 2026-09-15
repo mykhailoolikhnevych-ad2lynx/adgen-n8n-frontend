@@ -3,6 +3,7 @@ import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { fetchEvent } from '@/lib/events';
+import { listFeedback, getFeedback, type FeedbackListRow, type FeedbackRow as FeedbackFullRow } from '@/lib/feedback';
 
 // Admin-only usage analytics. Fetches PUBLIC_WEBHOOK_LIST_EVENTS_URL on mount
 // for the last 30 days of usage events and renders them as sub-tabs:
@@ -39,7 +40,7 @@ interface UsageRow {
   meta_size: number;
 }
 
-type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph' | 'costs';
+type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph' | 'costs' | 'feedback';
 
 const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'events',   label: 'Events' },
@@ -48,6 +49,7 @@ const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'tabs',     label: 'Tab Breakdown' },
   { value: 'graph',    label: 'Graph' },
   { value: 'costs',    label: 'Costs' },
+  { value: 'feedback', label: 'Feedback' },
 ];
 
 const LIST_URL  = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
@@ -1153,6 +1155,352 @@ const CostsView = ({ since, until }: { since: string; until: string }) => {
 };
 
 // ---------------------------------------------------------------------------
+// Feedback tab — like/dislike on generated creatives (Creative Gen + Creative
+// Edit "Change Image"). Self-contained fetch keyed off since/until (mirrors
+// CostsView) since feedback rows live in their own data table, separate from
+// usage_log.
+// ---------------------------------------------------------------------------
+
+// Plain thumbnail for a feedback image — deliberately NOT reusing ImageThumb:
+// that component's "truncated" heuristic assumes every src is a base64 blob
+// from usage_log, but a feedback output_image can also be a short remote
+// https URL (Creative Edit sometimes returns one as-is), which would trip
+// ImageThumb's length check as a false positive.
+const FeedbackImageThumb = ({ src, onClick }: { src: string; onClick: () => void }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    title="Open image"
+    className="cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-slate-500 rounded"
+  >
+    <img
+      src={src}
+      alt="feedback image"
+      loading="lazy"
+      className="h-24 w-24 object-cover rounded border border-slate-200 hover:border-slate-400 transition-colors"
+    />
+  </button>
+);
+
+const FeedbackRatingBadge = ({ rating }: { rating: string }) => {
+  if (rating === 'like') return <span title="Like">👍</span>;
+  if (rating === 'dislike') return <span title="Dislike">👎</span>;
+  return <span className="text-slate-300">—</span>;
+};
+
+// One expandable row. Lazy-loads the full row (input/prompt_text/images) via
+// getFeedback only when expanded — the list response deliberately strips
+// images to keep its payload small, same rationale as EventRow/fetchEvent.
+const FeedbackTableRow = ({ row, onOpenImage }: {
+  row: FeedbackListRow;
+  onOpenImage: (images: string[], index: number) => void;
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  const [full, setFull] = useState<FeedbackFullRow | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = async () => {
+    if (expanded) { setExpanded(false); return; }
+    setExpanded(true);
+    if (full || loading) return;
+    setLoading(true);
+    setError(null);
+    try {
+      setFull(await getFeedback(row.feedback_id));
+    } catch (e: any) {
+      setError(e?.message ?? String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  let inputPretty = row.input;
+  try { inputPretty = JSON.stringify(JSON.parse(row.input), null, 2); } catch { /* not JSON — show raw */ }
+
+  return (
+    <>
+      <tr className="border-b border-slate-100 hover:bg-slate-50">
+        <td className="py-1.5 px-3 font-mono text-xs whitespace-nowrap">{fmtTime(row.ts)}</td>
+        <td className="py-1.5 px-3">{row.email}</td>
+        <td className="py-1.5 px-3 text-slate-600">{row.tab}</td>
+        <td className="py-1.5 px-3">{row.operation}</td>
+        <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500">{row.model || '—'}</td>
+        <td className="py-1.5 px-3 font-mono text-[11px] text-slate-500">{row.prompt_source || '—'}</td>
+        <td className="py-1.5 px-3 text-center"><FeedbackRatingBadge rating={row.rating} /></td>
+        <td className="py-1.5 px-3 max-w-xs truncate text-slate-600" title={row.comment}>{row.comment || '—'}</td>
+        <td className="py-1.5 px-3">
+          <button type="button" onClick={toggle} className="text-[11px] text-slate-500 hover:text-slate-800 underline">
+            {expanded ? 'hide' : 'expand'}
+          </button>
+        </td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-slate-100 bg-slate-50/60">
+          <td colSpan={9} className="py-3 px-3">
+            {loading && <div className="text-xs text-gray-400 italic">Loading…</div>}
+            {error && <div className="text-xs text-red-600">{error}</div>}
+            {full && (
+              <div className="flex flex-col gap-3">
+                {full.prompt_text && (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase text-slate-500">Prompt text</div>
+                    <div className="font-mono text-[11px] whitespace-pre-wrap bg-white border rounded p-2 max-h-40 overflow-auto">{full.prompt_text}</div>
+                  </div>
+                )}
+                <div>
+                  <div className="text-[10px] font-bold uppercase text-slate-500">Input</div>
+                  <div className="font-mono text-[11px] whitespace-pre-wrap bg-white border rounded p-2 max-h-40 overflow-auto">{inputPretty || '(empty)'}</div>
+                </div>
+                {full.comment && (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase text-slate-500">Full comment</div>
+                    <div className="text-xs whitespace-pre-wrap bg-white border rounded p-2">{full.comment}</div>
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-4">
+                  {full.input_image && (
+                    <div>
+                      <div className="text-[10px] font-bold uppercase text-slate-500 mb-1">Input image</div>
+                      <FeedbackImageThumb src={full.input_image} onClick={() => onOpenImage([full.input_image], 0)} />
+                    </div>
+                  )}
+                  {full.output_image && (
+                    <div>
+                      <div className="text-[10px] font-bold uppercase text-slate-500 mb-1">Output image</div>
+                      <FeedbackImageThumb src={full.output_image} onClick={() => onOpenImage([full.output_image], 0)} />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+};
+
+const FeedbackView = ({ since, until }: { since: string; until: string }) => {
+  const [rows, setRows] = useState<FeedbackListRow[]>([]);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+
+  const [ratingFilter, setRatingFilter] = useState<'all' | 'like' | 'dislike'>('all');
+  const [tabFilter, setTabFilter] = useState<'all' | 'creative_gen' | 'creative_edit'>('all');
+  const [modelFilter, setModelFilter] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [emailFilter, setEmailFilter] = useState('');
+
+  const [lightbox, setLightbox] = useState<LightboxState>(null);
+  const closeLightbox = useCallback(() => setLightbox(null), []);
+  const showPrev = useCallback(() => {
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index - 1 + len) % len };
+    });
+  }, []);
+  const showNext = useCallback(() => {
+    setLightbox((lb) => {
+      if (!lb) return lb;
+      const len = lb.images.length;
+      if (len === 0) return lb;
+      return { ...lb, index: (lb.index + 1) % len };
+    });
+  }, []);
+  const openLightbox = useCallback((images: string[], index: number) => setLightbox({ images, index }), []);
+
+  const load = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setStatus('loading');
+    try {
+      const list = await listFeedback({ since, until, limit: FETCH_LIMIT });
+      list.sort((a, b) => (a.ts < b.ts ? 1 : -1));
+      setRows(list);
+      setStatus('success');
+      setError(null);
+    } catch (e: any) {
+      console.error('[Dashboard] feedback fetch error:', e);
+      setStatus('error');
+      setError(e?.message ?? String(e));
+    } finally {
+      inFlight.current = false;
+    }
+  }, [since, until]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const modelOptions  = useMemo(() => Array.from(new Set(rows.map((r) => r.model).filter(Boolean))).sort(), [rows]);
+  const sourceOptions = useMemo(() => Array.from(new Set(rows.map((r) => r.prompt_source).filter(Boolean))).sort(), [rows]);
+
+  const filtered = useMemo(() => {
+    const emailQ = emailFilter.trim().toLowerCase();
+    return rows.filter((r) =>
+      (ratingFilter === 'all' || r.rating === ratingFilter) &&
+      (tabFilter === 'all' || r.tab === tabFilter) &&
+      (!modelFilter  || r.model === modelFilter) &&
+      (!sourceFilter || r.prompt_source === sourceFilter) &&
+      (!emailQ || r.email.toLowerCase().includes(emailQ)),
+    );
+  }, [rows, ratingFilter, tabFilter, modelFilter, sourceFilter, emailFilter]);
+
+  const summary = useMemo(() => {
+    const total = filtered.length;
+    const likes = filtered.filter((r) => r.rating === 'like').length;
+    const dislikes = filtered.filter((r) => r.rating === 'dislike').length;
+    return { total, likes, dislikes, rate: total > 0 ? Math.round((likes / total) * 100) : 0 };
+  }, [filtered]);
+
+  // Group filtered rows by an arbitrary key (model / prompt_source) into
+  // count + like/dislike breakdown, sorted by volume.
+  const groupBy = (keyFn: (r: FeedbackListRow) => string) => {
+    const map = new Map<string, { count: number; likes: number; dislikes: number }>();
+    for (const r of filtered) {
+      const key = keyFn(r) || '(none)';
+      let g = map.get(key);
+      if (!g) { g = { count: 0, likes: 0, dislikes: 0 }; map.set(key, g); }
+      g.count++;
+      if (r.rating === 'like') g.likes++;
+      else if (r.rating === 'dislike') g.dislikes++;
+    }
+    return Array.from(map.entries())
+      .map(([key, g]) => ({ key, ...g, rate: g.count > 0 ? Math.round((g.likes / g.count) * 100) : 0 }))
+      .sort((a, b) => b.count - a.count);
+  };
+  const byModel  = useMemo(() => groupBy((r) => r.model), [filtered]);
+  const bySource = useMemo(() => groupBy((r) => r.prompt_source), [filtered]);
+
+  if (status === 'error') {
+    return <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Failed to load feedback'}</div>;
+  }
+  if (status === 'loading' && rows.length === 0) {
+    return <div className="p-6 text-gray-400 italic">Loading feedback…</div>;
+  }
+  if (rows.length === 0) {
+    return <div className="p-6 text-gray-400 italic">No feedback in the selected range.</div>;
+  }
+
+  const groupTable = (title: string, data: ReturnType<typeof groupBy>) => (
+    <div>
+      <div className="text-[10px] font-bold uppercase text-slate-500 mb-1">{title}</div>
+      <table className="w-full text-sm border-collapse">
+        <thead>
+          <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+            <th className="py-1.5 px-2">{title === 'By model' ? 'Model' : 'Source'}</th>
+            <th className="py-1.5 px-2 w-16">Count</th>
+            <th className="py-1.5 px-2 w-14">👍</th>
+            <th className="py-1.5 px-2 w-14">👎</th>
+            <th className="py-1.5 px-2 w-16">Rate</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((g) => (
+            <tr key={g.key} className="border-b border-slate-100">
+              <td className="py-1 px-2 font-mono text-[11px]">{g.key}</td>
+              <td className="py-1 px-2 font-mono">{g.count}</td>
+              <td className="py-1 px-2 font-mono">{g.likes}</td>
+              <td className="py-1 px-2 font-mono">{g.dislikes}</td>
+              <td className="py-1 px-2 font-mono">{g.rate}%</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border bg-slate-50 px-4 py-3 text-sm">
+        <span><span className="font-bold">{summary.total}</span> rated</span>
+        <span className="text-slate-600">👍 {summary.likes}</span>
+        <span className="text-slate-600">👎 {summary.dislikes}</span>
+        <span className="text-slate-600">Like rate: <span className="font-bold">{summary.rate}%</span></span>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Rating</label>
+          <select value={ratingFilter} onChange={(e) => setRatingFilter(e.target.value as any)} className="text-sm border rounded-md px-2 py-1 bg-white">
+            <option value="all">All</option>
+            <option value="like">👍 Like</option>
+            <option value="dislike">👎 Dislike</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Tab</label>
+          <select value={tabFilter} onChange={(e) => setTabFilter(e.target.value as any)} className="text-sm border rounded-md px-2 py-1 bg-white">
+            <option value="all">All</option>
+            <option value="creative_gen">Creative Gen</option>
+            <option value="creative_edit">Creative Edit</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Model</label>
+          <select value={modelFilter} onChange={(e) => setModelFilter(e.target.value)} className="text-sm border rounded-md px-2 py-1 bg-white">
+            <option value="">All</option>
+            {modelOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Prompt source</label>
+          <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)} className="text-sm border rounded-md px-2 py-1 bg-white">
+            <option value="">All</option>
+            {sourceOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="flex-1 min-w-[160px]">
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Email</label>
+          <Input value={emailFilter} onChange={(e) => setEmailFilter(e.target.value)} placeholder="contains…" />
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => { setRatingFilter('all'); setTabFilter('all'); setModelFilter(''); setSourceFilter(''); setEmailFilter(''); }}
+        >
+          Clear
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {groupTable('By model', byModel)}
+        {groupTable('By prompt source', bySource)}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="p-6 text-gray-400 italic">No feedback matches the current filters.</div>
+      ) : (
+        <table className="w-full text-sm border-collapse">
+          <thead className="sticky top-0 bg-slate-100 z-10">
+            <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+              <th className="py-2 px-3">When</th>
+              <th className="py-2 px-3">Email</th>
+              <th className="py-2 px-3">Tab</th>
+              <th className="py-2 px-3">Operation</th>
+              <th className="py-2 px-3">Model</th>
+              <th className="py-2 px-3">Source</th>
+              <th className="py-2 px-3 w-10">Rating</th>
+              <th className="py-2 px-3">Comment</th>
+              <th className="py-2 px-3 w-16" />
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r) => (
+              <FeedbackTableRow key={r.feedback_id} row={r} onOpenImage={openLightbox} />
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <Lightbox state={lightbox} onClose={closeLightbox} onPrev={showPrev} onNext={showNext} />
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Top-level page.
 // ---------------------------------------------------------------------------
 
@@ -1421,6 +1769,8 @@ export const DashboardPage = ({ active = true }: { active?: boolean }) => {
             events the operator can still see per-node spend. */}
         {activeTab === 'costs' ? (
           <CostsView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
+        ) : activeTab === 'feedback' ? (
+          <FeedbackView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
         ) : (
           <>
             {status === 'error' && (

@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { CopyNameButton } from '@/components/ui/CopyNameButton';
+import { FeedbackButtons } from '@/components/ui/FeedbackButtons';
 
 const CREATIVES_BATCHES_HELP =
   "Готові пакети креативів — кожен містить 4 варіанти банера (A / B / C / D) в різних візуальних стилях: YouTube-thumbnail, organic-social, highlight-block та illustrated. Усі 4 використовують той самий хук, акцент і CTA — тестуємо, як саме візуальний стиль впливає на CTR. Можна завантажити пакет ZIP-ом або одразу надіслати в Telegram-канал команди.";
@@ -343,6 +344,27 @@ export const Column4 = ({
                     </button>
                     {/* One-click copy of the standardized file name -> Facebook Ad name. */}
                     {img.fileName && <CopyNameButton fileName={img.fileName} className="w-full" />}
+                    {/* Like/dislike feedback — Creative Gen only (not the
+                        classic pipeline, not Creative Edit's other modes). */}
+                    {origin === 'creativeOnly' && img.feedbackId && (
+                      <FeedbackButtons
+                        ctx={{
+                          feedbackId: img.feedbackId,
+                          tab: 'creative_gen',
+                          operation: 'generateCreativeOnly',
+                          model: creative.fileMeta?.imageModel ?? '',
+                          promptSource: img.promptSource ?? 'unknown',
+                          promptText: img.promptText ?? '',
+                          input: {
+                            hook: creative.chosenCreative?.banner_hook ?? '',
+                            accent: creative.chosenCreative?.banner_accent ?? '',
+                            cta: creative.chosenCreative?.banner_cta ?? '',
+                            ...(creative.creativeGenInputSnapshot ?? {}),
+                          },
+                          outputImage: img.url,
+                        }}
+                      />
+                    )}
                   </div>
                 );
               })}

@@ -50,7 +50,7 @@ const BASE64_IMG_RE = /data:image\/[a-zA-Z]+;base64,[A-Za-z0-9+/=]+/g;
 // Downscale one base64 data URL to a small JPEG thumbnail using an offscreen
 // canvas. Returns the thumbnail data URL on success, or null on any failure
 // (corrupt data, canvas unavailable, etc.) so the caller can fall back gracefully.
-const downscaleToThumb = (dataUrl: string): Promise<string | null> =>
+export const downscaleToThumb = (dataUrl: string): Promise<string | null> =>
   new Promise((resolve) => {
     try {
       const img = new Image();

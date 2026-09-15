@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { HOOK_HELP, ACCENT_HELP, CTA_HELP } from '@/components/ImageGenSettings';
 import { Combobox } from '@/components/ui/Combobox';
 import { CopyNameButton } from '@/components/ui/CopyNameButton';
+import { FeedbackButtons, type FeedbackContext } from '@/components/ui/FeedbackButtons';
 import { AD_LANGUAGES } from '@/lib/geos';
 import { logEvent } from '@/lib/usage';
 import { makeUniqueCopy, type Brightness, type UniqueCopy } from '@/lib/imageUnique';
@@ -122,6 +123,9 @@ const fileToDataUrl = (file: File): Promise<string> =>
 interface ResultItem {
   url: string;
   fileName?: string;
+  /** Feedback context snapshot — undefined only for legacy code paths that
+   *  can't build it (there are none currently; kept optional for safety). */
+  feedback?: FeedbackContext;
 }
 
 interface IdeaTexts {
@@ -359,6 +363,27 @@ export const CreativeEditPage = () => {
     try {
       const imageDataUrl = await fileToDataUrl(file);
 
+      // Snapshot for the feedback buttons — captured now so a later form edit
+      // never changes what a vote is attributed to.
+      const promptSource = imagePrompt.trim() ? 'custom' : 'none';
+      const buildFeedbackCtx = (outputUrl: string): FeedbackContext => ({
+        feedbackId: crypto.randomUUID(),
+        tab: 'creative_edit',
+        operation: 'editCreative',
+        model: imageModel,
+        promptSource,
+        promptText: imagePrompt.trim(),
+        input: {
+          hook: hook.trim(),
+          accent: accent.trim(),
+          cta: cta.trim(),
+          language: language === 'Keep original language' ? '' : language,
+          aspectRatio,
+        },
+        inputImage: imageDataUrl,
+        outputImage: outputUrl,
+      });
+
       const response = await axios.post<unknown>(WEBHOOK, {
         image: imageDataUrl,
         hook: hook.trim(),
@@ -372,7 +397,7 @@ export const CreativeEditPage = () => {
       const data = response.data;
 
       if (typeof data === 'string') {
-        setResults((prev) => [...prev, { url: data }]);
+        setResults((prev) => [...prev, { url: data, feedback: buildFeedbackCtx(data) }]);
         logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
       } else if (
         data !== null &&
@@ -385,7 +410,7 @@ export const CreativeEditPage = () => {
           .filter((item): item is { url: string; fileName?: string } =>
             item !== null && typeof item === 'object' && 'url' in item && typeof (item as { url: unknown }).url === 'string',
           )
-          .map((item) => ({ url: item.url, fileName: item.fileName }));
+          .map((item) => ({ url: item.url, fileName: item.fileName, feedback: buildFeedbackCtx(item.url) }));
         setResults((prev) => [...prev, ...items]);
         logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
       } else if (
@@ -395,7 +420,7 @@ export const CreativeEditPage = () => {
         typeof (data as { url: unknown }).url === 'string'
       ) {
         const d = data as { url: string; fileName?: string };
-        setResults((prev) => [...prev, { url: d.url, fileName: d.fileName }]);
+        setResults((prev) => [...prev, { url: d.url, fileName: d.fileName, feedback: buildFeedbackCtx(d.url) }]);
         logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
       } else {
         console.error('[CreativeEdit] unexpected response', data);
@@ -1190,6 +1215,7 @@ export const CreativeEditPage = () => {
                       </a>
                       <CopyNameButton fileName={name} className="px-3 py-1.5 text-sm" />
                     </div>
+                    {item.feedback && <FeedbackButtons ctx={item.feedback} />}
                   </div>
                 );
               })}

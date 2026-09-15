@@ -90,6 +90,15 @@ export interface ImageVariant {
    *  'checked & passed' from 'never checked' so we don't claim every standard
    *  preset is compliant when no audit happened. */
   complianceChecked?: boolean;
+  /** Like/dislike feedback (Creative Gen only) — stable per-image id generated
+   *  when the result is parsed, so a re-vote upserts the same row. */
+  feedbackId?: string;
+  /** Where this variant's prompt came from: "preset:A".."preset:E4", "custom",
+   *  or "saved:<saved prompt name>". Derived from the n8n response's preset
+   *  suffix in parseCreativeImages. Undefined for legacy response shapes. */
+  promptSource?: string;
+  /** Custom/saved prompt body for this variant; empty for standard presets. */
+  promptText?: string;
 }
 interface CreativeTranslation {
   metaTitle: string;
@@ -115,6 +124,11 @@ export interface Creative {
    *  Hook/Accent/CTA, no pipeline); undefined = the classic Creatives tab.
    *  Column4 filters on this so the two tabs never show each other's batches. */
   origin?: 'creativeOnly';
+  /** Snapshot of non-text generation inputs, captured at request time — feeds
+   *  the feedback buttons' "input" column so a vote always reflects what was
+   *  actually generated, even if the operator changes the form afterward.
+   *  Creative Gen only. */
+  creativeGenInputSnapshot?: { aspect_ratio: string; presets: string[]; custom_blocks: CustomBlocks };
 }
 
 // === Angles tab — RSOC Audiences & Top-Pick Headlines (two-step HITL flow) ===
@@ -1230,11 +1244,22 @@ const parseCreativeImages = (result: any, fileMeta: CreativeFileMeta): ImageVari
       const bi = PRESET_ORDER.indexOf(b.suffix as typeof PRESET_ORDER[number]);
       return (ai === -1 ? PRESET_ORDER.length : ai) - (bi === -1 ? PRESET_ORDER.length : bi);
     });
-    images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta, compliant, complianceType, complianceDescription, policyReference, complianceChecked }) => ({
-      url, style, metaTitle, metaCopy, cta,
-      fileName: buildCreativeFilename(fileMeta, PRESET_SLOT[suffix] ?? suffix),
-      compliant, complianceType, complianceDescription, policyReference, complianceChecked,
-    }));
+    images = keyed.map(({ suffix, url, style, metaTitle, metaCopy, cta, compliant, complianceType, complianceDescription, policyReference, complianceChecked }) => {
+      // Feedback prompt_source: preset letter, "custom", or "saved:<name>"
+      // (style is the saved prompt's display name for suffix "saved<id>").
+      const promptSource = suffix === 'custom'
+        ? 'custom'
+        : suffix.startsWith('saved')
+          ? `saved:${style}`
+          : `preset:${suffix.toUpperCase()}`;
+      return {
+        url, style, metaTitle, metaCopy, cta,
+        fileName: buildCreativeFilename(fileMeta, PRESET_SLOT[suffix] ?? suffix),
+        compliant, complianceType, complianceDescription, policyReference, complianceChecked,
+        feedbackId: crypto.randomUUID(),
+        promptSource,
+      };
+    });
   } else if (Array.isArray(result.images)) {
     // Legacy fallback — older n8n versions only returned the flat array. Numbers
     // 1..N stay in response order; partial selections will be misnumbered, which is
@@ -1248,6 +1273,7 @@ const parseCreativeImages = (result: any, fileMeta: CreativeFileMeta): ImageVari
         metaCopy: '',
         cta: '',
         fileName: buildCreativeFilename(fileMeta, i + 1),
+        feedbackId: crypto.randomUUID(),
       }));
   } else if (typeof result.image_url === 'string') {
     images = [{
@@ -1257,6 +1283,7 @@ const parseCreativeImages = (result: any, fileMeta: CreativeFileMeta): ImageVari
       metaCopy: readString('meta_copy') || readString('meta_ad_copy'),
       cta: readString('banner_cta'),
       fileName: buildCreativeFilename(fileMeta, 1),
+      feedbackId: crypto.randomUUID(),
     }];
   }
   return images;
@@ -2697,6 +2724,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       chosenCreative: chosen_creative,
       fileMeta,
       origin: 'creativeOnly',
+      creativeGenInputSnapshot: {
+        aspect_ratio: get().aspectRatio,
+        presets: get().selectedPresets,
+        custom_blocks: get().customBlocks,
+      },
     };
     set((state) => ({
       creatives: [...state.creatives, placeholder],
@@ -2775,7 +2807,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (result === null) return; // the user deleted this creative card mid-poll
 
     const readString = (key: string): string => typeof result[key] === 'string' ? result[key] : '';
-    const images = parseCreativeImages(result, fileMeta);
+    const parsedImages = parseCreativeImages(result, fileMeta);
+
+    // Fill in prompt_text for the feedback buttons: custom uses the typed
+    // design direction, saved uses that prompt's own body (matched by name,
+    // since promptSource carries "saved:<name>"). Presets keep it empty.
+    const savedPromptByName = new Map(savedPromptsPayload.map((p) => [p.name, p.prompt]));
+    const images = parsedImages.map((img) => {
+      if (img.promptSource === 'custom') return { ...img, promptText: payload.custom_prompt || '' };
+      if (img.promptSource?.startsWith('saved:')) {
+        const name = img.promptSource.slice('saved:'.length);
+        return { ...img, promptText: savedPromptByName.get(name) || '' };
+      }
+      return img;
+    });
 
     // Card-level fields: there is no concept behind this run, so fall back to
     // the typed CTA when the workflow returns none.
