@@ -5,6 +5,7 @@ import { logEvent } from '@/lib/usage';
 import { listPrompts, type SavedPrompt } from '@/lib/prompts';
 import { getAuthEmail, isAdminEmail } from '@/lib/identity';
 import { adLanguagesForGeo } from '@/lib/geos';
+import { getTrackerFromTrackingUrl, DEFAULT_BINOM_TRACKER } from '@/lib/binomGroups';
 import {
   SCENE_SYSTEM_PROMPT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL, FRAME_COUNT,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
@@ -442,6 +443,79 @@ export interface TtCampaignResult {
   raw?: unknown;
 }
 
+// MEGATOOL — Newsbreak Copier: read a source NB campaign's tree (adsets + ads)
+// and clone it into a target NB account, optionally re-pointing the click URL
+// through a freshly cloned Binom campaign.
+export interface NbCopierTrackingEvent {
+  id: string;
+  name: string;
+  type?: string;
+  eventType?: string;
+}
+
+export interface NbCopierAd {
+  id: string;
+  name: string;
+  status: string;
+  auditStatus?: string;
+  type?: string; // IMAGE | VIDEO | GIF
+  headline?: string;
+  description?: string;
+  callToAction?: string;
+  brandName?: string;
+  assetUrl?: string;
+  height?: number;
+  width?: number;
+  clickThroughUrl?: string;
+}
+
+export interface NbCopierAdset {
+  id: string;
+  name: string;
+  status: string;
+  budget: number; // USD
+  bidType?: string;
+  bidRate?: number | null; // cents
+  roas?: number | null; // fraction
+  optimization?: boolean;
+  deliveryRate?: string;
+  trackingId?: string;
+  trackingEvent?: NbCopierTrackingEvent | null;
+  targeting?: unknown;
+  ads: NbCopierAd[];
+}
+
+export interface NbCopierReadResult {
+  ok: true;
+  sourceAccountId: string;
+  campaign: { id: string; name: string; status: string };
+  adsets: NbCopierAdset[];
+  totalAds: number;
+  trackingUrl: string;
+  binomKeys: string[];
+  isRoas: boolean;
+}
+
+export interface NbCopierCopyAdsetResult {
+  sourceAdsetId: string;
+  adsetId: string;
+  name: string;
+  status: string;
+  ads: { sourceAdId: string; adId: string; name: string; status: string }[];
+}
+
+export interface NbCopierCopyResult {
+  ok: true;
+  targetAccountId: string;
+  campaignId: string;
+  campaignName: string;
+  adsets: NbCopierCopyAdsetResult[];
+  adsetsCreated: number;
+  adsCreated: number;
+  totalAds: number;
+  errors: string[];
+}
+
 /** One finished run of the Video Generator prototype. `videoUrl` is a
  *  `data:video/mp4;base64,…` URI — the n8n workflow downloads the clip from
  *  OpenRouter and inlines it, same as the image workflows do for stills. */
@@ -684,6 +758,41 @@ interface AppState {
     startTimezone: 'PDT' | 'EEST';
     adStates: { adId: string; headline: string; description: string }[];
   };
+  /** Persistent Newsbreak Copier form state. Same rationale as megatoolNbForm —
+   *  hoisted out of the page so switching tabs mid-flow doesn't lose picks.
+   *  trackingEventId: null means "auto-match from the source campaign's first
+   *  ad set's tracking event"; a manual pick sets it explicitly. */
+  nbCopierForm: {
+    sourceAccountName: string;
+    sourceCampaignId: string;
+    targetAccountName: string;
+    campaignName: string;
+    budget: number;
+    startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+    startTimezone: 'PDT' | 'EEST';
+    trackingEventId: string | null;
+    bidType: 'SAME' | 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
+    targetCpaDollars: number;
+    roasPercent: number;
+    tracker: string;
+    trackerAutoSet: boolean;
+    newAmoDomain: string;
+    newAmoChannel: string;
+    newBinomGroup: string;
+    /** Blank = Binom workflow's default naming. */
+    binomCampaignName: string;
+    binomOfferName: string;
+  };
+  nbCopierRead: { status: ArticleStatus; result: NbCopierReadResult | null; error: string | null };
+  nbCopierCopy: { status: ArticleStatus; result: NbCopierCopyResult | null; error: string | null; step: string | null };
+  /** Cache of the last Binom clone created by runNbCopier, keyed by a
+   *  signature of its inputs — a retry after a failed NB-side step reuses
+   *  it instead of cloning a second Binom campaign. */
+  nbCopierBinom: { signature: string; result: BinomOfferResult } | null;
+  /** Target-account events for the copier. Kept apart from nbEvents: the
+   *  Binom/NB pages stay mounted (KeepAlive) with their own account, and a
+   *  shared slot would make the two pages refetch over each other. */
+  nbCopierEvents: { accountId: string | null; status: ArticleStatus; events: NbEvent[] | null; error: string | null };
   /** Persistent TT-campaign form state (Screen 1). Only conversionBidPrice
    *  is operator-editable today; the rest of the TT create payload uses
    *  hardcoded constants on the n8n side. */
@@ -764,6 +873,10 @@ interface AppState {
   resetBinomForm: () => void;
   setNbForm: (patch: Partial<AppState['megatoolNbForm']>) => void;
   resetNbForm: () => void;
+  setNbCopierForm: (patch: Partial<AppState['nbCopierForm']>) => void;
+  readNbCopierSource: () => Promise<void>;
+  fetchNbCopierEvents: (adAccountId: string) => Promise<void>;
+  runNbCopier: (input: { trackingId: string; eventType: string }) => Promise<void>;
   setTtForm: (patch: Partial<AppState['megatoolTtForm']>) => void;
   resetTtForm: () => void;
   createTtCampaign: (input: CreateTtCampaignInput) => Promise<void>;
@@ -885,6 +998,35 @@ const errorFromResponseBody = (e: any): string | null => {
   return `${msg}${body.step ? ` (step: ${body.step})` : ''}`;
 };
 
+// n8n's "allIncomingItems" wraps NB's JSON in a top-level array of
+// {json:{...}}; unwrap and pull `.list` (or `.data.list`) which holds
+// the events themselves.
+const parseNbEventsResponse = (data: unknown): NbEvent[] => {
+  const first = Array.isArray(data) ? data[0] : data;
+  const unwrapped = first && typeof first === 'object' && 'json' in first ? (first as any).json : first;
+  const nbBody = unwrapped && typeof unwrapped === 'object' && 'data' in unwrapped ? (unwrapped as any).data : unwrapped;
+  const rawList: any[] = Array.isArray(nbBody?.list)
+    ? nbBody.list
+    : Array.isArray(nbBody)
+      ? nbBody
+      : [];
+  return rawList
+    .map((r) => ({
+      id: String(r?.id ?? ''),
+      name: String(r?.name ?? ''),
+      type: r?.type,
+      eventType: r?.eventType,
+      url: r?.url,
+      orgId: r?.orgId != null ? String(r.orgId) : undefined,
+      adAccountId: r?.adAccountId != null ? String(r.adAccountId) : undefined,
+      version: r?.version,
+      appEvent: r?.appEvent,
+      createTime: r?.createTime,
+      updateTime: r?.updateTime,
+    }))
+    .filter((e) => e.id);
+};
+
 const WEBHOOKS = {
   angles: import.meta.env.PUBLIC_WEBHOOK_ANGLES_URL,
   concept: import.meta.env.PUBLIC_WEBHOOK_CONCEPT_URL,
@@ -912,6 +1054,8 @@ const WEBHOOKS = {
   ttCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_TT_CAMPAIGN_CREATOR_URL,
   nbAccountsList: import.meta.env.PUBLIC_WEBHOOK_NB_ACCOUNTS_LIST_URL,
   nbEventsList: import.meta.env.PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL,
+  nbCopierRead: import.meta.env.PUBLIC_WEBHOOK_NB_COPIER_READ_URL,
+  nbCopierCreate: import.meta.env.PUBLIC_WEBHOOK_NB_COPIER_CREATE_URL,
   ttAccountsList: import.meta.env.PUBLIC_WEBHOOK_TT_ACCOUNTS_LIST_URL,
   ttAccountContext: import.meta.env.PUBLIC_WEBHOOK_TT_ACCOUNT_CONTEXT_URL,
 };
@@ -1371,6 +1515,30 @@ export const useAppStore = create<AppState>((set, get) => ({
     startTimezone: 'PDT',
     adStates: [],
   },
+  nbCopierForm: {
+    sourceAccountName: '',
+    sourceCampaignId: '',
+    targetAccountName: '',
+    campaignName: '',
+    budget: 10,
+    startDate: 'now+3h',
+    startTimezone: 'PDT',
+    trackingEventId: null,
+    bidType: 'SAME',
+    targetCpaDollars: 5,
+    roasPercent: 120,
+    tracker: '',
+    trackerAutoSet: true,
+    newAmoDomain: 'same',
+    newAmoChannel: 'same',
+    newBinomGroup: 'same',
+    binomCampaignName: '',
+    binomOfferName: '',
+  },
+  nbCopierRead: { status: 'idle', result: null, error: null },
+  nbCopierCopy: { status: 'idle', result: null, error: null, step: null },
+  nbCopierBinom: null,
+  nbCopierEvents: { accountId: null, status: 'idle', events: null, error: null },
   megatoolTtForm: { conversionBidPrice: '0.5', dailyBudget: '20', startDateStr: '', startTimeStr: '', geoLabel: 'United States (US)', budgetLevel: 'adgroup', bidStrategy: 'target_cpa' },
   ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
@@ -1821,6 +1989,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       adStates: [],
     },
   }),
+  setNbCopierForm: (patch) => set((state) => ({
+    nbCopierForm: { ...state.nbCopierForm, ...patch },
+  })),
   setTtForm: (patch) => set((state) => ({
     megatoolTtForm: { ...state.megatoolTtForm, ...patch },
   })),
@@ -1964,6 +2135,260 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ nbCampaignStatus: 'error', nbCampaignError: msg, nbCampaignResult: null });
       get().showError(`NB Campaign Creator failed: ${msg}`);
       logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+    }
+  },
+
+  // MEGATOOL — Newsbreak Copier: read a source campaign's full tree.
+  readNbCopierSource: async () => {
+    const form = get().nbCopierForm;
+    const logMeta = { sourceAccountName: form.sourceAccountName, sourceCampaignId: form.sourceCampaignId };
+    const account = get().nbAccountsList.find((a) => a.name === form.sourceAccountName);
+    if (!account) {
+      const msg = 'Unknown source NB account — pick one from the list';
+      set({ nbCopierRead: { status: 'error', result: null, error: msg } });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-nb-copier', action: 'readSource', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    if (!WEBHOOKS.nbCopierRead) {
+      const msg = 'PUBLIC_WEBHOOK_NB_COPIER_READ_URL is not set in .env';
+      set({ nbCopierRead: { status: 'error', result: null, error: msg } });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-nb-copier', action: 'readSource', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    set({ nbCopierRead: { status: 'loading', result: null, error: null } });
+    try {
+      const { data } = await axios.post(
+        WEBHOOKS.nbCopierRead,
+        { sourceAccountId: account.id, campaignId: form.sourceCampaignId.trim() },
+        { timeout: 120_000 },
+      );
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer || outer.ok === false) {
+        const msg = outer?.error || 'NB Copier read returned an error';
+        const step = outer?.step ? ` (step: ${outer.step})` : '';
+        const full = `${msg}${step}`;
+        set({ nbCopierRead: { status: 'error', result: null, error: full } });
+        get().showError(`NB Copier: ${full}`);
+        logEvent({ tab: 'megatool-nb-copier', action: 'readSource', meta: logMeta, metaOut: outer, errorMessage: full });
+        return;
+      }
+      const result: NbCopierReadResult = outer;
+      // Default campaign name: "<source name> SCALING dd.mm.yyyy" — today's
+      // date in Kyiv, matching how the rest of the megatool dates its output.
+      const fmt = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric',
+      });
+      const parts = fmt.formatToParts(new Date());
+      const dd = parts.find((p) => p.type === 'day')?.value ?? '';
+      const mm = parts.find((p) => p.type === 'month')?.value ?? '';
+      const yyyy = parts.find((p) => p.type === 'year')?.value ?? '';
+      set((state) => ({
+        nbCopierRead: { status: 'success', result, error: null },
+        nbCopierForm: {
+          ...state.nbCopierForm,
+          campaignName: `${result.campaign?.name ?? ''} SCALING ${dd}.${mm}.${yyyy}`,
+          trackingEventId: null,
+          // `||` (not `??`) — an unmapped AMO domain falls through past the
+          // initial empty-string tracker default to DEFAULT_BINOM_TRACKER.
+          tracker: getTrackerFromTrackingUrl(result.trackingUrl) || state.nbCopierForm.tracker || DEFAULT_BINOM_TRACKER,
+          trackerAutoSet: true,
+        },
+        // A fresh read starts a fresh copy run — drop any stale result/error
+        // from a previous source campaign, and drop the cached Binom clone so
+        // it isn't reused across unrelated source campaigns.
+        nbCopierCopy: { status: 'idle', result: null, error: null, step: null },
+        nbCopierBinom: null,
+      }));
+      logEvent({
+        tab: 'megatool-nb-copier',
+        action: 'readSource',
+        meta: logMeta,
+        metaOut: { totalAds: result.totalAds, adsets: result.adsets?.length ?? 0 },
+      });
+    } catch (e) {
+      console.error('[readNbCopierSource]', e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
+      set({ nbCopierRead: { status: 'error', result: null, error: msg } });
+      get().showError(`NB Copier read failed: ${msg}`);
+      logEvent({ tab: 'megatool-nb-copier', action: 'readSource', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+    }
+  },
+
+  fetchNbCopierEvents: async (adAccountId) => {
+    if (!adAccountId) return;
+    if (!WEBHOOKS.nbEventsList) {
+      const msg = 'PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL is not set in .env';
+      set({ nbCopierEvents: { accountId: adAccountId, status: 'error', events: null, error: msg } });
+      return;
+    }
+    set({ nbCopierEvents: { accountId: adAccountId, status: 'loading', events: null, error: null } });
+    try {
+      const { data } = await axios.post(WEBHOOKS.nbEventsList, { adAccountId }, { timeout: 30_000 });
+      // Ignore a late response for an account the operator already switched away from.
+      if (get().nbCopierEvents.accountId !== adAccountId) return;
+      set({ nbCopierEvents: { accountId: adAccountId, status: 'success', events: parseNbEventsResponse(data), error: null } });
+    } catch (e) {
+      console.error('[fetchNbCopierEvents]', e);
+      if (get().nbCopierEvents.accountId !== adAccountId) return;
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
+      set({ nbCopierEvents: { accountId: adAccountId, status: 'error', events: null, error: msg } });
+    }
+  },
+
+  // MEGATOOL — Newsbreak Copier: clone the read campaign into the target
+  // account, optionally cloning a Binom campaign first (skipped when the
+  // AMO domain/channel/group are all left as "same" — the source ads' click
+  // URLs are reused as-is, only event= is updated server-side).
+  runNbCopier: async ({ trackingId, eventType }) => {
+    const form = get().nbCopierForm;
+    const read = get().nbCopierRead.result;
+    if (!read) return;
+    const targetAccount = get().nbAccountsList.find((a) => a.name === form.targetAccountName);
+    const logMeta = {
+      sourceCampaignId: form.sourceCampaignId,
+      targetAccountName: form.targetAccountName,
+      campaignName: form.campaignName,
+      budget: form.budget,
+      bidType: form.bidType,
+    };
+    if (!targetAccount) {
+      const msg = 'Unknown target NB account — pick one from the list';
+      set({ nbCopierCopy: { status: 'error', result: null, error: msg, step: null } });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-nb-copier', action: 'copyCampaign', meta: logMeta, errorMessage: msg });
+      return;
+    }
+    if (!WEBHOOKS.nbCopierCreate) {
+      const msg = 'PUBLIC_WEBHOOK_NB_COPIER_CREATE_URL is not set in .env';
+      set({ nbCopierCopy: { status: 'error', result: null, error: msg, step: null } });
+      get().showError(msg);
+      logEvent({ tab: 'megatool-nb-copier', action: 'copyCampaign', meta: logMeta, errorMessage: msg });
+      return;
+    }
+
+    const norm = (v: string) => (v ?? '').trim().toLowerCase();
+    const allSame = ['same', ''].includes(norm(form.newAmoDomain))
+      && ['same', ''].includes(norm(form.newAmoChannel))
+      && ['same', ''].includes(norm(form.newBinomGroup));
+
+    set({ nbCopierCopy: { status: 'loading', result: null, error: null, step: 'binom' } });
+
+    let binomCampaignUrl = '';
+    try {
+      if (!allSame) {
+        const signature = JSON.stringify({
+          trackingUrl: read.trackingUrl,
+          newAmoDomain: form.newAmoDomain,
+          newAmoChannel: form.newAmoChannel,
+          newBinomGroup: form.newBinomGroup,
+          tracker: form.tracker,
+          eventType,
+          binomCampaignName: form.binomCampaignName.trim(),
+          binomOfferName: form.binomOfferName.trim(),
+        });
+        const cached = get().nbCopierBinom;
+        if (cached && cached.signature === signature) {
+          binomCampaignUrl = cached.result.binomCampaignUrl;
+        } else {
+          if (!WEBHOOKS.binomOfferCreator) {
+            throw new Error('PUBLIC_WEBHOOK_BINOM_OFFER_CREATOR_URL is not set in .env');
+          }
+          const isRoas = form.bidType === 'TARGET_ROAS' || (form.bidType === 'SAME' && read.isRoas);
+          const ident = await getAuthEmail();
+          const email = ident?.email ?? 'unknown@unknown';
+          const binomPayload = {
+            trackingUrl: read.trackingUrl,
+            email,
+            newAmoDomain: form.newAmoDomain,
+            newAmoChannel: form.newAmoChannel.trim() || 'same',
+            newBinomGroup: form.newBinomGroup,
+            tracker: form.tracker,
+            isRoas,
+            binomCampaignName: form.binomCampaignName.trim(),
+            binomOfferName: form.binomOfferName.trim(),
+            nbEventType: eventType,
+            destination: 'NB',
+            ttPixelCode: '',
+          };
+          console.log('[runNbCopier] binom payload:', binomPayload);
+          const { data } = await axios.post(WEBHOOKS.binomOfferCreator, binomPayload, { timeout: 180_000 });
+          const outer = Array.isArray(data) ? data[0] : data;
+          if (!outer || outer.ok === false) {
+            const msg = outer?.error || 'Binom Offer Creator returned an error';
+            const step = outer?.step ? ` (step: ${outer.step})` : '';
+            throw new Error(`${msg}${step}`);
+          }
+          const binomResult: BinomOfferResult = {
+            ok: true,
+            tracker: outer.tracker,
+            domain: outer.domain,
+            binomOfferIds: Array.isArray(outer.binomOfferIds) ? outer.binomOfferIds.map(String) : [],
+            binomCampaignId: String(outer.binomCampaignId ?? ''),
+            binomCampaignUrl: String(outer.binomCampaignUrl ?? ''),
+            binomCampaignName: outer.binomCampaignName,
+            originalCampaignId: outer.originalCampaignId,
+            originalKey: outer.originalKey,
+            ...outer,
+          };
+          set({ nbCopierBinom: { signature, result: binomResult } });
+          binomCampaignUrl = binomResult.binomCampaignUrl;
+        }
+      }
+    } catch (e) {
+      console.error('[runNbCopier binom]', e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
+      set({ nbCopierCopy: { status: 'error', result: null, error: msg, step: 'binom' } });
+      get().showError(`NB Copier (Binom step) failed: ${msg}`);
+      logEvent({ tab: 'megatool-nb-copier', action: 'copyCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
+      return;
+    }
+
+    set({ nbCopierCopy: { status: 'loading', result: null, error: null, step: 'nb' } });
+    try {
+      const payload = {
+        sourceAccountId: read.sourceAccountId,
+        sourceCampaignId: form.sourceCampaignId.trim(),
+        targetAccountId: targetAccount.id,
+        campaignName: form.campaignName.trim(),
+        budget: form.budget,
+        startDate: form.startDate,
+        startTimezone: form.startTimezone,
+        trackingId,
+        eventType,
+        bidType: form.bidType,
+        ...(form.bidType === 'TARGET_CPA' ? { bidRate: Math.round(form.targetCpaDollars * 100) } : {}),
+        ...(form.bidType === 'TARGET_ROAS' ? { roas: form.roasPercent / 100 } : {}),
+        binomCampaignUrl: allSame ? '' : binomCampaignUrl,
+        adsets: read.adsets,
+      };
+      console.log('[runNbCopier] create payload:', payload);
+      const { data } = await axios.post(WEBHOOKS.nbCopierCreate, payload, { timeout: 600_000 });
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer || outer.ok === false) {
+        const msg = outer?.error || 'NB Copier returned an error';
+        const step = outer?.step ? ` (step: ${outer.step})` : '';
+        const full = `${msg}${step}`;
+        set({ nbCopierCopy: { status: 'error', result: null, error: full, step: outer?.step ?? 'nb' } });
+        get().showError(`NB Copier: ${full}`);
+        logEvent({ tab: 'megatool-nb-copier', action: 'copyCampaign', meta: logMeta, metaOut: outer, errorMessage: full });
+        return;
+      }
+      const result: NbCopierCopyResult = outer;
+      set({ nbCopierCopy: { status: 'success', result, error: null, step: null } });
+      logEvent({
+        tab: 'megatool-nb-copier',
+        action: 'copyCampaign',
+        meta: logMeta,
+        metaOut: { campaignId: result.campaignId, adsetsCreated: result.adsetsCreated, adsCreated: result.adsCreated, errors: result.errors },
+      });
+    } catch (e) {
+      console.error('[runNbCopier]', e);
+      const msg = errorFromResponseBody(e) ?? humanizeError(e);
+      set({ nbCopierCopy: { status: 'error', result: null, error: msg, step: 'nb' } });
+      get().showError(`NB Copier failed: ${msg}`);
+      logEvent({ tab: 'megatool-nb-copier', action: 'copyCampaign', meta: logMeta, metaOut: (e as any)?.response?.data, errorMessage: msg });
     }
   },
 
@@ -2168,32 +2593,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ nbEventsStatus: 'loading', nbEventsError: null, nbEvents: null, nbEventsAccountId: adAccountId });
     try {
       const { data } = await axios.post(url, { adAccountId }, { timeout: 30_000 });
-      // n8n's "allIncomingItems" wraps NB's JSON in a top-level array of
-      // {json:{...}}; unwrap and pull `.list` (or `.data.list`) which holds
-      // the events themselves.
-      const first = Array.isArray(data) ? data[0] : data;
-      const unwrapped = first && typeof first === 'object' && 'json' in first ? (first as any).json : first;
-      const nbBody = unwrapped && typeof unwrapped === 'object' && 'data' in unwrapped ? (unwrapped as any).data : unwrapped;
-      const rawList: any[] = Array.isArray(nbBody?.list)
-        ? nbBody.list
-        : Array.isArray(nbBody)
-          ? nbBody
-          : [];
-      const events: NbEvent[] = rawList
-        .map((r) => ({
-          id: String(r?.id ?? ''),
-          name: String(r?.name ?? ''),
-          type: r?.type,
-          eventType: r?.eventType,
-          url: r?.url,
-          orgId: r?.orgId != null ? String(r.orgId) : undefined,
-          adAccountId: r?.adAccountId != null ? String(r.adAccountId) : undefined,
-          version: r?.version,
-          appEvent: r?.appEvent,
-          createTime: r?.createTime,
-          updateTime: r?.updateTime,
-        }))
-        .filter((e) => e.id);
+      const events = parseNbEventsResponse(data);
       set({ nbEventsStatus: 'success', nbEvents: events, nbEventsError: null, nbEventsAccountId: adAccountId });
     } catch (e) {
       console.error('[fetchNbEvents]', e);

@@ -754,7 +754,7 @@ const ACTION_PALETTE = [
 // unreachable by the filter (they still show while no pill is selected, which
 // is what makes an omission easy to miss). The current set is: creatives,
 // creative_gen, creative-edit, keywords, angles, article, video_gen,
-// megatool-fb, megatool-binom, megatool-nb, megatool-tt.
+// megatool-fb, megatool-binom, megatool-nb, megatool-tt, megatool-nb-copier.
 const TAB_OPTIONS: { label: string; tabs: string[] }[] = [
   { label: 'creatives',     tabs: ['creatives'] },
   { label: 'creative_gen',  tabs: ['creative_gen'] },
@@ -765,6 +765,7 @@ const TAB_OPTIONS: { label: string; tabs: string[] }[] = [
   { label: 'article',       tabs: ['article'] },
   { label: 'FB-NB',         tabs: ['megatool-fb', 'megatool-binom', 'megatool-nb'] },
   { label: 'FB-TT',         tabs: ['megatool-fb', 'megatool-tt'] },
+  { label: 'NB Copier',     tabs: ['megatool-nb-copier'] },
 ];
 
 const GraphView = ({ rows }: { rows: UsageRow[] }) => {
