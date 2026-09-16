@@ -20,6 +20,45 @@ import {
 
 type NbCopierBidType = 'SAME' | 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
 
+// Mirrors rewriteOfferName() in the "MEGATOOL Create Binom Offer" n8n node, so
+// the prefilled offer names match what Binom would get with the field left alone.
+const KNOWN_AMO_DOMAIN_BASES = [
+  'perabianco', 'pancettafuns', 'walletilo', 'contranoche', 'contradia',
+  'healthquix', 'geeksstory', 'finomira', 'fintreat', 'healquix',
+];
+const rewriteOfferName = (originalName: string, newAmoDomain: string, newAmoChannel: string): string => {
+  let offerName = originalName;
+  if (newAmoChannel && newAmoChannel !== 'same') {
+    offerName = offerName.replace(/\s*\|\s*ch\s+\S+/gi, '');
+    offerName = offerName.trimEnd() + ` New CH = ${newAmoChannel}`;
+  }
+  if (newAmoDomain && newAmoDomain !== 'same') {
+    const newDomainBase = String(newAmoDomain).trim().replace(/\.(?:com|net|org|io)$/i, '');
+    for (const known of KNOWN_AMO_DOMAIN_BASES) {
+      const re = new RegExp(`(\\|)\\s*${known}\\s*(?=\\|)`, 'gi');
+      if (re.test(offerName)) {
+        offerName = offerName.replace(re, '$1');
+        break;
+      }
+    }
+    const newDomainLabel = `| New AMO ${newDomainBase.charAt(0).toUpperCase() + newDomainBase.slice(1)} `;
+    if (offerName.includes('New CH =')) {
+      offerName = offerName.replace(/\s*New CH =/, ` ${newDomainLabel}| New CH =`);
+    } else {
+      offerName = offerName.trimEnd() + ` ${newDomainLabel.trim()}`;
+    }
+  }
+  return offerName;
+};
+
+const kyivDateStr = () => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric',
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return `${get('day')}.${get('month')}.${get('year')}`;
+};
+
 const isActiveStatus = (status: string | undefined) => {
   const s = (status ?? '').toUpperCase();
   return s === 'ACTIVE' || s === 'ON';
@@ -104,7 +143,7 @@ export const MegatoolNbCopierPage = () => {
     sourceAccountName, sourceCampaignId, targetAccountName, campaignName, budget,
     startDate, startTimezone, trackingEventId, bidType, targetCpaDollars, roasPercent,
     tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup,
-    binomCampaignName, binomOfferName,
+    binomCampaignName, binomOfferNames,
   } = form;
 
   useEffect(() => {
@@ -197,6 +236,18 @@ export const MegatoolNbCopierPage = () => {
     && ['same', ''].includes(norm(newAmoChannel))
     && ['same', ''].includes(norm(newBinomGroup));
 
+  // Prefills for the Binom name fields — same defaults the Binom workflow
+  // would apply; an operator edit (stored in the form) takes precedence.
+  const sourceBinom = read.result?.binom && !read.result.binom.error ? read.result.binom : null;
+  const effectiveIsRoas = bidType === 'TARGET_ROAS' || (bidType === 'SAME' && !!read.result?.isRoas);
+  const defaultBinomCampaignName = sourceBinom?.campaignName
+    ? `${effectiveIsRoas ? 'ROAS | ' : ''}${sourceBinom.campaignName} MEGATOOL ${kyivDateStr()}`
+    : '';
+  const sourceOffers = sourceBinom?.offers ?? [];
+  const shownBinomCampaignName = binomCampaignName || defaultBinomCampaignName;
+  const shownOfferName = (o: { id: string; name: string }) =>
+    binomOfferNames[o.id] ?? rewriteOfferName(o.name, newAmoDomain, newAmoChannel);
+
   const isReading = read.status === 'loading';
   const isCopying = copy.status === 'loading';
 
@@ -216,7 +267,17 @@ export const MegatoolNbCopierPage = () => {
 
   const handleCopy = () => {
     if (!canCopy || !pickedEvent) return;
-    void runNbCopier({ trackingId: pickedEvent.id, eventType: pickedEvent.eventType ?? '' });
+    const offerNames: Record<string, string> = {};
+    for (const o of sourceOffers) {
+      const n = shownOfferName(o).trim();
+      if (n) offerNames[o.id] = n;
+    }
+    void runNbCopier({
+      trackingId: pickedEvent.id,
+      eventType: pickedEvent.eventType ?? '',
+      binomCampaignName: shownBinomCampaignName.trim(),
+      binomOfferNames: offerNames,
+    });
   };
 
   const STATUS_LABEL: Record<string, string> = {
@@ -583,22 +644,38 @@ export const MegatoolNbCopierPage = () => {
                 </p>
               ) : (
                 <>
+                  {read.result.binom?.error && (
+                    <p className="text-xs text-amber-700">
+                      Не вдалося прочитати кампанію в Binom ({read.result.binom.error}) — назви будуть за замовчуванням.
+                    </p>
+                  )}
                   <div>
                     <label className="text-xs font-medium uppercase text-slate-500">Binom Campaign Name</label>
                     <Input
-                      value={binomCampaignName}
+                      value={shownBinomCampaignName}
                       onChange={(e) => setForm({ binomCampaignName: e.target.value })}
-                      placeholder="Порожньо = <назва кампанії> MEGATOOL дд.мм.рррр"
+                      placeholder="<назва кампанії> MEGATOOL дд.мм.рррр"
                     />
+                    {sourceBinom?.campaignName && (
+                      <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={sourceBinom.campaignName}>
+                        Оригінал ({sourceBinom.campaignId}): {sourceBinom.campaignName}
+                      </div>
+                    )}
                   </div>
-                  <div>
-                    <label className="text-xs font-medium uppercase text-slate-500">Binom Offer Name</label>
-                    <Input
-                      value={binomOfferName}
-                      onChange={(e) => setForm({ binomOfferName: e.target.value })}
-                      placeholder="Порожньо = назва оригінального офера (+ New AMO / New CH)"
-                    />
-                  </div>
+                  {sourceOffers.map((o, i) => (
+                    <div key={o.id}>
+                      <label className="text-xs font-medium uppercase text-slate-500">
+                        Binom Offer Name{sourceOffers.length > 1 ? ` #${i + 1}` : ''}
+                      </label>
+                      <Input
+                        value={shownOfferName(o)}
+                        onChange={(e) => setForm({ binomOfferNames: { ...binomOfferNames, [o.id]: e.target.value } })}
+                      />
+                      <div className="text-[10px] text-slate-500 mt-0.5 truncate" title={o.name}>
+                        Оригінал ({o.id}): {o.name}
+                      </div>
+                    </div>
+                  ))}
                 </>
               )}
             </section>

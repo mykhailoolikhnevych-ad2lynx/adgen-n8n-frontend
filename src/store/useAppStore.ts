@@ -493,6 +493,15 @@ export interface NbCopierReadResult {
   totalAds: number;
   trackingUrl: string;
   binomKeys: string[];
+  /** Source Binom campaign + offers (for name prefill); `error` when the lookup failed. */
+  binom?: {
+    tracker?: string;
+    key?: string;
+    campaignId?: string;
+    campaignName?: string;
+    offers?: { id: string; name: string }[];
+    error?: string;
+  } | null;
   isRoas: boolean;
 }
 
@@ -779,9 +788,11 @@ interface AppState {
     newAmoDomain: string;
     newAmoChannel: string;
     newBinomGroup: string;
-    /** Blank = Binom workflow's default naming. */
+    /** Operator edits only — blank / missing means "use the prefilled default"
+     *  the page computes from the source Binom names. Offer names are keyed by
+     *  the source offer id. */
     binomCampaignName: string;
-    binomOfferName: string;
+    binomOfferNames: Record<string, string>;
   };
   nbCopierRead: { status: ArticleStatus; result: NbCopierReadResult | null; error: string | null };
   nbCopierCopy: { status: ArticleStatus; result: NbCopierCopyResult | null; error: string | null; step: string | null };
@@ -876,7 +887,12 @@ interface AppState {
   setNbCopierForm: (patch: Partial<AppState['nbCopierForm']>) => void;
   readNbCopierSource: () => Promise<void>;
   fetchNbCopierEvents: (adAccountId: string) => Promise<void>;
-  runNbCopier: (input: { trackingId: string; eventType: string }) => Promise<void>;
+  runNbCopier: (input: {
+    trackingId: string;
+    eventType: string;
+    binomCampaignName: string;
+    binomOfferNames: Record<string, string>;
+  }) => Promise<void>;
   setTtForm: (patch: Partial<AppState['megatoolTtForm']>) => void;
   resetTtForm: () => void;
   createTtCampaign: (input: CreateTtCampaignInput) => Promise<void>;
@@ -1533,7 +1549,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     newAmoChannel: 'same',
     newBinomGroup: 'same',
     binomCampaignName: '',
-    binomOfferName: '',
+    binomOfferNames: {},
   },
   nbCopierRead: { status: 'idle', result: null, error: null },
   nbCopierCopy: { status: 'idle', result: null, error: null, step: null },
@@ -2190,6 +2206,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           ...state.nbCopierForm,
           campaignName: `${result.campaign?.name ?? ''} SCALING ${dd}.${mm}.${yyyy}`,
           trackingEventId: null,
+          binomCampaignName: '',
+          binomOfferNames: {},
           // `||` (not `??`) — an unmapped AMO domain falls through past the
           // initial empty-string tracker default to DEFAULT_BINOM_TRACKER.
           tracker: getTrackerFromTrackingUrl(result.trackingUrl) || state.nbCopierForm.tracker || DEFAULT_BINOM_TRACKER,
@@ -2241,7 +2259,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // account, optionally cloning a Binom campaign first (skipped when the
   // AMO domain/channel/group are all left as "same" — the source ads' click
   // URLs are reused as-is, only event= is updated server-side).
-  runNbCopier: async ({ trackingId, eventType }) => {
+  runNbCopier: async ({ trackingId, eventType, binomCampaignName, binomOfferNames }) => {
     const form = get().nbCopierForm;
     const read = get().nbCopierRead.result;
     if (!read) return;
@@ -2285,8 +2303,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           newBinomGroup: form.newBinomGroup,
           tracker: form.tracker,
           eventType,
-          binomCampaignName: form.binomCampaignName.trim(),
-          binomOfferName: form.binomOfferName.trim(),
+          binomCampaignName,
+          binomOfferNames,
         });
         const cached = get().nbCopierBinom;
         if (cached && cached.signature === signature) {
@@ -2306,8 +2324,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             newBinomGroup: form.newBinomGroup,
             tracker: form.tracker,
             isRoas,
-            binomCampaignName: form.binomCampaignName.trim(),
-            binomOfferName: form.binomOfferName.trim(),
+            binomCampaignName,
+            binomOfferNames,
             nbEventType: eventType,
             destination: 'NB',
             ttPixelCode: '',
