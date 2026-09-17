@@ -44,7 +44,7 @@ interface MegatoolCreateBinomOfferPageProps {
   onOpenNbCampaign?: () => void;
 }
 
-const CopyableCard = ({ label, value, isLink }: { label: string; value: string; isLink?: boolean }) => {
+export const CopyableCard = ({ label, value, isLink }: { label: string; value: string; isLink?: boolean }) => {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
     if (!value) return;

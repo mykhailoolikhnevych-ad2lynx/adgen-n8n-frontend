@@ -19,25 +19,27 @@ const STATUS_COLOR: Record<ArticleStatus, string> = {
   error: 'text-red-600',
 };
 
-const START_DATE_OPTIONS = [
+// Exported so other megatool pages (e.g. Newsbreak Copier) reuse the same
+// start-date/timezone options instead of duplicating them.
+export const START_DATE_OPTIONS = [
   { label: 'Зараз +3 год', value: 'now+3h' },
   { label: 'Завтра', value: 'tomorrow' },
   { label: 'Післязавтра', value: 'tomorrow+1' },
   { label: 'Через 3 дні', value: 'tomorrow+2' },
 ] as const;
 
-type StartDate = 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+export type StartDate = 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
 
 /** Relative offsets ignore the timezone picker — they're anchored to "now". */
-const RELATIVE_START_DATES: StartDate[] = ['now+3h'];
-type StartTimezone = 'PDT' | 'EEST';
+export const RELATIVE_START_DATES: StartDate[] = ['now+3h'];
+export type StartTimezone = 'PDT' | 'EEST';
 
 // Flip to true when the n8n workflow supports body.startTimezone again. The
 // dropdown + payload field are ready to go — this flag just gates visibility
 // and whether we ship the field over the wire.
 const TIMEZONE_PICKER_ENABLED = true;
 
-const TIMEZONE_OPTIONS: Array<{ value: StartTimezone; label: string }> = [
+export const TIMEZONE_OPTIONS: Array<{ value: StartTimezone; label: string }> = [
   { value: 'PDT', label: 'PDT (Los Angeles, UTC-7)' },
   { value: 'EEST', label: 'EEST (Kyiv, UTC+3)' },
 ];

@@ -17,6 +17,7 @@ import { VideoGenPage } from './pages/VideoGenPage';
 import { MegatoolFBCampaignPage } from './pages/MegatoolFBCampaignPage';
 import { MegatoolCreateBinomOfferPage } from './pages/MegatoolCreateBinomOfferPage';
 import { MegatoolCreateNbCampaignPage } from './pages/MegatoolCreateNbCampaignPage';
+import { MegatoolNbCopierPage } from './pages/MegatoolNbCopierPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail, isAdminEmail } from '@/lib/identity';
 
@@ -25,9 +26,10 @@ type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article'
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
 // active megatool here. Adding a second tool = append to this list.
-type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign';
+type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier';
 const MEGATOOL_NAV: { value: MegatoolPage; label: string }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
+  { value: 'nb-copier', label: 'Newsbreak Copier' },
 ];
 
 const BASE_NAV: { value: Page; label: string }[] = [
@@ -490,6 +492,10 @@ export default function MainApp() {
           {/* Megatool mode */}
           <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'fb-campaign-reader'}>
             <MegatoolFBCampaignPage onOpenBinomOffer={handleOpenBinomOffer} />
+          </KeepAlive>
+          {/* Newsbreak Copier — standalone megatool tab, no cross-tab gating. */}
+          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'nb-copier'}>
+            <MegatoolNbCopierPage />
           </KeepAlive>
           {/* Closing the Binom sub-tab (×) means "discard this offer draft", so it
               stays gated on binomOfferOpen — closing still resets the form. */}
