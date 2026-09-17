@@ -208,6 +208,15 @@ export const MegatoolNbCopierPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nbEventsStatus, pickedEventSupportsRoas]);
 
+  // NB campaign name carries "[ROAS] " while Target ROAS is the chosen bid type.
+  useEffect(() => {
+    const ROAS_PREFIX = '[ROAS] ';
+    const hasPrefix = campaignName.startsWith(ROAS_PREFIX);
+    if (bidType === 'TARGET_ROAS' && !hasPrefix) setForm({ campaignName: ROAS_PREFIX + campaignName });
+    if (bidType !== 'TARGET_ROAS' && hasPrefix) setForm({ campaignName: campaignName.slice(ROAS_PREFIX.length) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bidType]);
+
   const isAutoMatch = !trackingEventId;
   const matchesSourceByName = !!sourceEvent && !!pickedEvent && pickedEvent.name === sourceEvent.name;
 
