@@ -2204,7 +2204,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         nbCopierRead: { status: 'success', result, error: null },
         nbCopierForm: {
           ...state.nbCopierForm,
+          // "2. Target" starts clean for every read — nothing carries over
+          // from the previous source campaign.
+          targetAccountName: '',
           campaignName: `${result.campaign?.name ?? ''} SCALING ${dd}.${mm}.${yyyy}`,
+          budget: 10,
+          startDate: 'now+3h',
+          startTimezone: 'PDT',
+          bidType: 'SAME',
+          targetCpaDollars: 5,
+          roasPercent: 120,
           trackingEventId: null,
           binomCampaignName: '',
           binomOfferNames: {},
@@ -2218,6 +2227,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         // it isn't reused across unrelated source campaigns.
         nbCopierCopy: { status: 'idle', result: null, error: null, step: null },
         nbCopierBinom: null,
+        nbCopierEvents: { accountId: null, status: 'idle', events: null, error: null },
       }));
       logEvent({
         tab: 'megatool-nb-copier',

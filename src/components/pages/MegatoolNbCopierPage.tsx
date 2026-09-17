@@ -725,10 +725,12 @@ export const MegatoolNbCopierPage = () => {
               <>
                 {!allSame && binomCache?.result && (
                   <>
+                    <CopyableCard
+                      label="Binom Offer ID(s)"
+                      value={(binomCache.result.binomOfferIds ?? []).join(', ')}
+                    />
+                    <CopyableCard label="Binom Campaign ID" value={binomCache.result.binomCampaignId ?? ''} />
                     <CopyableCard label="Binom Campaign URL" value={binomCache.result.binomCampaignUrl ?? ''} isLink />
-                    {binomCache.result.binomCampaignName && (
-                      <CopyableCard label="Binom Campaign Name" value={binomCache.result.binomCampaignName} />
-                    )}
                   </>
                 )}
                 <CopyableCard label="NB Campaign ID" value={copy.result.campaignId} />
