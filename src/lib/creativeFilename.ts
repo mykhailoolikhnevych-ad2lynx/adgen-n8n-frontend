@@ -81,7 +81,9 @@ const AD_LANGUAGE_CODES: Record<string, string> = {
 const IMAGE_MODEL_CODES: Record<string, string> = {
   'google/gemini-3-pro-image-preview': 'nbp',     // Nano banana pro
   'google/gemini-3.1-flash-image-preview': 'nb2', // Nano banana 2
-  'openai/gpt-5.4-image-2': 'gi2',                // GPT-image2
+  'openai/gpt-image-2': 'gi2',                    // GPT-image2
+  'openai/gpt-image-2.5-flare': 'gi25f',          // GPT-image2.5 Flare
+  'openai/gpt-image-2.5-sunburst': 'gi25s',       // GPT-image2.5 Sunburst
   'bytedance-seed/seedream-4.5': 'sd45',          // Seedream 4.5
 };
 

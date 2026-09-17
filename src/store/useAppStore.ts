@@ -1576,7 +1576,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttCampaignStatus: 'idle', ttCampaignResult: null, ttCampaignError: null,
   rsocBundle: null, rsocAudiencesStatus: 'idle', rsocAudiencesError: null,
   rsocHeadlines: [], rsocHeadlinesStatus: 'idle', rsocHeadlinesError: null,
-  imageGenerationModel: 'google/gemini-3-pro-image-preview',
+  imageGenerationModel: 'openai/gpt-image-2.5-sunburst',
   adLanguage: 'English (US)',
   aspectRatio: '1:1',
   // Default: nothing pre-selected. Operators explicitly opt into the standard

@@ -56,7 +56,9 @@ const CUSTOM_BLOCK_DEFS: { key: keyof CustomBlocks; label: string; token: string
 const IMAGE_MODELS: { label: string; value: string }[] = [
   { label: 'Nano banana 2', value: 'google/gemini-3.1-flash-image-preview' },
   { label: 'Nano banana pro', value: 'google/gemini-3-pro-image-preview' },
-  { label: 'GPT-image2', value: 'openai/gpt-5.4-image-2' },
+  { label: 'GPT-image2', value: 'openai/gpt-image-2' },
+  { label: 'GPT-image2.5 Flare', value: 'openai/gpt-image-2.5-flare' },
+  { label: 'GPT-image2.5 Sunburst', value: 'openai/gpt-image-2.5-sunburst' },
   { label: 'Seedream 4.5', value: 'bytedance-seed/seedream-4.5' },
 ];
 

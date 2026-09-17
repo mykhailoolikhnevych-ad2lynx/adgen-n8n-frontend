@@ -1488,7 +1488,7 @@ Return ONLY a JSON object. Per creative:
           kind: 'kv',
           rows: [
             { k: 'Nano banana 2 / pro', v: 'google/gemini-3.1-flash-image-preview / gemini-3-pro-image-preview. Дешеві, швидкі, добре тримають текст на банері.' },
-            { k: 'GPT-image2', v: 'openai/gpt-5.4-image-2. Кращий за фотореалістичні сцени, гірший за стилізовані ілюстрації.' },
+            { k: 'GPT-image2', v: 'openai/gpt-image-2.Кращий за фотореалістичні сцени, гірший за стилізовані ілюстрації.' },
             { k: 'Seedream 4.5', v: 'bytedance-seed/seedream-4.5. Сильний у яскравій графіці й clickbait-композиції.' },
             { k: 'Aspect ratio', v: '1:1 / 16:9 / 9:16 / 4:5. Під feed або stories.' },
           ],
@@ -1655,7 +1655,7 @@ const CREATIVE_GEN_MODULE: KBModule = {
         {
           kind: 'kv',
           rows: [
-            { k: 'Модель', v: 'Nano banana 2 / pro (gemini-3.1-flash-image / gemini-3-pro-image-preview), GPT-image2 (gpt-5.4-image-2) або Seedream 4.5 (bytedance-seed).' },
+            { k: 'Модель', v: 'Nano banana 2 / pro (gemini-3.1-flash-image / gemini-3-pro-image-preview), GPT-image2 (gpt-image-2) або Seedream 4.5 (bytedance-seed).' },
             { k: 'Aspect ratio', v: '1:1 / 16:9 / 9:16 / 4:5. Той самий вибір, що у Creatives.' },
             { k: 'Ad language', v: 'Мова тексту на банері. Якщо мова відрізняється від мови вхідних Hook/Accent/CTA — пайплайн додатково перекладає їх перед рендером.' },
             { k: 'Пресети', v: 'A / B / C / D базові + Custom + Saved. Мінімум один має бути активним, інакше кнопка згасне.' },
