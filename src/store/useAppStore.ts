@@ -2190,7 +2190,29 @@ export const useAppStore = create<AppState>((set, get) => ({
       logEvent({ tab: 'megatool-nb-copier', action: 'readSource', meta: logMeta, errorMessage: msg });
       return;
     }
-    set({ nbCopierRead: { status: 'loading', result: null, error: null } });
+    // Pressing "Read campaign" resets "2. Target" to its defaults right away —
+    // whether the read then succeeds or fails, nothing carries over.
+    set((state) => ({
+      nbCopierRead: { status: 'loading', result: null, error: null },
+      nbCopierForm: {
+        ...state.nbCopierForm,
+        targetAccountName: '',
+        campaignName: '',
+        budget: 10,
+        startDate: 'now+3h',
+        startTimezone: 'PDT',
+        bidType: 'SAME',
+        targetCpaDollars: 5,
+        roasPercent: 120,
+        trackingEventId: null,
+        selectedAdsetId: null,
+        binomCampaignName: '',
+        binomOfferNames: {},
+      },
+      nbCopierCopy: { status: 'idle', result: null, error: null, step: null },
+      nbCopierBinom: null,
+      nbCopierEvents: { accountId: null, status: 'idle', events: null, error: null },
+    }));
     try {
       const { data } = await axios.post(
         WEBHOOKS.nbCopierRead,
@@ -2221,19 +2243,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         nbCopierRead: { status: 'success', result, error: null },
         nbCopierForm: {
           ...state.nbCopierForm,
-          // "2. Target" starts clean for every read — nothing carries over
-          // from the previous source campaign.
-          targetAccountName: '',
+          // "2. Target" was already reset when the read started.
           campaignName: `${result.campaign?.name ?? ''} MEGACLONE ${dd}.${mm}.${yyyy}`,
-          budget: 10,
-          startDate: 'now+3h',
-          startTimezone: 'PDT',
-          bidType: 'SAME',
-          targetCpaDollars: 5,
-          roasPercent: 120,
-          trackingEventId: null,
-          binomCampaignName: '',
-          binomOfferNames: {},
           // A single ad set is picked automatically; 2+ need an explicit pick.
           selectedAdsetId: result.adsets?.length === 1 ? result.adsets[0].id : null,
           // `||` (not `??`) — an unmapped AMO domain falls through past the
