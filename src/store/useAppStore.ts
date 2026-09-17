@@ -505,6 +505,20 @@ export interface NbCopierReadResult {
   isRoas: boolean;
 }
 
+/** The one ad set the operator copies, plus what the Binom step keys off
+ *  (its first ad's click URL). Null until an ad set is picked. */
+export const getNbCopierSelection = (read: NbCopierReadResult | null, adsetId: string | null) => {
+  const adset = read?.adsets.find((a) => a.id === adsetId);
+  if (!adset) return null;
+  const trackingUrl = adset.ads.find((a) => a.clickThroughUrl)?.clickThroughUrl ?? '';
+  const keys = [...new Set(adset.ads
+    .map((a) => (a.clickThroughUrl ?? '').match(/[?&]key=([^&#]*)/)?.[1])
+    .filter((k): k is string => !!k)
+    .map((k) => decodeURIComponent(k)))];
+  const isRoas = adset.bidType === 'TARGET_ROAS' || adset.bidType === 'DAY_ONE_TARGET_ROAS';
+  return { adset, trackingUrl, binomKeys: keys, isRoas };
+};
+
 export interface NbCopierCopyAdsetResult {
   sourceAdsetId: string;
   adsetId: string;
@@ -793,6 +807,8 @@ interface AppState {
      *  the source offer id. */
     binomCampaignName: string;
     binomOfferNames: Record<string, string>;
+    /** Exactly one source ad set gets copied. */
+    selectedAdsetId: string | null;
   };
   nbCopierRead: { status: ArticleStatus; result: NbCopierReadResult | null; error: string | null };
   nbCopierCopy: { status: ArticleStatus; result: NbCopierCopyResult | null; error: string | null; step: string | null };
@@ -1550,6 +1566,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     newBinomGroup: 'same',
     binomCampaignName: '',
     binomOfferNames: {},
+    selectedAdsetId: null,
   },
   nbCopierRead: { status: 'idle', result: null, error: null },
   nbCopierCopy: { status: 'idle', result: null, error: null, step: null },
@@ -2191,7 +2208,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
       const result: NbCopierReadResult = outer;
-      // Default campaign name: "<source name> SCALING dd.mm.yyyy" — today's
+      // Default campaign name: "<source name> MEGACLONE dd.mm.yyyy" — today's
       // date in Kyiv, matching how the rest of the megatool dates its output.
       const fmt = new Intl.DateTimeFormat('en-GB', {
         timeZone: 'Europe/Kyiv', day: '2-digit', month: '2-digit', year: 'numeric',
@@ -2207,7 +2224,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // "2. Target" starts clean for every read — nothing carries over
           // from the previous source campaign.
           targetAccountName: '',
-          campaignName: `${result.campaign?.name ?? ''} SCALING ${dd}.${mm}.${yyyy}`,
+          campaignName: `${result.campaign?.name ?? ''} MEGACLONE ${dd}.${mm}.${yyyy}`,
           budget: 10,
           startDate: 'now+3h',
           startTimezone: 'PDT',
@@ -2217,6 +2234,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           trackingEventId: null,
           binomCampaignName: '',
           binomOfferNames: {},
+          // A single ad set is picked automatically; 2+ need an explicit pick.
+          selectedAdsetId: result.adsets?.length === 1 ? result.adsets[0].id : null,
           // `||` (not `??`) — an unmapped AMO domain falls through past the
           // initial empty-string tracker default to DEFAULT_BINOM_TRACKER.
           tracker: getTrackerFromTrackingUrl(result.trackingUrl) || state.nbCopierForm.tracker || DEFAULT_BINOM_TRACKER,
@@ -2272,7 +2291,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   runNbCopier: async ({ trackingId, eventType, binomCampaignName, binomOfferNames }) => {
     const form = get().nbCopierForm;
     const read = get().nbCopierRead.result;
-    if (!read) return;
+    const selection = getNbCopierSelection(read, form.selectedAdsetId);
+    if (!read || !selection) return;
     const targetAccount = get().nbAccountsList.find((a) => a.name === form.targetAccountName);
     const logMeta = {
       sourceCampaignId: form.sourceCampaignId,
@@ -2307,7 +2327,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       if (!allSame) {
         const signature = JSON.stringify({
-          trackingUrl: read.trackingUrl,
+          trackingUrl: selection.trackingUrl,
           newAmoDomain: form.newAmoDomain,
           newAmoChannel: form.newAmoChannel,
           newBinomGroup: form.newBinomGroup,
@@ -2323,11 +2343,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (!WEBHOOKS.binomOfferCreator) {
             throw new Error('PUBLIC_WEBHOOK_BINOM_OFFER_CREATOR_URL is not set in .env');
           }
-          const isRoas = form.bidType === 'TARGET_ROAS' || (form.bidType === 'SAME' && read.isRoas);
+          const isRoas = form.bidType === 'TARGET_ROAS' || (form.bidType === 'SAME' && selection.isRoas);
           const ident = await getAuthEmail();
           const email = ident?.email ?? 'unknown@unknown';
           const binomPayload = {
-            trackingUrl: read.trackingUrl,
+            trackingUrl: selection.trackingUrl,
             email,
             newAmoDomain: form.newAmoDomain,
             newAmoChannel: form.newAmoChannel.trim() || 'same',
@@ -2389,7 +2409,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(form.bidType === 'TARGET_CPA' ? { bidRate: Math.round(form.targetCpaDollars * 100) } : {}),
         ...(form.bidType === 'TARGET_ROAS' ? { roas: form.roasPercent / 100 } : {}),
         binomCampaignUrl: allSame ? '' : binomCampaignUrl,
-        adsets: read.adsets,
+        adsets: [selection.adset],
       };
       console.log('[runNbCopier] create payload:', payload);
       const { data } = await axios.post(WEBHOOKS.nbCopierCreate, payload, { timeout: 600_000 });

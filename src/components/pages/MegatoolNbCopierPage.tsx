@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
-import { useAppStore, type NbCopierAdset, type NbCopierAd } from '@/store/useAppStore';
+import { useAppStore, getNbCopierSelection, type NbCopierAdset, type NbCopierAd } from '@/store/useAppStore';
 import {
   BINOM_AMO_DOMAINS,
   BINOM_TRACKERS,
@@ -101,10 +101,18 @@ const AdRow = ({ ad }: { ad: NbCopierAd }) => (
   </div>
 );
 
-const AdsetCard = ({ as }: { as: NbCopierAdset }) => (
-  <div className="border rounded-lg bg-slate-50 p-2 text-xs space-y-1.5">
+const AdsetCard = ({ as, selected, onSelect }: { as: NbCopierAdset; selected: boolean; onSelect: () => void }) => (
+  <div
+    onClick={onSelect}
+    className={`border rounded-lg p-2 text-xs space-y-1.5 cursor-pointer transition ${
+      selected ? 'border-blue-600 bg-blue-50 ring-1 ring-blue-600' : 'bg-slate-50 hover:border-slate-400'
+    }`}
+  >
     <div className="flex items-center justify-between gap-2">
-      <span className="font-semibold text-slate-800 truncate" title={as.name}>{as.name}</span>
+      <label className="flex items-center gap-2 min-w-0 cursor-pointer">
+        <input type="radio" name="nb-copier-adset" checked={selected} onChange={onSelect} className="shrink-0" />
+        <span className="font-semibold text-slate-800 truncate" title={as.name}>{as.name}</span>
+      </label>
       <StatusBadge status={as.status} />
     </div>
     <div className="text-slate-600 flex flex-wrap gap-x-3 gap-y-0.5">
@@ -163,7 +171,8 @@ export const MegatoolNbCopierPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetAccount?.id]);
 
-  const sourceEvent = read.result?.adsets?.[0]?.trackingEvent ?? null;
+  const selection = getNbCopierSelection(read.result, form.selectedAdsetId);
+  const sourceEvent = selection?.adset.trackingEvent ?? null;
 
   // Auto-match priority: same name → same type+eventType → same eventType →
   // first click_button → first event.
@@ -215,15 +224,7 @@ export const MegatoolNbCopierPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roasPercent]);
 
-  const sourceBidSummary = useMemo(() => {
-    if (!read.result) return '';
-    const counts = new Map<string, number>();
-    for (const as of read.result.adsets) {
-      const label = formatBidType(as);
-      counts.set(label, (counts.get(label) ?? 0) + 1);
-    }
-    return [...counts.entries()].map(([label, n]) => `${label} ×${n}`).join(', ');
-  }, [read.result]);
+  const sourceBidSummary = selection ? formatBidType(selection.adset) : '';
 
   const binomGroupOptions = useMemo(() => getGroupNamesForTracker(tracker), [tracker]);
   const detectedTracker = useMemo(
@@ -238,10 +239,14 @@ export const MegatoolNbCopierPage = () => {
 
   // Prefills for the Binom name fields — same defaults the Binom workflow
   // would apply; an operator edit (stored in the form) takes precedence.
-  const sourceBinom = read.result?.binom && !read.result.binom.error ? read.result.binom : null;
-  const effectiveIsRoas = bidType === 'TARGET_ROAS' || (bidType === 'SAME' && !!read.result?.isRoas);
+  // The read looked Binom up by the campaign's first ad — only trust it when
+  // that is also the key of the selected ad set.
+  const readBinom = read.result?.binom && !read.result.binom.error ? read.result.binom : null;
+  const sourceBinom = readBinom && selection && selection.binomKeys[0] === readBinom.key ? readBinom : null;
+  const effectiveIsRoas = bidType === 'TARGET_ROAS' || (bidType === 'SAME' && !!selection?.isRoas);
+  const bidPrefix = bidType === 'TARGET_CPA' ? '[Target CPA] ' : effectiveIsRoas ? '[ROAS] ' : '';
   const defaultBinomCampaignName = sourceBinom?.campaignName
-    ? `${effectiveIsRoas ? 'ROAS | ' : ''}${sourceBinom.campaignName} MEGATOOL ${kyivDateStr()}`
+    ? `${bidPrefix}${sourceBinom.campaignName} MEGATOOL ${kyivDateStr()}`
     : '';
   const sourceOffers = sourceBinom?.offers ?? [];
   const shownBinomCampaignName = binomCampaignName || defaultBinomCampaignName;
@@ -258,6 +263,7 @@ export const MegatoolNbCopierPage = () => {
 
   const canCopy = read.status === 'success'
     && !!read.result
+    && !!selection
     && !isCopying
     && !!targetAccount
     && !!pickedEvent
@@ -367,17 +373,30 @@ export const MegatoolNbCopierPage = () => {
                   </div>
                 </div>
 
-                {read.result.binomKeys.length > 1 && (
+                {read.result.adsets.length > 1 && (
+                  <div className={`text-xs ${selection ? 'text-slate-600' : 'text-amber-700 font-semibold'}`}>
+                    Оберіть 1 ад сет для копіювання
+                  </div>
+                )}
+
+                {selection && selection.binomKeys.length > 1 && (
                   <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs text-amber-800">
                     <span>⚠</span>
                     <span>
-                      Ads use {read.result.binomKeys.length} different Binom keys — a new Binom campaign will be cloned from the first ad's key only.
+                      Ads use {selection.binomKeys.length} different Binom keys — a new Binom campaign will be cloned from the first ad's key only.
                     </span>
                   </div>
                 )}
 
                 <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
-                  {read.result.adsets.map((as) => <AdsetCard key={as.id} as={as} />)}
+                  {read.result.adsets.map((as) => (
+                    <AdsetCard
+                      key={as.id}
+                      as={as}
+                      selected={as.id === form.selectedAdsetId}
+                      onSelect={() => setForm({ selectedAdsetId: as.id, trackingEventId: null, binomCampaignName: '', binomOfferNames: {} })}
+                    />
+                  ))}
                 </div>
               </div>
             )}
