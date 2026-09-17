@@ -255,7 +255,7 @@ export const MegatoolNbCopierPage = () => {
   const effectiveIsRoas = bidType === 'TARGET_ROAS' || (bidType === 'SAME' && !!selection?.isRoas);
   const bidPrefix = bidType === 'TARGET_CPA' ? '[Target CPA] ' : effectiveIsRoas ? '[ROAS] ' : '';
   const defaultBinomCampaignName = sourceBinom?.campaignName
-    ? `${bidPrefix}${sourceBinom.campaignName} MEGATOOL ${kyivDateStr()}`
+    ? `${bidPrefix}${sourceBinom.campaignName}${targetAccountName ? ` | ${targetAccountName} |` : ''} MEGATOOL ${kyivDateStr()}`
     : '';
   const sourceOffers = sourceBinom?.offers ?? [];
   const shownBinomCampaignName = binomCampaignName || defaultBinomCampaignName;
