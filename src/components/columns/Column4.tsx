@@ -37,6 +37,40 @@ type LightboxState = { creative: Creative; index: number } | null;
 const sanitizeForFilename = (s: string): string =>
   s.replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 120);
 
+// Downloads one image as a plain file — no zip wrapper. Works for both
+// data:URL responses and remote URLs (we fetch the latter into a blob so the
+// browser respects the `download` attribute and the chosen name).
+const downloadSingleImage = async (img: Creative['images'][number], index: number) => {
+  const variantLetter = String.fromCharCode(65 + index);
+  let mime = 'image/jpeg';
+  if (img.url.startsWith('data:')) {
+    const header = img.url.slice(0, img.url.indexOf(','));
+    mime = header.match(/data:([^;]+)/)?.[1] ?? mime;
+  }
+  let downloadHref = img.url;
+  if (!img.url.startsWith('data:')) {
+    try {
+      const res = await fetch(img.url);
+      const blob = await res.blob();
+      if (blob.type) mime = blob.type;
+      downloadHref = URL.createObjectURL(blob);
+    } catch {
+      // Fall back to direct href — browser may navigate instead of download.
+    }
+  }
+  const ext = (mime.split('/')[1] || 'jpg').split('+')[0];
+  const baseName = img.fileName
+    ? sanitizeForFilename(img.fileName)
+    : `${variantLetter}_${sanitizeForFilename(img.style || variantLetter)}`;
+  const a = document.createElement('a');
+  a.href = downloadHref;
+  a.download = `${baseName}.${ext}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  if (downloadHref !== img.url) URL.revokeObjectURL(downloadHref);
+};
+
 const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => {
   // ZIP is named after the n8n execution id — same "batch_<id>" shown in Telegram.
   // Creative Gen batches carry the same "creativeonly" marker as their image files.
@@ -46,40 +80,10 @@ const downloadCreativeBatch = async (creative: Creative, batchIndex: number) => 
     ? `${batchPrefix}_${batchNumber}`
     : `creatives_batch_${batchIndex + 1}`;
 
-  // Single-image batches download as a plain image — no zip wrapper, since
-  // there's nothing to bundle and operators expect a direct file. Works for
-  // both data:URL responses and remote URLs (we fetch the latter into a blob
-  // so the browser respects the `download` attribute and the chosen name).
+  // Single-image batches download as a plain image — nothing to bundle.
   const validImages = creative.images.filter((img) => typeof img.url === 'string' && img.url.length > 0);
   if (validImages.length === 1) {
-    const img = validImages[0];
-    let mime = 'image/jpeg';
-    if (img.url.startsWith('data:')) {
-      const header = img.url.slice(0, img.url.indexOf(','));
-      mime = header.match(/data:([^;]+)/)?.[1] ?? mime;
-    }
-    let downloadHref = img.url;
-    if (!img.url.startsWith('data:')) {
-      try {
-        const res = await fetch(img.url);
-        const blob = await res.blob();
-        if (blob.type) mime = blob.type;
-        downloadHref = URL.createObjectURL(blob);
-      } catch {
-        // Fall back to direct href — browser may navigate instead of download.
-      }
-    }
-    const ext = (mime.split('/')[1] || 'jpg').split('+')[0];
-    const baseName = img.fileName
-      ? sanitizeForFilename(img.fileName)
-      : `A_${sanitizeForFilename(img.style || 'A')}`;
-    const a = document.createElement('a');
-    a.href = downloadHref;
-    a.download = `${baseName}.${ext}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    if (downloadHref !== img.url) URL.revokeObjectURL(downloadHref);
+    await downloadSingleImage(validImages[0], 0);
     return;
   }
 
@@ -344,6 +348,14 @@ export const Column4 = ({
                     </button>
                     {/* One-click copy of the standardized file name -> Facebook Ad name. */}
                     {img.fileName && <CopyNameButton fileName={img.fileName} className="w-full" />}
+                    <button
+                      type="button"
+                      onClick={() => void downloadSingleImage(img, i)}
+                      title="Download this image (no ZIP)"
+                      className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium leading-none text-slate-600 hover:bg-slate-100 transition-colors w-full"
+                    >
+                      Download image
+                    </button>
                     {/* Like/dislike feedback — Creative Gen only (not the
                         classic pipeline, not Creative Edit's other modes). */}
                     {origin === 'creativeOnly' && img.feedbackId && (
