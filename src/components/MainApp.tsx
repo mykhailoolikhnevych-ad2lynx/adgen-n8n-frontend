@@ -18,7 +18,6 @@ import { MegatoolFBCampaignPage } from './pages/MegatoolFBCampaignPage';
 import { MegatoolCreateBinomOfferPage } from './pages/MegatoolCreateBinomOfferPage';
 import { MegatoolCreateNbCampaignPage } from './pages/MegatoolCreateNbCampaignPage';
 import { MegatoolNbCopierPage } from './pages/MegatoolNbCopierPage';
-import { MegatoolAutozalivSheetPage } from './pages/MegatoolAutozalivSheetPage';
 import { MegatoolAutozalivBuilderPage } from './pages/MegatoolAutozalivBuilderPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail, isAdminEmail } from '@/lib/identity';
@@ -28,11 +27,10 @@ type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article'
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
 // active megatool here. Adding a second tool = append to this list.
-type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier' | 'autozaliv-sheet' | 'autozaliv-builder';
+type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier' | 'autozaliv-builder';
 const MEGATOOL_NAV: { value: MegatoolPage; label: string; adminOnly?: boolean }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
   { value: 'nb-copier', label: 'Newsbreak Copier' },
-  { value: 'autozaliv-sheet', label: 'Autozaliv Sheet' },
   { value: 'autozaliv-builder', label: 'Autozaliv Builder', adminOnly: true },
 ];
 
@@ -500,10 +498,6 @@ export default function MainApp() {
           {/* Newsbreak Copier — standalone megatool tab, no cross-tab gating. */}
           <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'nb-copier'}>
             <MegatoolNbCopierPage />
-          </KeepAlive>
-          {/* Autozaliv Sheet — read-only view of the Apps Script scaling sheet. */}
-          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'autozaliv-sheet'}>
-            <MegatoolAutozalivSheetPage />
           </KeepAlive>
           {/* Autozaliv Builder — admin-only; pick articles → pick ads (replaces the Filter sheet). */}
           {isAdmin && (

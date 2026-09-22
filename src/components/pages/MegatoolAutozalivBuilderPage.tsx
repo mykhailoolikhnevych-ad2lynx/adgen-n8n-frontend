@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -8,7 +8,10 @@ import { Button } from '@/components/ui/button';
 // Step 1 picks articles, step 2 picks each article's ads with the same rules
 // as processFilter() in autozaliv_nb/Code.js. Data is read from the sheet via
 // the megatool-autozaliv-builder webhook; nothing is written back yet.
+// Step 3 reads each landing through Jina and applies the AMO text rules
+// (megatool-autozaliv-content), replacing the local Python scripts.
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL as string | undefined;
+const CONTENT_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL as string | undefined;
 
 type Sheet = { headers: string[]; rows: string[][] };
 type Row = Record<string, string>;
@@ -89,20 +92,44 @@ const formatCta = (s: string) => s.replace(/_/g, ' ').toLowerCase().replace(/\b\
 const toRows = (sheet: Sheet): Row[] =>
   sheet.rows.map((r) => Object.fromEntries(sheet.headers.map((h, i) => [h, r[i] ?? ''])));
 
-async function callBuilder(body: object): Promise<Sheet & { fetchedAt: string }> {
-  if (!WEBHOOK) throw new Error('PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL is not set');
+async function post(url: string | undefined, envName: string, body: object, timeout: number): Promise<any> {
+  if (!url) throw new Error(`${envName} is not set`);
   try {
-    const { data } = await axios.post(WEBHOOK, body, { timeout: 180_000 });
+    const { data } = await axios.post(url, body, { timeout });
     const outer = Array.isArray(data) ? data[0] : data;
-    if (!outer?.ok) throw new Error(outer?.error || 'Builder request failed');
+    if (data === '' || data == null) throw new Error('Empty response from n8n — check the workflow execution');
+    if (!outer?.ok) throw new Error(outer?.error || 'Request failed');
     return outer;
   } catch (e: any) {
-    throw new Error(e?.response?.data?.error || e?.message || 'Builder request failed');
+    throw new Error(e?.response?.data?.error || e?.message || 'Request failed');
   }
+}
+const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string }> =>
+  post(WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL', body, 180_000);
+const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL', body, 300_000);
+
+// AMO limits, same as RSocContentGenerator_autozaliv.py.
+const AMO = { intro: 50, body: 600, paragraph: 40 };
+const SECTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const countWords = (s?: string) => (s || '').trim().split(/\s+/).filter(Boolean).length;
+function amoCheck(c: Row) {
+  const intro = countWords(c.intro_text);
+  const body = SECTIONS.reduce((n, i) => n + countWords(c['h' + i]) + countWords(c['p' + i]), 0);
+  const short = SECTIONS.filter((i) => (c['h' + i] || c['p' + i]) && countWords(c['p' + i]) < AMO.paragraph);
+  return { intro, body, short, pass: intro >= AMO.intro && body >= AMO.body && short.length === 0 };
+}
+
+type ContentState = { status: 'reading' | 'ready' | 'rewriting' | 'error'; url: string; content?: Row; error?: string; note?: string };
+
+async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>) {
+  const queue = [...items];
+  await Promise.all(Array.from({ length: Math.min(size, queue.length) }, async () => {
+    while (queue.length) await fn(queue.shift()!);
+  }));
 }
 
 export function MegatoolAutozalivBuilderPage() {
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   // Step 1 — articles
   const [articles, setArticles] = useState<Sheet | null>(null);
@@ -123,6 +150,10 @@ export function MegatoolAutozalivBuilderPage() {
   const [bulk, setBulk] = useState<Settings>(DEFAULT_SETTINGS);
   const [overrides, setOverrides] = useState<Record<string, Settings>>({});
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
+
+  // Step 3 — content, keyed by article name
+  const [contents, setContents] = useState<Record<string, ContentState>>({});
+  const [openArticle, setOpenArticle] = useState<string | null>(null);
 
   const loadArticles = async () => {
     setArticlesLoading(true);
@@ -231,6 +262,68 @@ export function MegatoolAutozalivBuilderPage() {
   const adKey = (article: string, ad: Row) => `${article}|${ad.ad_key || ad.img_url}`;
   const keptCount = groups.reduce((n, g) => n + g.picked.filter((ad) => !excluded.has(adKey(g.name, ad))).length, 0);
 
+  const patchContent = (name: string, patch: Partial<ContentState>) =>
+    setContents((s) => ({ ...s, [name]: { ...s[name], ...patch } as ContentState }));
+
+  const readArticle = async (name: string, url: string) => {
+    if (!url) {
+      patchContent(name, { status: 'error', url, error: 'No landing URL for this article' });
+      return;
+    }
+    patchContent(name, { status: 'reading', url, error: undefined, note: undefined });
+    try {
+      const res = await callContent({ action: 'read', url });
+      patchContent(name, { status: 'ready', content: res.content });
+    } catch (e: any) {
+      patchContent(name, { status: 'error', error: e.message });
+    }
+  };
+
+  const rewriteArticle = async (name: string) => {
+    const content = contents[name]?.content;
+    if (!content) return;
+    patchContent(name, { status: 'rewriting', error: undefined, note: undefined });
+    try {
+      const res = await callContent({ action: 'rewrite', content });
+      const changed = Object.keys(res.changes || {});
+      setContents((s) => ({
+        ...s,
+        [name]: {
+          ...s[name],
+          status: 'ready',
+          content: { ...s[name].content, ...res.changes },
+          note: res.mode === 'none' ? 'Already meets AMO rules' : `Rewrote ${changed.join(', ') || 'nothing'}`,
+        },
+      }));
+    } catch (e: any) {
+      patchContent(name, { status: 'ready', error: e.message });
+    }
+  };
+
+  // Read every article that has no content yet (or whose landing changed).
+  const goToContent = () => {
+    setStep(3);
+    const todo = groups.filter((g) => {
+      const c = contents[g.name];
+      return !c || (c.status === 'error' && !c.content) || c.url !== g.landing;
+    });
+    pool(todo, 3, (g) => readArticle(g.name, g.landing));
+  };
+  const rewriteFailing = () => {
+    const todo = selectedList.filter((n) => {
+      const c = contents[n];
+      return c?.status === 'ready' && c.content && !amoCheck(c.content).pass;
+    });
+    pool(todo, 2, rewriteArticle);
+  };
+  const editField = (name: string, field: string, value: string) =>
+    setContents((s) => ({ ...s, [name]: { ...s[name], content: { ...s[name].content, [field]: value } } }));
+
+  const passCount = selectedList.filter((n) => {
+    const c = contents[n]?.content;
+    return c && amoCheck(c).pass;
+  }).length;
+
   const toggleAd = (k: string) =>
     setExcluded((s) => {
       const n = new Set(s);
@@ -245,7 +338,9 @@ export function MegatoolAutozalivBuilderPage() {
         <span className="text-slate-400">→</span>
         <StepPill n={2} label="Choose ads" active={step === 2} onClick={() => selected.size && goToAds()} />
         <span className="text-slate-400">→</span>
-        <StepPill n={3} label="Launch settings" active={false} disabled />
+        <StepPill n={3} label="Content" active={step === 3} onClick={() => selected.size && ads && goToContent()} disabled={!ads} />
+        <span className="text-slate-400">→</span>
+        <StepPill n={4} label="Launch settings" active={false} disabled />
       </div>
 
       {step === 1 && (
@@ -422,7 +517,86 @@ export function MegatoolAutozalivBuilderPage() {
             <span className="text-sm text-slate-700">
               {selectedList.length} articles · {keptCount} ads selected
             </span>
-            <Button className="ml-auto" disabled title="Step 3 is not built yet">
+            <Button className="ml-auto" disabled={adsLoading || !ads} onClick={goToContent}>
+              Next: content →
+            </Button>
+          </div>
+        </>
+      )}
+
+      {step === 3 && (
+        <>
+          <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-sm">
+            <span className="text-slate-600">
+              AMO rules: intro ≥ {AMO.intro} words · body ≥ {AMO.body} words · every paragraph ≥ {AMO.paragraph} words
+            </span>
+            <div className="ml-auto flex gap-2">
+              <Button size="sm" variant="outline" onClick={goToContent}>Read missing</Button>
+              <Button size="sm" onClick={rewriteFailing}>Rewrite all failing</Button>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto px-4 pb-2 space-y-2">
+            {groups.map((g) => {
+              const st = contents[g.name];
+              const c = st?.content;
+              const check = c ? amoCheck(c) : null;
+              const open = openArticle === g.name;
+              const busy = st?.status === 'reading' || st?.status === 'rewriting';
+              return (
+                <div key={g.name} className="rounded border border-slate-200 bg-white">
+                  <div className="flex items-center gap-3 px-3 py-2">
+                    <button type="button" onClick={() => setOpenArticle(open ? null : g.name)} className="min-w-0 flex-1 text-left">
+                      <div className="font-medium text-sm text-slate-800 truncate">
+                        {open ? '▾' : '▸'} {c?.article_headline || trimArticle(g.name)}
+                      </div>
+                      <div className="text-xs text-slate-500 truncate">{trimArticle(g.name)}</div>
+                    </button>
+                    <div className="flex items-center gap-2 text-xs whitespace-nowrap">
+                      {st?.status === 'reading' && <span className="text-slate-500">Reading…</span>}
+                      {st?.status === 'rewriting' && <span className="text-slate-500">Rewriting…</span>}
+                      {check && (
+                        <>
+                          <Badge ok={check.intro >= AMO.intro}>intro {check.intro}w</Badge>
+                          <Badge ok={check.body >= AMO.body}>body {check.body}w</Badge>
+                          <Badge ok={check.short.length === 0}>{check.short.length} short ¶</Badge>
+                        </>
+                      )}
+                      <LandingLink url={g.landing} />
+                      <Button size="sm" variant="outline" disabled={busy} onClick={() => readArticle(g.name, g.landing)}>Re-read</Button>
+                      <Button size="sm" disabled={busy || !c} onClick={() => rewriteArticle(g.name)}>Rewrite</Button>
+                    </div>
+                  </div>
+                  {(st?.error || st?.note) && (
+                    <div className={`px-3 pb-2 text-xs ${st.error ? 'text-red-600' : 'text-emerald-700'}`}>{st.error || st.note}</div>
+                  )}
+                  {open && c && (
+                    <div className="border-t border-slate-100 px-3 py-3 space-y-3">
+                      <Field label="Headline">
+                        <Input value={c.article_headline || ''} onChange={(e) => editField(g.name, 'article_headline', e.target.value)} className="bg-white" />
+                      </Field>
+                      <Field label={`Intro · ${countWords(c.intro_text)} words`} bad={countWords(c.intro_text) < AMO.intro}>
+                        <TextArea value={c.intro_text} onChange={(v) => editField(g.name, 'intro_text', v)} />
+                      </Field>
+                      {SECTIONS.filter((i) => c['h' + i] || c['p' + i]).map((i) => (
+                        <div key={i} className="rounded border border-slate-100 p-2 space-y-1.5">
+                          <Input value={c['h' + i]} onChange={(e) => editField(g.name, 'h' + i, e.target.value)} className="bg-white font-medium" />
+                          <Field label={`p${i} · ${countWords(c['p' + i])} words`} bad={countWords(c['p' + i]) < AMO.paragraph}>
+                            <TextArea value={c['p' + i]} onChange={(v) => editField(g.name, 'p' + i, v)} />
+                          </Field>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-slate-200 bg-white">
+            <Button variant="outline" onClick={() => setStep(2)}>← Choose ads</Button>
+            <span className="text-sm text-slate-700">
+              {passCount} of {selectedList.length} articles pass AMO rules
+            </span>
+            <Button className="ml-auto" disabled title="Launch settings are the next part">
               Next: launch settings →
             </Button>
           </div>
@@ -540,6 +714,34 @@ function LandingLink({ url, full }: { url?: string; full?: boolean }) {
     <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">
       {label}
     </a>
+  );
+}
+
+function Badge({ ok, children }: { ok: boolean; children: ReactNode }) {
+  return (
+    <span className={`rounded px-1.5 py-0.5 border ${ok ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+      {children}
+    </span>
+  );
+}
+
+function Field({ label, bad, children }: { label: string; bad?: boolean; children: ReactNode }) {
+  return (
+    <div>
+      <div className={`mb-1 text-[10px] font-bold uppercase ${bad ? 'text-red-600' : 'text-gray-500'}`}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function TextArea({ value, onChange }: { value?: string; onChange: (v: string) => void }) {
+  return (
+    <textarea
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+      rows={Math.min(12, Math.max(3, Math.ceil((value || '').length / 140)))}
+      className="w-full rounded border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 focus:outline-none focus:border-slate-400"
+    />
   );
 }
 
