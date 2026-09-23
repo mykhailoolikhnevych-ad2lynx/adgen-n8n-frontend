@@ -762,6 +762,17 @@ export function MegatoolAutozalivBuilderPage() {
   };
   const nbDone = selectedList.filter((n) => nb[n]?.status === 'done').length;
 
+  // "New run": forget this step's results (and the later steps', which were built on them) so the
+  // same articles can be launched again for another buyer / account. Nothing is deleted remotely.
+  const newRun = (from: 4 | 5 | 6) => {
+    const what = from === 4 ? 'AMO, Binom and NB' : from === 5 ? 'Binom and NB' : 'NB';
+    if (!window.confirm(`Start a new run? The ${what} results on this page are cleared so you can create them again with other settings. Nothing is deleted in AMO / Binom / NB.`)) return;
+    if (from === 4) setAmo({});
+    if (from <= 5) setBinom({});
+    setNb({});
+  };
+  const anyRunning = publishing || binomRunning || nbRunning;
+
   const toggleAd = (k: string) =>
     setExcluded((s) => {
       const n = new Set(s);
@@ -1140,6 +1151,7 @@ export function MegatoolAutozalivBuilderPage() {
             <Button className="ml-auto" disabled={publishing || amoDone === selectedList.length} onClick={createAmoArticles}>
               {publishing ? 'Creating…' : '1️⃣ Create AMO articles'}
             </Button>
+            <Button variant="outline" disabled={anyRunning || Object.keys(amo).length === 0} onClick={() => newRun(4)}>↻ New run</Button>
             <Button variant="outline" disabled={amoDone === 0} onClick={goToBinom}>Next: Binom →</Button>
           </div>
         </>
@@ -1264,6 +1276,7 @@ export function MegatoolAutozalivBuilderPage() {
             <Button className="ml-auto" disabled={binomRunning || binomDone === selectedList.length} onClick={createBinom}>
               {binomRunning ? 'Creating…' : '2️⃣ Create Binom'}
             </Button>
+            <Button variant="outline" disabled={anyRunning || Object.keys(binom).length === 0} onClick={() => newRun(5)}>↻ New run</Button>
             <Button variant="outline" disabled={binomDone === 0} onClick={goToNb}>Next: NB →</Button>
           </div>
         </>
@@ -1402,6 +1415,7 @@ export function MegatoolAutozalivBuilderPage() {
             <Button className="ml-auto" disabled={nbRunning || nbDone === selectedList.length} onClick={createNb}>
               {nbRunning ? 'Creating…' : '3️⃣ Create NB campaigns'}
             </Button>
+            <Button variant="outline" disabled={anyRunning || Object.keys(nb).length === 0} onClick={() => newRun(6)}>↻ New run</Button>
           </div>
         </>
       )}
