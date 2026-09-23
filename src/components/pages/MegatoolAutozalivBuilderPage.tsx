@@ -51,10 +51,6 @@ const ARTICLE_COLS = [
   'top_language_for_article', 'main_adheart_geo', 'avg_duration', 'max_launch_date',
 ];
 const EXAMPLE_COLS = ['examp_creative_title', 'examp_creative_subtext'];
-const PREFERRED_SORT = [
-  'impression', 'heat', 'conversion', 'days_count', 'all_exposure_value',
-  'new_week_exposure_value', 'first_seen', 'last_seen',
-];
 const NOT_USED = 'Don`t use yet';
 
 // Same as trimArticleName() in the Apps Script.
@@ -133,7 +129,13 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- Step 5: Binom (port of processOffers / processCampaigns / fetchCampaignURLs) ----
 const BID_TYPES = ['MAX_CONVERSION', 'TARGET_CPA', 'TARGET_ROAS'];
-type BinomSettings = { tracker: string; group: string; domainId: string; geo: string; nbAccount: string; bidType: string; event: string; suffix: string };
+// Each tracker's campaigns always go on its own click domain.
+const TRACKER_DOMAIN: Record<string, string> = {
+  'ilab.nnctrack.com': 'perabianco.com',
+  'jaguars.nnctrack.com': 'pancettafuns.com',
+  'pumas.nnctrack.com': 'alfredofuns.com',
+};
+type BinomSettings = { tracker: string; group: string; geo: string; nbAccount: string; bidType: string; event: string; suffix: string };
 type BinomRow = { name?: string; geo?: string; language?: string };
 type BinomOptions = { status: 'loading' | 'ready' | 'error'; groups: string[]; domains: { id: string; host: string }[]; error?: string };
 type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignUrl?: string; error?: string };
@@ -250,7 +252,7 @@ export function MegatoolAutozalivBuilderPage() {
   const [publishing, setPublishing] = useState(false);
 
   // Step 5 — Binom
-  const [binomBulk, setBinomBulk] = useState<BinomSettings>({ tracker: BINOM_TRACKERS[0], group: '', domainId: '', geo: 'US', nbAccount: '', bidType: 'MAX_CONVERSION', event: 'auto', suffix: '' });
+  const [binomBulk, setBinomBulk] = useState<BinomSettings>({ tracker: BINOM_TRACKERS[0], group: '', geo: 'US', nbAccount: '', bidType: 'MAX_CONVERSION', event: 'auto', suffix: '' });
   const [binomRows, setBinomRows] = useState<Record<string, BinomRow>>({});
   const [binomOptions, setBinomOptions] = useState<Record<string, BinomOptions>>({});
   const [binom, setBinom] = useState<Record<string, BinomState>>({});
@@ -376,10 +378,6 @@ export function MegatoolAutozalivBuilderPage() {
     const map: Record<string, Row[]> = {};
     if (ads) toRows(ads).forEach((r) => (map[trimArticle(r.article)] ||= []).push(r));
     return map;
-  }, [ads]);
-  const sortOptions = useMemo(() => {
-    const h = ads?.headers || [];
-    return [...PREFERRED_SORT.filter((f) => h.includes(f)), ...h.filter((f) => !PREFERRED_SORT.includes(f) && f !== 'img')];
   }, [ads]);
 
   const groups = selectedList.map((name) => {
@@ -564,7 +562,8 @@ export function MegatoolAutozalivBuilderPage() {
   }, [step, binomBulk.tracker]);
   const trackerOpts = binomOptions[binomBulk.tracker];
   const bulkGroup = trackerOpts?.groups.includes(binomBulk.group) ? binomBulk.group : '';
-  const bulkDomain = trackerOpts?.domains.find((d) => d.id === binomBulk.domainId);
+  const domainHost = TRACKER_DOMAIN[binomBulk.tracker] || '';
+  const bulkDomain = trackerOpts?.domains.find((d) => d.host === domainHost);
 
   // Offer name / Binom Cmp name = the sheet formulas, built from the same fields.
   const binomFor = (g: (typeof groups)[number]) => {
@@ -591,7 +590,7 @@ export function MegatoolAutozalivBuilderPage() {
       const b = binomFor(g);
       const error = amo[g.name]?.status !== 'done' ? 'Create the AMO article first (step 4)'
         : !bulkGroup ? 'Pick a Binom group'
-        : !bulkDomain ? 'Pick a tracker domain'
+        : !bulkDomain ? `Tracker domain ${domainHost || '?'} not found on ${binomBulk.tracker}`
         : !binomBulk.nbAccount ? 'Pick the NB account (it is part of the campaign name)'
         : !b.name.trim() ? 'Name is empty' : '';
       if (error) {
@@ -913,7 +912,7 @@ export function MegatoolAutozalivBuilderPage() {
         <>
           <div className="mx-4 mb-2 rounded border border-slate-200 bg-white px-3 py-2">
             <div className="text-[10px] font-bold uppercase text-gray-500 mb-1.5">Settings for all articles</div>
-            <SettingsControls value={bulk} onChange={setBulk} sortOptions={sortOptions} />
+            <SettingsControls value={bulk} onChange={setBulk} />
           </div>
           {adsError && <ErrorBox msg={adsError} />}
           <div className="flex-1 overflow-auto px-4 pb-2 space-y-3">
@@ -955,7 +954,6 @@ export function MegatoolAutozalivBuilderPage() {
                         <SettingsControls
                           value={overrides[g.name]}
                           onChange={(s) => setOverrides((o) => ({ ...o, [g.name]: s }))}
-                          sortOptions={sortOptions}
                         />
                       </div>
                     )}
@@ -1164,20 +1162,11 @@ export function MegatoolAutozalivBuilderPage() {
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
               <label className="flex items-center gap-1.5">
                 Tracker
-                <Select value={binomBulk.tracker} onChange={(v) => setBinomBulk((b) => ({ ...b, tracker: v, group: '', domainId: '' }))} options={[...BINOM_TRACKERS]} />
+                <Select value={binomBulk.tracker} onChange={(v) => setBinomBulk((b) => ({ ...b, tracker: v, group: '' }))} options={[...BINOM_TRACKERS]} />
               </label>
               <label className="flex items-center gap-1.5">
                 Group Binom
                 <Select value={bulkGroup} onChange={(v) => setBinomBulk((b) => ({ ...b, group: v }))} options={trackerOpts?.groups || []} placeholder="— pick —" />
-              </label>
-              <label className="flex items-center gap-1.5">
-                Tracker Domain
-                <Select
-                  value={bulkDomain?.host || ''}
-                  onChange={(host) => setBinomBulk((b) => ({ ...b, domainId: trackerOpts?.domains.find((d) => d.host === host)?.id || '' }))}
-                  options={(trackerOpts?.domains || []).map((d) => d.host)}
-                  placeholder="— pick —"
-                />
               </label>
               <label className="flex items-center gap-1.5">
                 Geo
@@ -1447,41 +1436,13 @@ function SortTh({ label, k, sort, onSort }: { label: string; k: string; sort: { 
   );
 }
 
-function SettingsControls({ value, onChange, sortOptions }: { value: Settings; onChange: (s: Settings) => void; sortOptions: string[] }) {
-  const set = (patch: Partial<Settings>) => onChange({ ...value, ...patch });
-  const check = (label: string, key: 'unique' | 'onlyImages' | 'onlyAdheart') => (
-    <label className="flex items-center gap-1.5">
-      <input type="checkbox" checked={value[key]} onChange={(e) => set({ [key]: e.target.checked })} />
-      {label}
-    </label>
-  );
+// Only Top is editable; sort / unique image / type / network stay at DEFAULT_SETTINGS.
+function SettingsControls({ value, onChange }: { value: Settings; onChange: (s: Settings) => void }) {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
       <label className="flex items-center gap-1.5">
         Top
-        <Input type="number" min={1} value={value.top} onChange={(e) => set({ top: Number(e.target.value) || 1 })} className="h-7 w-16 bg-white" />
-      </label>
-      <label className="flex items-center gap-1.5">
-        Sort by
-        <select value={value.sortField} onChange={(e) => set({ sortField: e.target.value })} className="h-7 rounded border border-slate-200 bg-white px-1">
-          {(sortOptions.includes(value.sortField) ? sortOptions : [value.sortField, ...sortOptions]).map((f) => (
-            <option key={f} value={f}>{f}</option>
-          ))}
-        </select>
-        <select value={value.sortDir} onChange={(e) => set({ sortDir: e.target.value as Settings['sortDir'] })} className="h-7 rounded border border-slate-200 bg-white px-1">
-          <option value="desc">desc</option>
-          <option value="asc">asc</option>
-        </select>
-      </label>
-      {check('Unique image', 'unique')}
-      {check('Images only', 'onlyImages')}
-      {check('Adheart only', 'onlyAdheart')}
-      <label className="flex items-center gap-1.5">
-        Network
-        <select value={value.affNetwork} onChange={(e) => set({ affNetwork: e.target.value as Settings['affNetwork'] })} className="h-7 rounded border border-slate-200 bg-white px-1">
-          <option value="amo">amo</option>
-          <option value="ads.com">ads.com</option>
-        </select>
+        <Input type="number" min={1} value={value.top} onChange={(e) => onChange({ ...value, top: Number(e.target.value) || 1 })} className="h-7 w-16 bg-white" />
       </label>
     </div>
   );
