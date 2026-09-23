@@ -173,6 +173,12 @@ function fitWords(text: string, max: number): string {
   const space = cut.lastIndexOf(' ');
   return (space > 0 ? cut.slice(0, space) : text.slice(0, max)).trim();
 }
+// Row of the autozaliv_used datatable: written after an NB campaign is created.
+type UsedRow = { article: string; used_at: string; nb_campaign_id: string; buyer: string; nb_account: string };
+const formatUsedDate = (iso: string) => {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '' : String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
+};
 type NbState = { status: 'running' | 'done' | 'error'; campaignId?: string; adsetId?: string; adIds?: string[]; error?: string };
 type EventsState = { status: 'loading' | 'ready' | 'error'; events: NbEvent[]; error?: string };
 // "Source Cmp name" from the sheet: Name | GEO | LANG | AZ | RSOC | Buyer | <tomorrow dd/mm/yy>
@@ -275,8 +281,24 @@ export function MegatoolAutozalivBuilderPage() {
       setArticlesLoading(false);
     }
   };
+  // Articles the Builder already launched (autozaliv_used datatable), latest per article.
+  const [usedMap, setUsedMap] = useState<Record<string, UsedRow>>({});
+  const loadUsed = async () => {
+    try {
+      const res = await callLaunch({ action: 'used-list' });
+      const map: Record<string, UsedRow> = {};
+      for (const u of (res.used || []) as UsedRow[]) {
+        const k = trimArticle(u.article);
+        if (!map[k] || u.used_at > map[k].used_at) map[k] = u;
+      }
+      setUsedMap(map);
+    } catch {
+      // not fatal: the sheet's own "used" column still shows
+    }
+  };
   useEffect(() => {
     loadArticles();
+    loadUsed();
   }, []);
 
   // Article name is column B, "used" formula is column D (see DataAutomations.js).
@@ -285,9 +307,10 @@ export function MegatoolAutozalivBuilderPage() {
     return articles.rows.map((r) => ({
       name: r[1],
       used: r[3] && r[3] !== NOT_USED ? r[3] : '',
+      launched: usedMap[trimArticle(r[1])] as UsedRow | undefined,
       cells: Object.fromEntries(articles.headers.map((h, i) => [h, r[i] ?? ''])) as Row,
     }));
-  }, [articles]);
+  }, [articles, usedMap]);
   const cols = useMemo(() => ARTICLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
   const exampleCols = useMemo(() => EXAMPLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
   const articleByTrimmed = useMemo(
@@ -304,7 +327,7 @@ export function MegatoolAutozalivBuilderPage() {
     const list = articleRows.filter(
       (a) =>
         (!q || a.name.toLowerCase().includes(q)) &&
-        (!unusedOnly || !a.used) &&
+        (!unusedOnly || (!a.used && !a.launched)) &&
         (!minAds || (toNum(a.cells.cnt_ads || '0') || 0) >= minAds) &&
         (!lang || a.cells.top_language_for_article === lang),
     );
@@ -716,6 +739,17 @@ export function MegatoolAutozalivBuilderPage() {
           throw new Error((outer?.error || 'NB campaign failed') + partial);
         }
         setNb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: outer.campaignId, adsetId: outer.adsetId, adIds: outer.adIds } }));
+        // Pin the article as used (with the date) so step 1 shows it next time.
+        const used: UsedRow = {
+          article: g.name, used_at: new Date().toISOString(), nb_campaign_id: String(outer.campaignId || ''),
+          buyer: launchFor(g.name).buyer, nb_account: binomBulk.nbAccount,
+        };
+        callLaunch({
+          action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id,
+          binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
+        })
+          .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
+          .catch((err: any) => setNb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
       } catch (e: any) {
         const body = e?.response?.data;
         const outer = Array.isArray(body) ? body[0] : body;
@@ -819,8 +853,19 @@ export function MegatoolAutozalivBuilderPage() {
                       <td className="px-2 py-1 max-w-[420px] truncate text-slate-800" title={a.name}>
                         {trimArticle(a.name)}
                       </td>
-                      <td className="px-2 py-1 max-w-[160px] truncate text-xs" title={a.used}>
-                        {a.used ? <span className="text-emerald-700">✔ used</span> : <span className="text-slate-400">—</span>}
+                      <td
+                        className="px-2 py-1 max-w-[160px] truncate text-xs"
+                        title={a.launched
+                          ? `Launched in the Builder ${new Date(a.launched.used_at).toLocaleString()} · buyer ${a.launched.buyer || '—'} · NB campaign ${a.launched.nb_campaign_id || '—'}`
+                          : a.used}
+                      >
+                        {a.launched ? (
+                          <span className="text-emerald-700">✔ used {formatUsedDate(a.launched.used_at)}</span>
+                        ) : a.used ? (
+                          <span className="text-emerald-700">✔ used</span>
+                        ) : (
+                          <span className="text-slate-400">—</span>
+                        )}
                       </td>
                       {exampleCols.map((c) => (
                         <td key={c} className="px-2 py-1 max-w-[260px] truncate text-xs text-slate-600" title={a.cells[c]}>
@@ -1318,6 +1363,7 @@ export function MegatoolAutozalivBuilderPage() {
                         {r?.status === 'done' && (
                           <div className="text-slate-600">
                             campaign {r.campaignId} · ad set {r.adsetId} · {r.adIds?.length || 0} ads
+                            {r.error && <div className="text-amber-600">{r.error}</div>}
                           </div>
                         )}
                         {r?.status === 'error' && <span className="text-red-600 break-words">{r.error}</span>}
