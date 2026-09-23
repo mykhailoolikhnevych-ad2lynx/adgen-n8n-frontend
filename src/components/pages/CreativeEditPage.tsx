@@ -52,23 +52,29 @@ const ASPECT_RATIOS: string[] = ['1:1', '16:9', '9:16', '4:5'];
 
 // Verified against OpenRouter's image catalog (GET /api/v1/images/models) — NOT the
 // chat catalog at /api/v1/models, which does not list Qwen/Seedream/GPT Image 2.
-// All five take `input_references`, so they can edit the uploaded creative, and all
-// five are reached through POST /api/v1/images.
+// All seven take `input_references`, so they can edit the uploaded creative, and all
+// seven are reached through POST /api/v1/images.
 const IMAGE_MODELS: { label: string; value: string }[] = [
   { label: 'Nano banana 2', value: 'google/gemini-3.1-flash-image' },
   { label: 'Nano banana pro', value: 'google/gemini-3-pro-image' },
   { label: 'GPT Image 2', value: 'openai/gpt-image-2' },
+  { label: 'GPT Image 2.5 Flare', value: 'openai/gpt-image-2.5-flare' },
+  { label: 'GPT Image 2.5 Sunburst', value: 'openai/gpt-image-2.5-sunburst' },
   { label: 'Qwen Image 3 Pro', value: 'qwen/qwen-image-3-pro' },
   { label: 'Seedream 5.0 Pro', value: 'bytedance-seed/seedream-5-0-pro' },
 ];
 
-// GPT Image 2 is the one model here without 4:5 in its aspect_ratio enum
+// The GPT Image models have no 4:5 in their aspect_ratio enum
 // (1:1, 3:2, 2:3, 4:3, 3:4, 16:9, 9:16, 21:9, auto).
-const MODELS_WITHOUT_4_5 = new Set(['openai/gpt-image-2']);
+const MODELS_WITHOUT_4_5 = new Set([
+  'openai/gpt-image-2',
+  'openai/gpt-image-2.5-flare',
+  'openai/gpt-image-2.5-sunburst',
+]);
 
 const MODEL_HELP =
   'Модель, якою рендериться банер. Nano banana pro — найкраща якість і текст на банері; ' +
-  'Nano banana 2 — вдвічі дешевша й швидша; GPT Image 2, Qwen Image 3 Pro та ' +
+  'Nano banana 2 — вдвічі дешевша й швидша; GPT Image 2 / 2.5 Flare / 2.5 Sunburst, Qwen Image 3 Pro та ' +
   'Seedream 5.0 Pro — альтернативні стилі. Впливає лише на генерацію зображення, ' +
   'не на Analyze image і не на тексти.';
 
@@ -164,7 +170,7 @@ export const CreativeEditPage = () => {
   const [aspectRatio, setAspectRatio] = useState('1:1');
   // Local, not the shared store — picking a model here must not silently change
   // what Creative Gen is set to.
-  const [imageModel, setImageModel] = useState('google/gemini-3-pro-image');
+  const [imageModel, setImageModel] = useState('openai/gpt-image-2.5-sunburst');
   const [isLoading, setIsLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
