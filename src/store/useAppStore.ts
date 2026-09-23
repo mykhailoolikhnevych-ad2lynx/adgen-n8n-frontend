@@ -1033,7 +1033,7 @@ const errorFromResponseBody = (e: any): string | null => {
 // n8n's "allIncomingItems" wraps NB's JSON in a top-level array of
 // {json:{...}}; unwrap and pull `.list` (or `.data.list`) which holds
 // the events themselves.
-const parseNbEventsResponse = (data: unknown): NbEvent[] => {
+export const parseNbEventsResponse = (data: unknown): NbEvent[] => {
   const first = Array.isArray(data) ? data[0] : data;
   const unwrapped = first && typeof first === 'object' && 'json' in first ? (first as any).json : first;
   const nbBody = unwrapped && typeof unwrapped === 'object' && 'data' in unwrapped ? (unwrapped as any).data : unwrapped;

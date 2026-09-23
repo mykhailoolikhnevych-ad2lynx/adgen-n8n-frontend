@@ -18,6 +18,7 @@ import { MegatoolFBCampaignPage } from './pages/MegatoolFBCampaignPage';
 import { MegatoolCreateBinomOfferPage } from './pages/MegatoolCreateBinomOfferPage';
 import { MegatoolCreateNbCampaignPage } from './pages/MegatoolCreateNbCampaignPage';
 import { MegatoolNbCopierPage } from './pages/MegatoolNbCopierPage';
+import { MegatoolAutozalivBuilderPage } from './pages/MegatoolAutozalivBuilderPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail, isAdminEmail } from '@/lib/identity';
 
@@ -26,10 +27,11 @@ type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article'
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
 // active megatool here. Adding a second tool = append to this list.
-type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier';
-const MEGATOOL_NAV: { value: MegatoolPage; label: string }[] = [
+type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier' | 'autozaliv-builder';
+const MEGATOOL_NAV: { value: MegatoolPage; label: string; adminOnly?: boolean }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
   { value: 'nb-copier', label: 'Newsbreak Copier' },
+  { value: 'autozaliv-builder', label: 'Autozaliv Builder', adminOnly: true },
 ];
 
 const BASE_NAV: { value: Page; label: string }[] = [
@@ -295,7 +297,7 @@ export default function MainApp() {
             <nav className="flex items-center gap-1">
               {megatool ? (
                 <>
-                  {MEGATOOL_NAV.map((item) => {
+                  {MEGATOOL_NAV.filter((item) => isAdmin || !item.adminOnly).map((item) => {
                     const isActive = megatoolPage === item.value;
                     const button = (
                       <button
@@ -497,6 +499,12 @@ export default function MainApp() {
           <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'nb-copier'}>
             <MegatoolNbCopierPage />
           </KeepAlive>
+          {/* Autozaliv Builder — admin-only; pick articles → pick ads (replaces the Filter sheet). */}
+          {isAdmin && (
+            <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'autozaliv-builder'}>
+              <MegatoolAutozalivBuilderPage />
+            </KeepAlive>
+          )}
           {/* Closing the Binom sub-tab (×) means "discard this offer draft", so it
               stays gated on binomOfferOpen — closing still resets the form. */}
           {binomOfferOpen && (
