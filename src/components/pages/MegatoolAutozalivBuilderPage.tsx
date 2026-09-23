@@ -164,6 +164,8 @@ type NbSettings = { budget: number; startDate: string; timezone: string; bidValu
 // Advertiser (NB brandName) = fixed "Search | " + a per-campaign part; NB allows 2–25 chars in total.
 const ADVERTISER_PREFIX = 'Search | ';
 const BRAND_MAX = 25;
+// NB creative limits (NB returns "creative.description length must be between 3 and 90").
+const NB_TEXT = { headline: { min: 1, max: 90 }, body: { min: 3, max: 90 } };
 // Default part = the Name, cut at a word boundary so the whole advertiser fits.
 function fitWords(text: string, max: number): string {
   if (text.length <= max) return text;
@@ -255,6 +257,9 @@ export function MegatoolAutozalivBuilderPage() {
   const [nbBulk, setNbBulk] = useState<NbSettings>({ budget: 10, startDate: 'now+3h', timezone: 'PDT', bidValue: 0, cta: '' });
   const [nbNames, setNbNames] = useState<Record<string, string>>({});
   const [nbAdvertisers, setNbAdvertisers] = useState<Record<string, string>>({});
+  // Per-ad text edits, keyed by adKey(); unset = the source ad's text as it is.
+  const [nbAdEdits, setNbAdEdits] = useState<Record<string, { headline?: string; body?: string }>>({});
+  const [nbOpen, setNbOpen] = useState<string | null>(null);
   const [nbEvents, setNbEvents] = useState<Record<string, EventsState>>({});
   const [nb, setNb] = useState<Record<string, NbState>>({});
   const [nbRunning, setNbRunning] = useState(false);
@@ -622,16 +627,32 @@ export function MegatoolAutozalivBuilderPage() {
       .filter((ad) => !excluded.has(adKey(g.name, ad)))
       .map((ad) => {
         const isVideo = (ad.ad_type || '').toLowerCase() === 'video' && !!ad.video_url;
+        const key = adKey(g.name, ad);
+        const edit = nbAdEdits[key] || {};
         return {
+          key,
+          img: ad.img_url,
           adName: isVideo ? `${name}_VIDEO_${++videos}` : `${name}_IMAGE_${++images}`,
-          headline: ad.ad_title || '',
-          body: ad.ad_text || '',
+          headline: edit.headline ?? (ad.ad_title || ''),
+          body: edit.body ?? (ad.ad_text || ''),
           assetUrl: isVideo ? ad.video_url : ad.img_url,
           cta: ad.cta ? formatCta(ad.cta) : '',
         };
       })
       .filter((ad) => ad.assetUrl);
   };
+  // First NB text-limit problem in an article's ads, or ''.
+  const nbTextError = (ads: ReturnType<typeof nbAdsFor>) => {
+    for (const ad of ads) {
+      const h = ad.headline.trim().length;
+      const b = ad.body.trim().length;
+      if (h < NB_TEXT.headline.min || h > NB_TEXT.headline.max) return `${ad.adName}: headline is ${h} chars (NB allows ${NB_TEXT.headline.min}–${NB_TEXT.headline.max})`;
+      if (b < NB_TEXT.body.min || b > NB_TEXT.body.max) return `${ad.adName}: description is ${b} chars (NB allows ${NB_TEXT.body.min}–${NB_TEXT.body.max})`;
+    }
+    return '';
+  };
+  const editAd = (key: string, patch: { headline?: string; body?: string }) =>
+    setNbAdEdits((s) => ({ ...s, [key]: { ...s[key], ...patch } }));
   const nbNameFor = (g: (typeof groups)[number]) => {
     if (nbNames[g.name] !== undefined) return nbNames[g.name];
     const b = binomFor(g);
@@ -663,6 +684,7 @@ export function MegatoolAutozalivBuilderPage() {
         : !trackingId ? `NB account has no "${trackingEvent}" tracking event`
         : advertiser.length < 2 || advertiser.length > 25 ? `Advertiser is ${advertiser.length} chars — NB allows 2–25`
         : ads.length === 0 ? 'No ads left for this article'
+        : nbTextError(ads) ? nbTextError(ads) + ' — fix it under "Edit ads"'
         : bid !== 'MAX_CONVERSION' && !(nbBulk.bidValue > 0) ? `Set the ${bid === 'TARGET_ROAS' ? 'ROAS %' : 'CPA $'} value` : '';
       if (error) {
         setNb((s) => ({ ...s, [g.name]: { status: 'error', error } }));
@@ -685,7 +707,7 @@ export function MegatoolAutozalivBuilderPage() {
           // same units as the Create NB Campaign tab: roas is a fraction, bidRate is cents
           ...(bid === 'TARGET_ROAS' ? { roas: nbBulk.bidValue / 100 } : {}),
           ...(bid === 'TARGET_CPA' ? { bidRate: Math.round(nbBulk.bidValue * 100) } : {}),
-          ads: ads.map(({ adName, headline, body, assetUrl }) => ({ adName, headline, body, assetUrl })),
+          ads: ads.map(({ adName, headline, body, assetUrl }) => ({ adName, headline: headline.trim(), body: body.trim(), assetUrl })),
           adsetSizes: [ads.length],
         }, { timeout: 600_000 });
         const outer = Array.isArray(data) ? data[0] : data;
@@ -697,7 +719,8 @@ export function MegatoolAutozalivBuilderPage() {
       } catch (e: any) {
         const body = e?.response?.data;
         const outer = Array.isArray(body) ? body[0] : body;
-        setNb((s) => ({ ...s, [g.name]: { status: 'error', error: outer?.error || e.message } }));
+        const partial = outer?.partial?.campaignId ? ` (NB campaign ${outer.partial.campaignId} was created — delete it before retrying)` : '';
+        setNb((s) => ({ ...s, [g.name]: { status: 'error', error: outer?.error ? outer.error + partial : e.message } }));
       }
       if (n < todo.length - 1) await sleep(1000);
     }
@@ -1261,7 +1284,7 @@ export function MegatoolAutozalivBuilderPage() {
                   const r = nb[g.name];
                   const locked = r?.status === 'done' || r?.status === 'running';
                   const noBinom = binom[g.name]?.status !== 'done';
-                  return (
+                  return [
                     <tr key={g.name} className={`border-b border-slate-100 align-top ${noBinom ? 'opacity-50' : ''}`}>
                       <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-800" title={g.name}>{trimArticle(g.name)}</td>
                       <td className="px-2 py-1.5 min-w-[320px]">
@@ -1281,8 +1304,11 @@ export function MegatoolAutozalivBuilderPage() {
                           </span>
                         </div>
                       </td>
-                      <td className="px-2 py-1.5 text-xs text-slate-600 whitespace-nowrap" title={ads.map((a) => a.adName).join('\n')}>
-                        {ads.length} ({ads.map((a) => a.adName.split('_').slice(-2).join('_')).join(', ')})
+                      <td className="px-2 py-1.5 text-xs text-slate-600 whitespace-nowrap">
+                        <button type="button" onClick={() => setNbOpen(nbOpen === g.name ? null : g.name)} className="underline hover:no-underline">
+                          {nbOpen === g.name ? '▾' : '▸'} Edit ads ({ads.length})
+                        </button>
+                        {nbTextError(ads) && <div className="text-red-600">text too long/short</div>}
                       </td>
                       <td className="px-2 py-1.5 text-xs max-w-[260px] truncate text-slate-500" title={binom[g.name]?.campaignUrl}>
                         {binom[g.name]?.campaignUrl || 'no Binom campaign yet'}
@@ -1296,8 +1322,30 @@ export function MegatoolAutozalivBuilderPage() {
                         )}
                         {r?.status === 'error' && <span className="text-red-600 break-words">{r.error}</span>}
                       </td>
-                    </tr>
-                  );
+                    </tr>,
+                    nbOpen === g.name && (
+                      <tr key={g.name + '|ads'} className="border-b border-slate-200 bg-slate-50">
+                        <td colSpan={6} className="px-3 py-2 space-y-2">
+                          {ads.map((ad) => (
+                            <div key={ad.key} className="flex gap-3 rounded border border-slate-200 bg-white p-2">
+                              {ad.img && <img src={ad.img} loading="lazy" alt="" className="h-16 w-16 max-w-none rounded object-cover bg-slate-100" />}
+                              <div className="flex-1 space-y-1.5 min-w-0">
+                                <div className="text-[10px] font-bold uppercase text-gray-500">{ad.adName}</div>
+                                <TextCounter
+                                  label="Headline" value={ad.headline} limit={NB_TEXT.headline} disabled={locked}
+                                  onChange={(v) => editAd(ad.key, { headline: v })}
+                                />
+                                <TextCounter
+                                  label="Description" value={ad.body} limit={NB_TEXT.body} disabled={locked}
+                                  onChange={(v) => editAd(ad.key, { body: v })}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    ),
+                  ];
                 })}
               </tbody>
             </table>
@@ -1439,6 +1487,29 @@ function Select({ value, onChange, options, placeholder, disabled }: { value: st
         <option key={o} value={o}>{o}</option>
       ))}
     </select>
+  );
+}
+
+// One NB text field with a live length counter against NB's limit.
+function TextCounter({ label, value, limit, disabled, onChange }: {
+  label: string; value: string; limit: { min: number; max: number }; disabled?: boolean; onChange: (v: string) => void;
+}) {
+  const n = value.trim().length;
+  const bad = n < limit.min || n > limit.max;
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-[10px] uppercase">
+        <span className="font-bold text-gray-500">{label}</span>
+        <span className={bad ? 'text-red-600 font-bold' : 'text-slate-400'}>{n}/{limit.max}</span>
+      </div>
+      <textarea
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        rows={Math.min(8, Math.max(2, Math.ceil(value.length / 110)))}
+        className={`w-full rounded border bg-white px-2 py-1 text-xs text-slate-800 focus:outline-none disabled:opacity-60 ${bad ? 'border-red-300' : 'border-slate-200 focus:border-slate-400'}`}
+      />
+    </div>
   );
 }
 
