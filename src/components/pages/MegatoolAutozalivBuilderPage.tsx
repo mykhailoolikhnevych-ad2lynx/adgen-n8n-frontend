@@ -12,6 +12,12 @@ import { Button } from '@/components/ui/button';
 // (megatool-autozaliv-content), replacing the local Python scripts.
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL as string | undefined;
 const CONTENT_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL as string | undefined;
+// Step 4 publishes AMO articles (megatool-autozaliv-launch). Buyer → email lives in
+// the autozaliv_buyers datatable; the email picks the RSOC account, and the
+// existing RSOC options webhook tells us which AMO domains that account has.
+// Autozaliv only runs on NewsBreak, so the traffic source is fixed.
+const LAUNCH_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL as string | undefined;
+const RSOC_OPTIONS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_RSOC_OPTIONS_URL as string | undefined;
 
 type Sheet = { headers: string[]; rows: string[][] };
 type Row = Record<string, string>;
@@ -107,6 +113,17 @@ async function post(url: string | undefined, envName: string, body: object, time
 const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string }> =>
   post(WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL', body, 180_000);
 const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL', body, 300_000);
+const callLaunch = (body: object) => post(LAUNCH_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL', body, 180_000);
+
+type Buyer = { buyer: string; email: string };
+type LaunchSettings = { buyer: string; domain: string };
+const TRAFFIC_SOURCE = 'newsbreak';
+type RsocOptions = {
+  provider_fields?: { amo?: { domain?: Record<string, Record<string, string>> } };
+};
+type OptionsState = { status: 'loading' | 'ready' | 'error'; data?: RsocOptions; error?: string };
+type AmoState = { status: 'running' | 'done' | 'error'; offerUrl?: string; articleUrl?: string; error?: string };
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // AMO limits, same as RSocContentGenerator_autozaliv.py.
 const AMO = { intro: 50, body: 600, paragraph: 40 };
@@ -129,7 +146,7 @@ async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>)
 }
 
 export function MegatoolAutozalivBuilderPage() {
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Step 1 — articles
   const [articles, setArticles] = useState<Sheet | null>(null);
@@ -154,6 +171,15 @@ export function MegatoolAutozalivBuilderPage() {
   // Step 3 — content, keyed by article name
   const [contents, setContents] = useState<Record<string, ContentState>>({});
   const [openArticle, setOpenArticle] = useState<string | null>(null);
+
+  // Step 4 — launch
+  const [buyers, setBuyers] = useState<{ status: 'idle' | 'loading' | 'ready' | 'error'; list: Buyer[]; error?: string }>({ status: 'idle', list: [] });
+  const [optionsByEmail, setOptionsByEmail] = useState<Record<string, OptionsState>>({});
+  const [launchBulk, setLaunchBulk] = useState<LaunchSettings>({ buyer: '', domain: '' });
+  const [launchOverrides, setLaunchOverrides] = useState<Record<string, Partial<LaunchSettings>>>({});
+  const [keywords, setKeywords] = useState<Record<string, string>>({});
+  const [amo, setAmo] = useState<Record<string, AmoState>>({});
+  const [publishing, setPublishing] = useState(false);
 
   const loadArticles = async () => {
     setArticlesLoading(true);
@@ -257,7 +283,9 @@ export function MegatoolAutozalivBuilderPage() {
     const picked = pickAds(all, settings);
     // One landing per article: the top picked ad's, else the article's example.
     const landing = picked.find((ad) => ad.landing_url)?.landing_url || articleByTrimmed[trimmed]?.examp_landing_page || '';
-    return { name, settings, total: all.length, picked, landing };
+    // keys_for_article in the sheet came from scraped_keywords (ad first, then article).
+    const defaultKeywords = picked.find((ad) => ad.scraped_keywords)?.scraped_keywords || articleByTrimmed[trimmed]?.scraped_keywords || '';
+    return { name, settings, total: all.length, picked, landing, defaultKeywords };
   });
   const adKey = (article: string, ad: Row) => `${article}|${ad.ad_key || ad.img_url}`;
   const keptCount = groups.reduce((n, g) => n + g.picked.filter((ad) => !excluded.has(adKey(g.name, ad))).length, 0);
@@ -324,6 +352,92 @@ export function MegatoolAutozalivBuilderPage() {
     return c && amoCheck(c).pass;
   }).length;
 
+  // ---- Step 4: launch ----
+  const loadBuyers = async () => {
+    setBuyers((b) => ({ ...b, status: 'loading', error: undefined }));
+    try {
+      const res = await callLaunch({ action: 'buyers' });
+      setBuyers({ status: 'ready', list: res.buyers || [] });
+    } catch (e: any) {
+      setBuyers({ status: 'error', list: [], error: e.message });
+    }
+  };
+  const goToLaunch = () => {
+    setStep(4);
+    if (buyers.status === 'idle' || buyers.status === 'error') loadBuyers();
+  };
+
+  const emailOf = (buyer: string) => buyers.list.find((b) => b.buyer === buyer)?.email || '';
+  // RSOC options are per account, so fetch them once per buyer email.
+  const ensureOptions = async (email: string) => {
+    if (!email || optionsByEmail[email]) return;
+    setOptionsByEmail((s) => ({ ...s, [email]: { status: 'loading' } }));
+    try {
+      if (!RSOC_OPTIONS_WEBHOOK) throw new Error('PUBLIC_WEBHOOK_RSOC_OPTIONS_URL is not set');
+      const { data } = await axios.post(RSOC_OPTIONS_WEBHOOK, { email }, { timeout: 30_000 });
+      const outer = Array.isArray(data) ? data[0] : data;
+      const opts = outer?.data ?? outer;
+      if (!opts?.provider_fields) throw new Error(outer?.message || 'RSOC options returned no data');
+      setOptionsByEmail((s) => ({ ...s, [email]: { status: 'ready', data: opts } }));
+    } catch (e: any) {
+      setOptionsByEmail((s) => ({ ...s, [email]: { status: 'error', error: e?.response?.data?.message || e.message } }));
+    }
+  };
+  const domainsFor = (email: string) =>
+    Object.keys(optionsByEmail[email]?.data?.provider_fields?.amo?.domain?.[TRAFFIC_SOURCE] || {});
+
+  // Row value = override ?? default; a domain the account can't use falls back to its first one.
+  const launchFor = (name: string): LaunchSettings & { email: string; domains: string[] } => {
+    const ov = launchOverrides[name] || {};
+    const buyer = ov.buyer ?? launchBulk.buyer;
+    const email = emailOf(buyer);
+    const domains = domainsFor(email);
+    const wanted = ov.domain ?? launchBulk.domain;
+    return { buyer, email, domain: domains.includes(wanted) ? wanted : domains[0] || '', domains };
+  };
+  const setOverride = (name: string, patch: Partial<LaunchSettings>) =>
+    setLaunchOverrides((o) => ({ ...o, [name]: { ...o[name], ...patch } }));
+
+  const usedEmails = [...new Set([launchBulk.buyer, ...Object.values(launchOverrides).map((o) => o.buyer || '')].map(emailOf).filter(Boolean))];
+  useEffect(() => {
+    usedEmails.forEach(ensureOptions);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usedEmails.join('|')]);
+
+  const keywordsFor = (g: (typeof groups)[number]) => keywords[g.name] ?? g.defaultKeywords;
+
+  // 1️⃣ Create AMO articles — one at a time, like the sheet (AMO is slow and rate-limited).
+  const createAmoArticles = async () => {
+    setPublishing(true);
+    const todo = groups.filter((g) => amo[g.name]?.status !== 'done');
+    for (const [n, g] of todo.entries()) {
+      const c = contents[g.name]?.content;
+      const l = launchFor(g.name);
+      const error = !c ? 'No content — read it in step 3'
+        : !amoCheck(c).pass ? 'Content fails AMO rules — fix it in step 3'
+        : !l.email ? 'Pick a buyer'
+        : !l.domain ? 'This buyer has no AMO domain for newsbreak' : '';
+      if (error) {
+        setAmo((s) => ({ ...s, [g.name]: { status: 'error', error } }));
+        continue;
+      }
+      setAmo((s) => ({ ...s, [g.name]: { status: 'running' } }));
+      try {
+        const res = await callLaunch({
+          action: 'amo-article', email: l.email, domain: l.domain, trafficSource: TRAFFIC_SOURCE, keywords: keywordsFor(g), content: c,
+        });
+        setAmo((s) => ({ ...s, [g.name]: { status: 'done', offerUrl: res.offerUrl, articleUrl: res.articleUrl } }));
+      } catch (e: any) {
+        setAmo((s) => ({ ...s, [g.name]: { status: 'error', error: e.message } }));
+      }
+      if (n < todo.length - 1) await sleep(3000);
+    }
+    setPublishing(false);
+  };
+  const amoDone = selectedList.filter((n) => amo[n]?.status === 'done').length;
+  const bulkEmail = emailOf(launchBulk.buyer);
+  const bulkOptions = optionsByEmail[bulkEmail];
+
   const toggleAd = (k: string) =>
     setExcluded((s) => {
       const n = new Set(s);
@@ -340,7 +454,7 @@ export function MegatoolAutozalivBuilderPage() {
         <span className="text-slate-400">→</span>
         <StepPill n={3} label="Content" active={step === 3} onClick={() => selected.size && ads && goToContent()} disabled={!ads} />
         <span className="text-slate-400">→</span>
-        <StepPill n={4} label="Launch settings" active={false} disabled />
+        <StepPill n={4} label="Launch" active={step === 4} onClick={goToLaunch} disabled={Object.keys(contents).length === 0} />
       </div>
 
       {step === 1 && (
@@ -596,8 +710,96 @@ export function MegatoolAutozalivBuilderPage() {
             <span className="text-sm text-slate-700">
               {passCount} of {selectedList.length} articles pass AMO rules
             </span>
-            <Button className="ml-auto" disabled title="Launch settings are the next part">
-              Next: launch settings →
+            <Button className="ml-auto" onClick={goToLaunch}>
+              Next: launch →
+            </Button>
+          </div>
+        </>
+      )}
+
+      {step === 4 && (
+        <>
+          <div className="mx-4 mb-2 rounded border border-slate-200 bg-white px-3 py-2">
+            <div className="text-[10px] font-bold uppercase text-gray-500 mb-1.5">Defaults for all articles</div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
+              <label className="flex items-center gap-1.5">
+                Buyer
+                <Select value={launchBulk.buyer} onChange={(v) => setLaunchBulk((b) => ({ ...b, buyer: v }))} options={buyers.list.map((b) => b.buyer)} placeholder="— pick —" />
+              </label>
+              <span className="text-slate-500">New Source: <b className="text-slate-700">{TRAFFIC_SOURCE}</b></span>
+              <label className="flex items-center gap-1.5">
+                domain amo
+                <Select
+                  value={domainsFor(bulkEmail).includes(launchBulk.domain) ? launchBulk.domain : domainsFor(bulkEmail)[0] || ''}
+                  onChange={(v) => setLaunchBulk((b) => ({ ...b, domain: v }))}
+                  options={domainsFor(bulkEmail)}
+                  placeholder={bulkEmail ? '— none —' : '— pick buyer —'}
+                />
+              </label>
+              <span className="text-xs text-slate-500">
+                {buyers.status === 'loading' && 'Loading buyers…'}
+                {buyers.status === 'ready' && buyers.list.length === 0 && 'No buyers yet — add rows to the autozaliv_buyers datatable in n8n'}
+                {bulkOptions?.status === 'loading' && 'Loading this buyer’s RSOC options…'}
+                {bulkOptions?.status === 'error' && <span className="text-red-600">RSOC options: {bulkOptions.error}</span>}
+              </span>
+            </div>
+          </div>
+          {buyers.status === 'error' && <ErrorBox msg={`Buyers: ${buyers.error}`} />}
+          <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
+            <table className="w-full text-sm border-collapse">
+              <thead className="sticky top-0 bg-slate-100 z-10">
+                <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+                  <th className="px-2 py-2">article</th>
+                  <th className="px-2 py-2">content</th>
+                  <th className="px-2 py-2">buyer</th>
+                  <th className="px-2 py-2">domain amo</th>
+                  <th className="px-2 py-2">keywords (utm_term)</th>
+                  <th className="px-2 py-2">1️⃣ AMO article</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g) => {
+                  const l = launchFor(g.name);
+                  const c = contents[g.name]?.content;
+                  const a = amo[g.name];
+                  const locked = a?.status === 'done' || a?.status === 'running';
+                  return (
+                    <tr key={g.name} className="border-b border-slate-100 align-top">
+                      <td className="px-2 py-1.5 max-w-[260px] truncate text-slate-800" title={g.name}>{trimArticle(g.name)}</td>
+                      <td className="px-2 py-1.5 text-xs whitespace-nowrap">
+                        {c ? <Badge ok={amoCheck(c).pass}>{amoCheck(c).pass ? 'AMO ok' : 'fails AMO'}</Badge> : <span className="text-slate-400">not read</span>}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Select value={l.buyer} disabled={locked} onChange={(v) => setOverride(g.name, { buyer: v })} options={buyers.list.map((b) => b.buyer)} placeholder="—" />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Select value={l.domain} disabled={locked} onChange={(v) => setOverride(g.name, { domain: v })} options={l.domains} placeholder="—" />
+                      </td>
+                      <td className="px-2 py-1.5 min-w-[200px]">
+                        <Input value={keywordsFor(g)} disabled={locked} onChange={(e) => setKeywords((k) => ({ ...k, [g.name]: e.target.value }))} className="h-7 bg-white text-xs" />
+                      </td>
+                      <td className="px-2 py-1.5 text-xs max-w-[320px]">
+                        {a?.status === 'running' && <span className="text-slate-500">Publishing…</span>}
+                        {a?.status === 'done' && (
+                          <div className="space-y-0.5">
+                            <LandingLink url={a.articleUrl} full />
+                            <div className="truncate text-slate-500" title={a.offerUrl}>offer: {a.offerUrl}</div>
+                          </div>
+                        )}
+                        {a?.status === 'error' && <span className="text-red-600 break-words">{a.error}</span>}
+                        {!a && <span className="text-slate-400">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-slate-200 bg-white">
+            <Button variant="outline" onClick={() => setStep(3)}>← Content</Button>
+            <span className="text-sm text-slate-700">{amoDone} of {selectedList.length} AMO articles created</span>
+            <Button className="ml-auto" disabled={publishing || amoDone === selectedList.length} onClick={createAmoArticles}>
+              {publishing ? 'Creating…' : '1️⃣ Create AMO articles'}
             </Button>
           </div>
         </>
@@ -714,6 +916,22 @@ function LandingLink({ url, full }: { url?: string; full?: boolean }) {
     <a href={url} target="_blank" rel="noreferrer" title={url} onClick={(e) => e.stopPropagation()} className="text-blue-600 hover:underline">
       {label}
     </a>
+  );
+}
+
+function Select({ value, onChange, options, placeholder, disabled }: { value: string; onChange: (v: string) => void; options: string[]; placeholder?: string; disabled?: boolean }) {
+  return (
+    <select
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-7 max-w-[200px] rounded border border-slate-200 bg-white px-1 text-sm disabled:opacity-50"
+    >
+      {placeholder !== undefined && !options.includes(value) && <option value={value}>{placeholder}</option>}
+      {options.map((o) => (
+        <option key={o} value={o}>{o}</option>
+      ))}
+    </select>
   );
 }
 
