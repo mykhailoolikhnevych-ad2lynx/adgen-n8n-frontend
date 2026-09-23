@@ -2,6 +2,10 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Combobox } from '@/components/ui/Combobox';
+import { useAppStore, parseNbEventsResponse, type NbEvent } from '@/store/useAppStore';
+import { BINOM_TRACKERS } from '@/lib/binomGroups';
+import { START_DATE_OPTIONS, TIMEZONE_OPTIONS } from './MegatoolCreateNbCampaignPage';
 
 // Autozaliv Builder — web replacement for the "articles (domains)" →
 // "Filter for AUTOZALYV" → "Filtered Results" part of the Apps Script tool.
@@ -104,10 +108,12 @@ async function post(url: string | undefined, envName: string, body: object, time
     const { data } = await axios.post(url, body, { timeout });
     const outer = Array.isArray(data) ? data[0] : data;
     if (data === '' || data == null) throw new Error('Empty response from n8n — check the workflow execution');
-    if (!outer?.ok) throw new Error(outer?.error || 'Request failed');
+    if (!outer?.ok) throw Object.assign(new Error(outer?.error || 'Request failed'), { data: outer });
     return outer;
   } catch (e: any) {
-    throw new Error(e?.response?.data?.error || e?.message || 'Request failed');
+    // keep the reply body: a failed step can still carry ids created before it (e.g. offerId)
+    const data = e?.data || e?.response?.data;
+    throw Object.assign(new Error(data?.error || e?.message || 'Request failed'), { data });
   }
 }
 const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string }> =>
@@ -124,6 +130,60 @@ type RsocOptions = {
 type OptionsState = { status: 'loading' | 'ready' | 'error'; data?: RsocOptions; error?: string };
 type AmoState = { status: 'running' | 'done' | 'error'; offerUrl?: string; articleUrl?: string; error?: string };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ---- Step 5: Binom (port of processOffers / processCampaigns / fetchCampaignURLs) ----
+const BID_TYPES = ['MAX_CONVERSION', 'TARGET_CPA', 'TARGET_ROAS'];
+type BinomSettings = { tracker: string; group: string; domainId: string; geo: string; nbAccount: string; bidType: string; event: string; suffix: string };
+type BinomRow = { name?: string; geo?: string; language?: string };
+type BinomOptions = { status: 'loading' | 'ready' | 'error'; groups: string[]; domains: { id: string; host: string }[]; error?: string };
+type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignUrl?: string; error?: string };
+
+// "sarb-dating-sites-for-widows-dab" -> "Dating Sites For Widows": drop the source prefix and
+// the short tracking codes at the end (vev, dab, p2c…). Only a default — the Name stays editable.
+function defaultName(article: string): string {
+  const parts = trimArticle(article).split('-').filter(Boolean);
+  if (parts.length > 1 && parts[0] === 'sarb') parts.shift();
+  while (parts.length > 1 && parts[parts.length - 1].length <= 3 && /[a-z]/i.test(parts[parts.length - 1])) parts.pop();
+  return parts.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+// Same default as the sheet: complete_payment for TARGET_ROAS, otherwise click_button.
+const resolveEvent = (event: string, bidType: string) => (event !== 'auto' ? event : bidType === 'TARGET_ROAS' ? 'complete_payment' : 'click_button');
+// "URL for offer" formula from the sheet: article URL + NB macros (+ _roas) + ad_id + utm_term + empty channel.
+function offerUrlFor(articleUrl: string, keywords: string, bidType: string): string {
+  const base = articleUrl.split(/[?#]/)[0];
+  const kw = keywords.split(',').map((k) => k.trim()).filter(Boolean).join(',');
+  return base + '?m=og&part=bol&utm_source=newsbreak&utm_medium=gs&newsbreak_cid={t10}&term1={clickid}_{campaign_id}'
+    + (bidType === 'TARGET_ROAS' ? '_roas' : '') + '&term2={campaign_domain}&utm_content={t12}&ad_id={t2}'
+    + (kw ? '&utm_term=' + encodeURIComponent(kw) : '') + '&channel=';
+}
+// ---- Step 6: NB — reuses the MEGATOOL Create NB Campaign webhook (campaign → 1 ad set → ads) ----
+const NB_CAMPAIGN_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL as string | undefined;
+const NB_EVENTS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL as string | undefined;
+const NB_CTA_OPTIONS = ['Learn More', 'Sign Up', 'Shop Now', 'Download', 'Get Quote', 'Apply Now', 'See More', 'Get Offer', 'Subscribe', 'Contact Us', 'Book Now', 'Watch More'];
+type NbSettings = { budget: number; startDate: string; timezone: string; bidValue: number; cta: string };
+// Advertiser (NB brandName) = fixed "Search | " + a per-campaign part; NB allows 2–25 chars in total.
+const ADVERTISER_PREFIX = 'Search | ';
+const BRAND_MAX = 25;
+// Default part = the Name, cut at a word boundary so the whole advertiser fits.
+function fitWords(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max + 1);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : text.slice(0, max)).trim();
+}
+type NbState = { status: 'running' | 'done' | 'error'; campaignId?: string; adsetId?: string; adIds?: string[]; error?: string };
+type EventsState = { status: 'loading' | 'ready' | 'error'; events: NbEvent[]; error?: string };
+// "Source Cmp name" from the sheet: Name | GEO | LANG | AZ | RSOC | Buyer | <tomorrow dd/mm/yy>
+const tomorrowDdMmYy = () => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + String(d.getFullYear()).slice(-2);
+};
+
+const todayDdMm = () => {
+  const d = new Date();
+  return String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0');
+};
 
 // AMO limits, same as RSocContentGenerator_autozaliv.py.
 const AMO = { intro: 50, body: 600, paragraph: 40 };
@@ -146,7 +206,7 @@ async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>)
 }
 
 export function MegatoolAutozalivBuilderPage() {
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
 
   // Step 1 — articles
   const [articles, setArticles] = useState<Sheet | null>(null);
@@ -180,6 +240,24 @@ export function MegatoolAutozalivBuilderPage() {
   const [keywords, setKeywords] = useState<Record<string, string>>({});
   const [amo, setAmo] = useState<Record<string, AmoState>>({});
   const [publishing, setPublishing] = useState(false);
+
+  // Step 5 — Binom
+  const [binomBulk, setBinomBulk] = useState<BinomSettings>({ tracker: BINOM_TRACKERS[0], group: '', domainId: '', geo: 'US', nbAccount: '', bidType: 'MAX_CONVERSION', event: 'auto', suffix: '' });
+  const [binomRows, setBinomRows] = useState<Record<string, BinomRow>>({});
+  const [binomOptions, setBinomOptions] = useState<Record<string, BinomOptions>>({});
+  const [binom, setBinom] = useState<Record<string, BinomState>>({});
+  const [binomRunning, setBinomRunning] = useState(false);
+  const nbAccountsList = useAppStore((s) => s.nbAccountsList);
+  const nbAccountsStatus = useAppStore((s) => s.nbAccountsStatus);
+  const fetchNbAccounts = useAppStore((s) => s.fetchNbAccounts);
+
+  // Step 6 — NB
+  const [nbBulk, setNbBulk] = useState<NbSettings>({ budget: 10, startDate: 'now+3h', timezone: 'PDT', bidValue: 0, cta: '' });
+  const [nbNames, setNbNames] = useState<Record<string, string>>({});
+  const [nbAdvertisers, setNbAdvertisers] = useState<Record<string, string>>({});
+  const [nbEvents, setNbEvents] = useState<Record<string, EventsState>>({});
+  const [nb, setNb] = useState<Record<string, NbState>>({});
+  const [nbRunning, setNbRunning] = useState(false);
 
   const loadArticles = async () => {
     setArticlesLoading(true);
@@ -438,6 +516,195 @@ export function MegatoolAutozalivBuilderPage() {
   const bulkEmail = emailOf(launchBulk.buyer);
   const bulkOptions = optionsByEmail[bulkEmail];
 
+  // ---- Step 5: Binom ----
+  const loadBinomOptions = async (tracker: string) => {
+    setBinomOptions((s) => ({ ...s, [tracker]: { status: 'loading', groups: [], domains: [] } }));
+    try {
+      const res = await callLaunch({ action: 'binom-options', tracker });
+      setBinomOptions((s) => ({ ...s, [tracker]: { status: 'ready', groups: res.groups || [], domains: res.domains || [] } }));
+    } catch (e: any) {
+      setBinomOptions((s) => ({ ...s, [tracker]: { status: 'error', groups: [], domains: [], error: e.message } }));
+    }
+  };
+  const goToBinom = () => {
+    setStep(5);
+    if (nbAccountsStatus === 'idle') void fetchNbAccounts();
+  };
+  useEffect(() => {
+    if (step === 5 && !binomOptions[binomBulk.tracker]) loadBinomOptions(binomBulk.tracker);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, binomBulk.tracker]);
+  const trackerOpts = binomOptions[binomBulk.tracker];
+  const bulkGroup = trackerOpts?.groups.includes(binomBulk.group) ? binomBulk.group : '';
+  const bulkDomain = trackerOpts?.domains.find((d) => d.id === binomBulk.domainId);
+
+  // Offer name / Binom Cmp name = the sheet formulas, built from the same fields.
+  const binomFor = (g: (typeof groups)[number]) => {
+    const row = binomRows[g.name] || {};
+    const name = row.name ?? defaultName(g.name);
+    const geo = (row.geo ?? binomBulk.geo).trim().toUpperCase();
+    const lang = (row.language ?? (articleByTrimmed[trimArticle(g.name)]?.top_language_for_article || 'en')).trim().toUpperCase();
+    const buyer = launchFor(g.name).buyer;
+    const articleUrl = amo[g.name]?.articleUrl || '';
+    const amoLabel = (articleUrl.match(/https?:\/\/([^.]+)/) || [])[1] || '';
+    const offerName = `${name} | ${geo} | ${lang} | AMO | AUTOZALYV${buyer ? ' | ' + buyer : ''} | ch=auto${amoLabel ? ' | ' + amoLabel : ''}`;
+    const tail = [binomBulk.nbAccount, todayDdMm(), binomBulk.suffix.trim()].filter(Boolean).join(' ');
+    const campaignName = `${name} | ${geo} | AMO | AZ | ${buyer} | ${tail}`;
+    const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), binomBulk.bidType) : '';
+    return { name, geo, lang, offerName, campaignName, offerUrl };
+  };
+  const setBinomRow = (name: string, patch: BinomRow) => setBinomRows((r) => ({ ...r, [name]: { ...r[name], ...patch } }));
+
+  // 2️⃣ Create Binom — offer + campaign per article, one at a time like the sheet.
+  const createBinom = async () => {
+    setBinomRunning(true);
+    const todo = groups.filter((g) => binom[g.name]?.status !== 'done');
+    for (const [n, g] of todo.entries()) {
+      const b = binomFor(g);
+      const error = amo[g.name]?.status !== 'done' ? 'Create the AMO article first (step 4)'
+        : !bulkGroup ? 'Pick a Binom group'
+        : !bulkDomain ? 'Pick a tracker domain'
+        : !binomBulk.nbAccount ? 'Pick the NB account (it is part of the campaign name)'
+        : !b.name.trim() ? 'Name is empty' : '';
+      if (error) {
+        setBinom((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'error', error } }));
+        continue;
+      }
+      const prev = binom[g.name];
+      setBinom((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'running', error: undefined } }));
+      try {
+        const res = await callLaunch({
+          action: 'binom', tracker: binomBulk.tracker, group: bulkGroup, domainId: bulkDomain?.id, geo: b.geo,
+          event: resolveEvent(binomBulk.event, binomBulk.bidType), offerName: b.offerName, offerUrl: b.offerUrl,
+          campaignName: b.campaignName, offerId: prev?.offerId,
+        });
+        setBinom((s) => ({ ...s, [g.name]: { status: 'done', offerId: res.offerId, campaignId: res.campaignId, campaignUrl: res.campaignUrl } }));
+      } catch (e: any) {
+        // keep an offer id from a half-finished run so Retry doesn't create a second offer
+        const offerId = e.data?.offerId || prev?.offerId;
+        setBinom((s) => ({ ...s, [g.name]: { status: 'error', error: e.message, offerId } }));
+      }
+      if (n < todo.length - 1) await sleep(1000);
+    }
+    setBinomRunning(false);
+  };
+  const binomDone = selectedList.filter((n) => binom[n]?.status === 'done').length;
+
+  // ---- Step 6: NB ----
+  // Account + bid type + tracking event were already chosen in the Binom step (they're in the
+  // Binom campaign name / URL), so NB reuses them.
+  const nbAccountId = nbAccountsList.find((a) => a.name === binomBulk.nbAccount)?.id || '';
+  const trackingEvent = resolveEvent(binomBulk.event, binomBulk.bidType);
+  const loadNbEvents = async (accountId: string) => {
+    setNbEvents((s) => ({ ...s, [accountId]: { status: 'loading', events: [] } }));
+    try {
+      if (!NB_EVENTS_WEBHOOK) throw new Error('PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL is not set');
+      const { data } = await axios.post(NB_EVENTS_WEBHOOK, { adAccountId: accountId }, { timeout: 30_000 });
+      setNbEvents((s) => ({ ...s, [accountId]: { status: 'ready', events: parseNbEventsResponse(data) } }));
+    } catch (e: any) {
+      setNbEvents((s) => ({ ...s, [accountId]: { status: 'error', events: [], error: e.message } }));
+    }
+  };
+  useEffect(() => {
+    if (step === 6 && nbAccountId && !nbEvents[nbAccountId]) loadNbEvents(nbAccountId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, nbAccountId]);
+  // Tracking events are per NB ad account: pick this account's event of the chosen type.
+  const accountEvents = nbEvents[nbAccountId];
+  const trackingId = accountEvents?.events.find((e) => (e.eventType || '').toLowerCase() === trackingEvent)?.id || '';
+
+  // Ads that go to NB: the picked, not-excluded ads. Ad Name = "<Name>_IMAGE_1" / "<Name>_VIDEO_1" like the sheet.
+  const nbAdsFor = (g: (typeof groups)[number]) => {
+    const name = binomFor(g).name;
+    let images = 0;
+    let videos = 0;
+    return g.picked
+      .filter((ad) => !excluded.has(adKey(g.name, ad)))
+      .map((ad) => {
+        const isVideo = (ad.ad_type || '').toLowerCase() === 'video' && !!ad.video_url;
+        return {
+          adName: isVideo ? `${name}_VIDEO_${++videos}` : `${name}_IMAGE_${++images}`,
+          headline: ad.ad_title || '',
+          body: ad.ad_text || '',
+          assetUrl: isVideo ? ad.video_url : ad.img_url,
+          cta: ad.cta ? formatCta(ad.cta) : '',
+        };
+      })
+      .filter((ad) => ad.assetUrl);
+  };
+  const nbNameFor = (g: (typeof groups)[number]) => {
+    if (nbNames[g.name] !== undefined) return nbNames[g.name];
+    const b = binomFor(g);
+    const buyer = launchFor(g.name).buyer;
+    return `${b.name} | ${b.geo} | ${b.lang} | AZ | RSOC${buyer ? ' | ' + buyer : ''} | ${tomorrowDdMmYy()}`;
+  };
+  const advertiserPartFor = (g: (typeof groups)[number]) =>
+    nbAdvertisers[g.name] ?? fitWords(binomFor(g).name, BRAND_MAX - ADVERTISER_PREFIX.length);
+  const advertiserFor = (g: (typeof groups)[number]) => (ADVERTISER_PREFIX + advertiserPartFor(g)).trim();
+  // One CTA per campaign (the NB workflow takes a campaign-level CTA): default = the most common one of the ads.
+  const defaultCta = (() => {
+    const counts: Record<string, number> = {};
+    groups.forEach((g) => nbAdsFor(g).forEach((ad) => { if (NB_CTA_OPTIONS.includes(ad.cta)) counts[ad.cta] = (counts[ad.cta] || 0) + 1; }));
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Learn More';
+  })();
+  const cta = nbBulk.cta || defaultCta;
+  const goToNb = () => setStep(6);
+
+  // 3️⃣ Create NB — one campaign + one ad set per article, all its ads inside (like the sheet).
+  const createNb = async () => {
+    setNbRunning(true);
+    const todo = groups.filter((g) => nb[g.name]?.status !== 'done');
+    for (const [n, g] of todo.entries()) {
+      const ads = nbAdsFor(g);
+      const advertiser = advertiserFor(g);
+      const bid = binomBulk.bidType;
+      const error = binom[g.name]?.status !== 'done' ? 'Create the Binom campaign first (step 5)'
+        : !nbAccountId ? 'Pick the NB account in step 5'
+        : !trackingId ? `NB account has no "${trackingEvent}" tracking event`
+        : advertiser.length < 2 || advertiser.length > 25 ? `Advertiser is ${advertiser.length} chars — NB allows 2–25`
+        : ads.length === 0 ? 'No ads left for this article'
+        : bid !== 'MAX_CONVERSION' && !(nbBulk.bidValue > 0) ? `Set the ${bid === 'TARGET_ROAS' ? 'ROAS %' : 'CPA $'} value` : '';
+      if (error) {
+        setNb((s) => ({ ...s, [g.name]: { status: 'error', error } }));
+        continue;
+      }
+      setNb((s) => ({ ...s, [g.name]: { status: 'running' } }));
+      try {
+        if (!NB_CAMPAIGN_WEBHOOK) throw new Error('PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL is not set');
+        const { data } = await axios.post(NB_CAMPAIGN_WEBHOOK, {
+          nbAccountId,
+          campaignName: nbNameFor(g),
+          callToAction: cta,
+          brandName: advertiser,
+          clickThroughUrl: binom[g.name].campaignUrl,
+          budget: nbBulk.budget,
+          startDate: nbBulk.startDate,
+          startTimezone: nbBulk.timezone,
+          trackingId,
+          bidType: bid,
+          // same units as the Create NB Campaign tab: roas is a fraction, bidRate is cents
+          ...(bid === 'TARGET_ROAS' ? { roas: nbBulk.bidValue / 100 } : {}),
+          ...(bid === 'TARGET_CPA' ? { bidRate: Math.round(nbBulk.bidValue * 100) } : {}),
+          ads: ads.map(({ adName, headline, body, assetUrl }) => ({ adName, headline, body, assetUrl })),
+          adsetSizes: [ads.length],
+        }, { timeout: 600_000 });
+        const outer = Array.isArray(data) ? data[0] : data;
+        if (!outer || outer.ok === false) {
+          const partial = outer?.partial?.campaignId ? ` (NB campaign ${outer.partial.campaignId} was created — delete it before retrying)` : '';
+          throw new Error((outer?.error || 'NB campaign failed') + partial);
+        }
+        setNb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: outer.campaignId, adsetId: outer.adsetId, adIds: outer.adIds } }));
+      } catch (e: any) {
+        const body = e?.response?.data;
+        const outer = Array.isArray(body) ? body[0] : body;
+        setNb((s) => ({ ...s, [g.name]: { status: 'error', error: outer?.error || e.message } }));
+      }
+      if (n < todo.length - 1) await sleep(1000);
+    }
+    setNbRunning(false);
+  };
+  const nbDone = selectedList.filter((n) => nb[n]?.status === 'done').length;
+
   const toggleAd = (k: string) =>
     setExcluded((s) => {
       const n = new Set(s);
@@ -454,7 +721,11 @@ export function MegatoolAutozalivBuilderPage() {
         <span className="text-slate-400">→</span>
         <StepPill n={3} label="Content" active={step === 3} onClick={() => selected.size && ads && goToContent()} disabled={!ads} />
         <span className="text-slate-400">→</span>
-        <StepPill n={4} label="Launch" active={step === 4} onClick={goToLaunch} disabled={Object.keys(contents).length === 0} />
+        <StepPill n={4} label="AMO articles" active={step === 4} onClick={goToLaunch} disabled={Object.keys(contents).length === 0} />
+        <span className="text-slate-400">→</span>
+        <StepPill n={5} label="Binom" active={step === 5} onClick={goToBinom} disabled={amoDone === 0} />
+        <span className="text-slate-400">→</span>
+        <StepPill n={6} label="NB" active={step === 6} onClick={goToNb} disabled={binomDone === 0} />
       </div>
 
       {step === 1 && (
@@ -800,6 +1071,242 @@ export function MegatoolAutozalivBuilderPage() {
             <span className="text-sm text-slate-700">{amoDone} of {selectedList.length} AMO articles created</span>
             <Button className="ml-auto" disabled={publishing || amoDone === selectedList.length} onClick={createAmoArticles}>
               {publishing ? 'Creating…' : '1️⃣ Create AMO articles'}
+            </Button>
+            <Button variant="outline" disabled={amoDone === 0} onClick={goToBinom}>Next: Binom →</Button>
+          </div>
+        </>
+      )}
+
+      {step === 5 && (
+        <>
+          <div className="mx-4 mb-2 rounded border border-slate-200 bg-white px-3 py-2">
+            <div className="text-[10px] font-bold uppercase text-gray-500 mb-1.5">Binom settings for all articles</div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
+              <label className="flex items-center gap-1.5">
+                Tracker
+                <Select value={binomBulk.tracker} onChange={(v) => setBinomBulk((b) => ({ ...b, tracker: v, group: '', domainId: '' }))} options={[...BINOM_TRACKERS]} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Group Binom
+                <Select value={bulkGroup} onChange={(v) => setBinomBulk((b) => ({ ...b, group: v }))} options={trackerOpts?.groups || []} placeholder="— pick —" />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Tracker Domain
+                <Select
+                  value={bulkDomain?.host || ''}
+                  onChange={(host) => setBinomBulk((b) => ({ ...b, domainId: trackerOpts?.domains.find((d) => d.host === host)?.id || '' }))}
+                  options={(trackerOpts?.domains || []).map((d) => d.host)}
+                  placeholder="— pick —"
+                />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Geo
+                <Input value={binomBulk.geo} onChange={(e) => setBinomBulk((b) => ({ ...b, geo: e.target.value.toUpperCase() }))} className="h-7 w-16 bg-white" />
+              </label>
+              <label className="flex items-center gap-1.5">
+                NB Account
+                <Combobox
+                  value={binomBulk.nbAccount}
+                  onChange={(v) => setBinomBulk((b) => ({ ...b, nbAccount: v }))}
+                  options={nbAccountsList.map((a) => a.name)}
+                  placeholder={nbAccountsStatus === 'loading' ? 'Loading…' : 'Search account…'}
+                  className="w-64"
+                  inputClassName="h-7 bg-white"
+                />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Bid Type
+                <Select value={binomBulk.bidType} onChange={(v) => setBinomBulk((b) => ({ ...b, bidType: v }))} options={BID_TYPES} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Tracking event
+                <Select value={binomBulk.event} onChange={(v) => setBinomBulk((b) => ({ ...b, event: v }))} options={['auto', 'click_button', 'complete_payment']} />
+                {binomBulk.event === 'auto' && <span className="text-xs text-slate-500">→ {resolveEvent('auto', binomBulk.bidType)}</span>}
+              </label>
+              <label className="flex items-center gap-1.5">
+                Cmp name suffix
+                <Input value={binomBulk.suffix} onChange={(e) => setBinomBulk((b) => ({ ...b, suffix: e.target.value }))} placeholder="e.g. spike" className="h-7 w-28 bg-white" />
+              </label>
+              <span className="text-xs text-slate-500">
+                {trackerOpts?.status === 'loading' && 'Loading groups and domains…'}
+                {trackerOpts?.status === 'error' && <span className="text-red-600">{trackerOpts.error}</span>}
+              </span>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
+            <table className="w-full text-sm border-collapse">
+              <thead className="sticky top-0 bg-slate-100 z-10">
+                <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+                  <th className="px-2 py-2">article</th>
+                  <th className="px-2 py-2">name</th>
+                  <th className="px-2 py-2">geo</th>
+                  <th className="px-2 py-2">lang</th>
+                  <th className="px-2 py-2">offer name / binom cmp name</th>
+                  <th className="px-2 py-2">2️⃣ Binom</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g) => {
+                  const b = binomFor(g);
+                  const r = binom[g.name];
+                  const locked = r?.status === 'done' || r?.status === 'running';
+                  const noAmo = amo[g.name]?.status !== 'done';
+                  return (
+                    <tr key={g.name} className={`border-b border-slate-100 align-top ${noAmo ? 'opacity-50' : ''}`}>
+                      <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-800" title={g.name}>{trimArticle(g.name)}</td>
+                      <td className="px-2 py-1.5 min-w-[160px]">
+                        <Input value={b.name} disabled={locked} onChange={(e) => setBinomRow(g.name, { name: e.target.value })} className="h-7 bg-white text-xs" />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Input value={b.geo} disabled={locked} onChange={(e) => setBinomRow(g.name, { geo: e.target.value.toUpperCase() })} className="h-7 w-14 bg-white text-xs" />
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <Input value={b.lang} disabled={locked} onChange={(e) => setBinomRow(g.name, { language: e.target.value.toUpperCase() })} className="h-7 w-14 bg-white text-xs" />
+                      </td>
+                      <td className="px-2 py-1.5 text-xs text-slate-600 max-w-[420px]">
+                        <div className="truncate" title={b.offerName}>{b.offerName}</div>
+                        <div className="truncate" title={b.campaignName}>{b.campaignName}</div>
+                        {b.offerUrl && <div className="truncate text-slate-400" title={b.offerUrl}>{b.offerUrl}</div>}
+                      </td>
+                      <td className="px-2 py-1.5 text-xs max-w-[320px]">
+                        {noAmo && <span className="text-slate-400">no AMO article yet</span>}
+                        {r?.status === 'running' && <span className="text-slate-500">Creating…</span>}
+                        {r?.status === 'done' && (
+                          <div className="space-y-0.5">
+                            <div className="text-slate-600">offer {r.offerId} · campaign {r.campaignId}</div>
+                            <div className="truncate text-blue-600" title={r.campaignUrl}>{r.campaignUrl}</div>
+                          </div>
+                        )}
+                        {r?.status === 'error' && (
+                          <span className="text-red-600 break-words">
+                            {r.error}
+                            {r.offerId ? ` (offer ${r.offerId} kept — Retry reuses it)` : ''}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-slate-200 bg-white">
+            <Button variant="outline" onClick={() => setStep(4)}>← AMO articles</Button>
+            <span className="text-sm text-slate-700">{binomDone} of {selectedList.length} Binom campaigns created</span>
+            <Button className="ml-auto" disabled={binomRunning || binomDone === selectedList.length} onClick={createBinom}>
+              {binomRunning ? 'Creating…' : '2️⃣ Create Binom'}
+            </Button>
+            <Button variant="outline" disabled={binomDone === 0} onClick={goToNb}>Next: NB →</Button>
+          </div>
+        </>
+      )}
+
+      {step === 6 && (
+        <>
+          <div className="mx-4 mb-2 rounded border border-slate-200 bg-white px-3 py-2">
+            <div className="text-[10px] font-bold uppercase text-gray-500 mb-1.5">NB settings for all articles</div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
+              <span className="text-slate-500">
+                Account: <b className="text-slate-700">{binomBulk.nbAccount || '— pick in step 5 —'}</b>
+                {nbAccountId && <span className="text-xs"> ({nbAccountId})</span>}
+              </span>
+              <span className="text-slate-500">
+                Event: <b className="text-slate-700">{trackingEvent}</b>{' '}
+                {accountEvents?.status === 'loading' && <span className="text-xs">loading…</span>}
+                {accountEvents?.status === 'ready' && (trackingId
+                  ? <span className="text-xs text-emerald-700">id {trackingId}</span>
+                  : <span className="text-xs text-red-600">not in this account</span>)}
+                {accountEvents?.status === 'error' && <span className="text-xs text-red-600">{accountEvents.error}</span>}
+              </span>
+              <label className="flex items-center gap-1.5">
+                Daily budget $
+                <Input type="number" min={1} value={nbBulk.budget} onChange={(e) => setNbBulk((b) => ({ ...b, budget: Number(e.target.value) || 0 }))} className="h-7 w-20 bg-white" />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Bid
+                <span className="font-medium">{binomBulk.bidType}</span>
+                {binomBulk.bidType !== 'MAX_CONVERSION' && (
+                  <>
+                    <Input type="number" min={0} step="0.01" value={nbBulk.bidValue} onChange={(e) => setNbBulk((b) => ({ ...b, bidValue: Number(e.target.value) || 0 }))} className="h-7 w-20 bg-white" />
+                    <span className="text-xs text-slate-500">{binomBulk.bidType === 'TARGET_ROAS' ? '% ROAS' : '$ CPA'}</span>
+                  </>
+                )}
+              </label>
+              <label className="flex items-center gap-1.5">
+                Start
+                <Select value={nbBulk.startDate} onChange={(v) => setNbBulk((b) => ({ ...b, startDate: v }))} options={START_DATE_OPTIONS.map((o) => o.value)} />
+                <Select value={nbBulk.timezone} onChange={(v) => setNbBulk((b) => ({ ...b, timezone: v }))} options={TIMEZONE_OPTIONS.map((o) => o.value)} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                CTA
+                <Select value={cta} onChange={(v) => setNbBulk((b) => ({ ...b, cta: v }))} options={NB_CTA_OPTIONS} />
+              </label>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
+            <table className="w-full text-sm border-collapse">
+              <thead className="sticky top-0 bg-slate-100 z-10">
+                <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+                  <th className="px-2 py-2">article</th>
+                  <th className="px-2 py-2">NB campaign / ad set name</th>
+                  <th className="px-2 py-2">advertiser</th>
+                  <th className="px-2 py-2">ads</th>
+                  <th className="px-2 py-2">click URL (Binom)</th>
+                  <th className="px-2 py-2">3️⃣ NB</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g) => {
+                  const ads = nbAdsFor(g);
+                  const r = nb[g.name];
+                  const locked = r?.status === 'done' || r?.status === 'running';
+                  const noBinom = binom[g.name]?.status !== 'done';
+                  return (
+                    <tr key={g.name} className={`border-b border-slate-100 align-top ${noBinom ? 'opacity-50' : ''}`}>
+                      <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-800" title={g.name}>{trimArticle(g.name)}</td>
+                      <td className="px-2 py-1.5 min-w-[320px]">
+                        <Input value={nbNameFor(g)} disabled={locked} onChange={(e) => setNbNames((s) => ({ ...s, [g.name]: e.target.value }))} className="h-7 bg-white text-xs" />
+                      </td>
+                      <td className="px-2 py-1.5 whitespace-nowrap">
+                        <div className="flex items-center gap-1 text-xs">
+                          <span className="text-slate-500">{ADVERTISER_PREFIX}</span>
+                          <Input
+                            value={advertiserPartFor(g)}
+                            disabled={locked}
+                            onChange={(e) => setNbAdvertisers((s) => ({ ...s, [g.name]: e.target.value }))}
+                            className="h-7 w-36 bg-white text-xs"
+                          />
+                          <span className={advertiserFor(g).length > BRAND_MAX ? 'text-red-600' : 'text-slate-400'}>
+                            {advertiserFor(g).length}/{BRAND_MAX}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-2 py-1.5 text-xs text-slate-600 whitespace-nowrap" title={ads.map((a) => a.adName).join('\n')}>
+                        {ads.length} ({ads.map((a) => a.adName.split('_').slice(-2).join('_')).join(', ')})
+                      </td>
+                      <td className="px-2 py-1.5 text-xs max-w-[260px] truncate text-slate-500" title={binom[g.name]?.campaignUrl}>
+                        {binom[g.name]?.campaignUrl || 'no Binom campaign yet'}
+                      </td>
+                      <td className="px-2 py-1.5 text-xs max-w-[320px]">
+                        {r?.status === 'running' && <span className="text-slate-500">Uploading assets & creating…</span>}
+                        {r?.status === 'done' && (
+                          <div className="text-slate-600">
+                            campaign {r.campaignId} · ad set {r.adsetId} · {r.adIds?.length || 0} ads
+                          </div>
+                        )}
+                        {r?.status === 'error' && <span className="text-red-600 break-words">{r.error}</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-slate-200 bg-white">
+            <Button variant="outline" onClick={() => setStep(5)}>← Binom</Button>
+            <span className="text-sm text-slate-700">{nbDone} of {selectedList.length} NB campaigns created</span>
+            <Button className="ml-auto" disabled={nbRunning || nbDone === selectedList.length} onClick={createNb}>
+              {nbRunning ? 'Creating…' : '3️⃣ Create NB campaigns'}
             </Button>
           </div>
         </>
