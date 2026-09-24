@@ -8,7 +8,7 @@ import { SavedPromptPicker } from '@/components/ui/SavedPromptPicker';
 import {
   MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
-  ANIMATE_VIDEO_MODELS, animateModelForLoop,
+  ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
   ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, ANIMATE_CUSTOM_PRESET_ID,
   motionSampleSrc, motionPosterSrc,
   animateModelFor, nearestAspectRatio, type VideoGenMode,
@@ -253,9 +253,7 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const [animatePreview, setAnimatePreview] = useState<string | null>(null);
   const [animateDims, setAnimateDims] = useState<{ w: number; h: number } | null>(null);
   const [animateAspect, setAnimateAspect] = useState<string>('9:16');
-  // Seeded for the default preset (Subtle, which loops). Kept in sync with the
-  // loop setting by the effect below, and overridable in between.
-  const [animateModel, setAnimateModel] = useState<string>(animateModelForLoop(true));
+  const [animateModel, setAnimateModel] = useState<string>(ANIMATE_MODEL_DEFAULT);
 
   // The one selected motion, as a MotionOption key.
   const [motionKey, setMotionKey] = useState<string>(ANIMATE_PRESET_DEFAULT);
@@ -320,15 +318,6 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   // What actually goes to the model, and whether both ends get pinned.
   const animatePrompt = isCustom ? customPrompt : selectedMotion.prompt;
   const animateLoop = loopIsManual ? manualLoop : selectedMotion.loop;
-
-  // Point the model at whichever one suits the loop setting. Keyed on
-  // animateLoop rather than on the preset, so it fires when the meaning changes
-  // and not merely when the selection does: moving between two looping presets
-  // leaves a hand-picked model alone, while turning the loop on or off puts the
-  // right model back.
-  useEffect(() => {
-    setAnimateModel(animateModelForLoop(animateLoop));
-  }, [animateLoop]);
 
   const addSavedPrompt = (id: string) => {
     setAddedPromptIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
