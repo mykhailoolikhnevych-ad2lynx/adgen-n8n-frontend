@@ -223,6 +223,13 @@ export function MegatoolAutozalivBuilderPage() {
   const [articlesLoading, setArticlesLoading] = useState(false);
   const [articlesError, setArticlesError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!previewImage) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewImage(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewImage]);
   const [unusedOnly, setUnusedOnly] = useState(true);
   const [minAds, setMinAds] = useState(0);
   const [lang, setLang] = useState('');
@@ -857,7 +864,13 @@ export function MegatoolAutozalivBuilderPage() {
                       </td>
                       <td className="px-2 py-1 min-w-[52px]">
                         {a.cells.examp_image_url && (
-                          <img src={a.cells.examp_image_url} loading="lazy" alt="" className="h-9 w-9 max-w-none rounded object-cover bg-slate-100" />
+                          <img
+                            src={a.cells.examp_image_url}
+                            loading="lazy"
+                            alt=""
+                            onClick={(e) => { e.stopPropagation(); setPreviewImage(a.cells.examp_image_url); }}
+                            className="h-9 w-9 max-w-none rounded object-cover bg-slate-100 cursor-zoom-in"
+                          />
                         )}
                       </td>
                       <td className="px-2 py-1 max-w-[420px] truncate text-slate-800" title={a.name}>
@@ -905,6 +918,27 @@ export function MegatoolAutozalivBuilderPage() {
               Next: choose ads →
             </Button>
           </div>
+          {previewImage && (
+            <div
+              className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+              onClick={() => setPreviewImage(null)}
+            >
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+                className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
+                aria-label="Close"
+              >
+                ×
+              </button>
+              <img
+                src={previewImage}
+                alt=""
+                className="max-w-[92vw] max-h-[92vh] object-contain rounded-md"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+          )}
         </>
       )}
 
