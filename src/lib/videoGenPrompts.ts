@@ -87,10 +87,10 @@ export interface AnimateModel {
 
 export const ANIMATE_VIDEO_MODELS: AnimateModel[] = [
   {
-    label: 'Seedance 2.0 Fast',
-    value: 'bytedance/seedance-2.0-fast',
-    resolutions: ['480p', '720p'],
-    supportsLastFrame: true,
+    label: 'Wan 3.0',
+    value: 'alibaba/wan-3.0',
+    resolutions: ['480p', '720p', '1080p'],
+    supportsLastFrame: false,
   },
   {
     label: 'Seedance 1.5 Pro',
@@ -98,28 +98,13 @@ export const ANIMATE_VIDEO_MODELS: AnimateModel[] = [
     resolutions: ['480p', '720p', '1080p'],
     supportsLastFrame: true,
   },
-  {
-    label: 'Wan 3.0',
-    value: 'alibaba/wan-3.0',
-    resolutions: ['480p', '720p', '1080p'],
-    supportsLastFrame: false,
-  },
 ];
 
-// The default model follows the loop setting, because the two models differ on
-// exactly the capability a loop needs. When the clip has to end where it began,
-// Seedance can be handed the same still as first AND last frame and the cycle
-// closes structurally. Wan 3.0 takes a first frame only, so on a looping preset
-// the loop degrades to a request in prose (see ANIMATE_LOOP_RULE) — fine when
-// nothing is looping anyway, which is why it takes everything else.
-//
-// Still a default, not a lock: the picker stays editable. Changing it sticks
-// until the loop setting itself changes, at which point the rule reapplies.
-export const ANIMATE_MODEL_LOOP = 'bytedance/seedance-2.0-fast';
-export const ANIMATE_MODEL_NO_LOOP = 'alibaba/wan-3.0';
-
-export const animateModelForLoop = (loop: boolean): string =>
-  loop ? ANIMATE_MODEL_LOOP : ANIMATE_MODEL_NO_LOOP;
+// Wan 3.0 is the default for every preset, looping or not. It takes a first
+// frame only, so on a looping preset the loop is a request in prose (see
+// ANIMATE_LOOP_RULE) rather than a pinned last frame — pick Seedance 1.5 Pro
+// when a loop has to close exactly.
+export const ANIMATE_MODEL_DEFAULT = 'alibaba/wan-3.0';
 
 export const animateModelFor = (value: string): AnimateModel =>
   ANIMATE_VIDEO_MODELS.find((m) => m.value === value) ?? ANIMATE_VIDEO_MODELS[0];
