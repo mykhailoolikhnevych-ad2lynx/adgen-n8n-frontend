@@ -93,7 +93,14 @@ function pickAds(ads: Row[], s: Settings): Row[] {
 }
 
 // Step 1 competitor filter: competitor → texts one of which its landing URL contains.
-const COMPETITORS: Record<string, string[]> = { organizertone: ['organizertone', 'balancebazar.com'], sarb: ['sarb'] };
+const COMPETITORS: Record<string, string[]> = {
+  organizertone: ['organizertone', 'balancebazar.com'],
+  sarb: ['sarb'],
+  nashi: [
+    'perabianco.com', 'pancettafuns.com', 'walletilo.com', 'contranoche.com', 'contradia.com', 'healthquix.com',
+    'geeksstory.com', 'finomira.com', 'fintreat.com', 'healquix.com', 'moneytano.com',
+  ],
+};
 
 // Same as formatCtaText() in the Apps Script: LEARN_MORE → Learn More.
 const formatCta = (s: string) => s.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
