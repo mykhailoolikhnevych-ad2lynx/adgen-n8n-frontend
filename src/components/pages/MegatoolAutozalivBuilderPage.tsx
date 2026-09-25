@@ -92,6 +92,9 @@ function pickAds(ads: Row[], s: Settings): Row[] {
   return out.slice(0, Math.max(1, s.top || 10));
 }
 
+// Step 1 competitor filter: competitor → texts one of which its landing URL contains.
+const COMPETITORS: Record<string, string[]> = { organizertone: ['organizertone', 'balancebazar.com'], sarb: ['sarb'] };
+
 // Same as formatCtaText() in the Apps Script: LEARN_MORE → Learn More.
 const formatCta = (s: string) => s.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 
@@ -235,6 +238,7 @@ export function MegatoolAutozalivBuilderPage() {
   const [unusedOnly, setUnusedOnly] = useState(true);
   const [minAds, setMinAds] = useState(0);
   const [lang, setLang] = useState('');
+  const [competitor, setCompetitor] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'cnt_ads_7d', dir: 'desc' });
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -342,14 +346,15 @@ export function MegatoolAutozalivBuilderPage() {
         (!q || a.name.toLowerCase().includes(q)) &&
         (!unusedOnly || (!a.used && !a.launched)) &&
         (!minAds || (toNum(a.cells.cnt_ads || '0') || 0) >= minAds) &&
-        (!lang || a.cells.top_language_for_article === lang),
+        (!lang || a.cells.top_language_for_article === lang) &&
+        (!competitor || COMPETITORS[competitor].some((s) => (a.cells.examp_landing_page || '').toLowerCase().includes(s))),
     );
     const key = sort.key;
     return [...list].sort((a, b) => {
       const c = key === 'article' ? a.name.localeCompare(b.name) : compare(a.cells[key] || '', b.cells[key] || '');
       return sort.dir === 'asc' ? c : -c;
     });
-  }, [articleRows, q, unusedOnly, minAds, lang, sort]);
+  }, [articleRows, q, unusedOnly, minAds, lang, competitor, sort]);
 
   const toggle = (name: string) =>
     setSelected((s) => {
@@ -865,6 +870,12 @@ export function MegatoolAutozalivBuilderPage() {
                 ))}
               </select>
             )}
+            <select value={competitor} onChange={(e) => setCompetitor(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
+              <option value="">All competitors</option>
+              {Object.keys(COMPETITORS).map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
             <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
               {visibleArticles.length} of {articleRows.length} articles
               <Button size="sm" onClick={loadArticles} disabled={articlesLoading}>
