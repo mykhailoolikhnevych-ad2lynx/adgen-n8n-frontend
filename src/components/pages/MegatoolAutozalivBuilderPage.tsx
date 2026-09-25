@@ -166,6 +166,8 @@ type NbSettings = { budget: number; startDate: string; timezone: string; bidValu
 // Advertiser (NB brandName) = fixed "Search | " + a per-campaign part; NB allows 2–25 chars in total.
 const ADVERTISER_PREFIX = 'Search | ';
 const BRAND_MAX = 25;
+// Step 5 Name must fit the advertiser as-is, so it's kept to what's left after the prefix (16).
+const NAME_MAX = BRAND_MAX - ADVERTISER_PREFIX.length;
 // NB creative limits (NB returns "creative.description length must be between 3 and 90").
 const NB_TEXT = { headline: { min: 1, max: 90 }, body: { min: 3, max: 90 } };
 // Default part = the Name, cut at a word boundary so the whole advertiser fits.
@@ -278,6 +280,8 @@ export function MegatoolAutozalivBuilderPage() {
   const [nbEvents, setNbEvents] = useState<Record<string, EventsState>>({});
   const [nb, setNb] = useState<Record<string, NbState>>({});
   const [nbRunning, setNbRunning] = useState(false);
+  // AI shortening (step 5 names, step 6 descriptions), keyed 'name|<article>' / 'desc|<article>'.
+  const [shortening, setShortening] = useState<Record<string, { busy?: boolean; error?: string }>>({});
 
   const loadArticles = async () => {
     setArticlesLoading(true);
@@ -588,6 +592,23 @@ export function MegatoolAutozalivBuilderPage() {
     return { name, geo, lang, offerName, campaignName, offerUrl };
   };
   const setBinomRow = (name: string, patch: BinomRow) => setBinomRows((r) => ({ ...r, [name]: { ...r[name], ...patch } }));
+  const setShort = (keys: string[], v: { busy?: boolean; error?: string }) =>
+    setShortening((s) => ({ ...s, ...Object.fromEntries(keys.map((k) => [k, v])) }));
+
+  // AI-shorten Names over NAME_MAX, all in one call. Rows already sent to Binom keep theirs.
+  const binomLocked = (name: string) => binom[name]?.status === 'done' || binom[name]?.status === 'running';
+  const longNames = groups.filter((g) => !binomLocked(g.name) && binomFor(g).name.length > NAME_MAX);
+  const shortenNames = async (list: typeof groups) => {
+    const keys = list.map((g) => 'name|' + g.name);
+    setShort(keys, { busy: true });
+    try {
+      const res = await callContent({ action: 'shorten', kind: 'name', max: NAME_MAX, texts: list.map((g) => binomFor(g).name) });
+      list.forEach((g, i) => res.results?.[i] && setBinomRow(g.name, { name: res.results[i] }));
+      setShort(keys, {});
+    } catch (e: any) {
+      setShort(keys, { error: e.message });
+    }
+  };
 
   // 2️⃣ Create Binom — offer + campaign per article, one at a time like the sheet.
   const createBinom = async () => {
@@ -682,6 +703,28 @@ export function MegatoolAutozalivBuilderPage() {
   };
   const editAd = (key: string, patch: { headline?: string; body?: string }) =>
     setNbAdEdits((s) => ({ ...s, [key]: { ...s[key], ...patch } }));
+  // AI-rewrite descriptions over NB's limit, one call per article, same language. A description
+  // the model didn't return stays as it is (never auto-cut).
+  const longDescs = (g: (typeof groups)[number]) => nbAdsFor(g).filter((ad) => ad.body.trim().length > NB_TEXT.body.max);
+  const shortenDescriptions = async (g: (typeof groups)[number]) => {
+    const ads = longDescs(g);
+    if (!ads.length) return;
+    const key = 'desc|' + g.name;
+    setShort([key], { busy: true });
+    try {
+      const res = await callContent({
+        action: 'shorten', kind: 'description', max: NB_TEXT.body.max,
+        context: contents[g.name]?.content?.article_headline || binomFor(g).name,
+        texts: ads.map((ad) => ad.body),
+      });
+      ads.forEach((ad, i) => res.results?.[i] && editAd(ad.key, { body: res.results[i] }));
+      setShort([key], {});
+    } catch (e: any) {
+      setShort([key], { error: e.message });
+    }
+  };
+  const nbLocked = (name: string) => nb[name]?.status === 'done' || nb[name]?.status === 'running';
+  const nbLongDescGroups = groups.filter((g) => !nbLocked(g.name) && longDescs(g).length > 0);
   const nbNameFor = (g: (typeof groups)[number]) => {
     if (nbNames[g.name] !== undefined) return nbNames[g.name];
     const b = binomFor(g);
@@ -1236,6 +1279,14 @@ export function MegatoolAutozalivBuilderPage() {
               </span>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-sm">
+            <span className="text-slate-600">Name ≤ {NAME_MAX} chars — it is also the NB advertiser after "{ADVERTISER_PREFIX.trim()}"</span>
+            <div className="ml-auto flex gap-2">
+              <Button size="sm" disabled={longNames.length === 0 || longNames.some((g) => shortening['name|' + g.name]?.busy)} onClick={() => shortenNames(longNames)}>
+                Shorten all long names ({longNames.length})
+              </Button>
+            </div>
+          </div>
           <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
             <table className="w-full text-sm border-collapse">
               <thead className="sticky top-0 bg-slate-100 z-10">
@@ -1254,11 +1305,26 @@ export function MegatoolAutozalivBuilderPage() {
                   const r = binom[g.name];
                   const locked = r?.status === 'done' || r?.status === 'running';
                   const noAmo = amo[g.name]?.status !== 'done';
+                  const sn = shortening['name|' + g.name];
                   return (
                     <tr key={g.name} className={`border-b border-slate-100 align-top ${noAmo ? 'opacity-50' : ''}`}>
                       <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-800" title={g.name}>{trimArticle(g.name)}</td>
                       <td className="px-2 py-1.5 min-w-[160px]">
-                        <Input value={b.name} disabled={locked} onChange={(e) => setBinomRow(g.name, { name: e.target.value })} className="h-7 bg-white text-xs" />
+                        <Input value={b.name} disabled={locked || sn?.busy} onChange={(e) => setBinomRow(g.name, { name: e.target.value })} className="h-7 bg-white text-xs" />
+                        <div className="mt-0.5 flex items-center gap-2 text-[11px]">
+                          <span className={b.name.length > NAME_MAX ? 'text-red-600' : 'text-slate-400'}>{b.name.length}/{NAME_MAX}</span>
+                          {!locked && b.name.length > NAME_MAX && (
+                            <button type="button" disabled={sn?.busy} onClick={() => shortenNames([g])} className="text-blue-600 underline hover:no-underline disabled:text-slate-400">
+                              {sn?.busy ? 'Shortening…' : '✨ Shorten'}
+                            </button>
+                          )}
+                          {!locked && !sn?.busy && b.name !== defaultName(g.name) && (
+                            <button type="button" onClick={() => setBinomRow(g.name, { name: undefined })} title={defaultName(g.name)} className="text-slate-500 underline hover:no-underline">
+                              ↺ Original
+                            </button>
+                          )}
+                        </div>
+                        {sn?.error && <div className="text-[11px] text-red-600 break-words">{sn.error}</div>}
                       </td>
                       <td className="px-2 py-1.5">
                         <Input value={b.geo} disabled={locked} onChange={(e) => setBinomRow(g.name, { geo: e.target.value.toUpperCase() })} className="h-7 w-14 bg-white text-xs" />
@@ -1347,6 +1413,14 @@ export function MegatoolAutozalivBuilderPage() {
               </label>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-sm">
+            <span className="text-slate-600">NB description ≤ {NB_TEXT.body.max} chars</span>
+            <div className="ml-auto flex gap-2">
+              <Button size="sm" disabled={nbLongDescGroups.length === 0 || nbLongDescGroups.some((g) => shortening['desc|' + g.name]?.busy)} onClick={() => pool(nbLongDescGroups, 2, shortenDescriptions)}>
+                Rewrite all long descriptions ({nbLongDescGroups.reduce((n, g) => n + longDescs(g).length, 0)})
+              </Button>
+            </div>
+          </div>
           <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
             <table className="w-full text-sm border-collapse">
               <thead className="sticky top-0 bg-slate-100 z-10">
@@ -1365,6 +1439,7 @@ export function MegatoolAutozalivBuilderPage() {
                   const r = nb[g.name];
                   const locked = r?.status === 'done' || r?.status === 'running';
                   const noBinom = binom[g.name]?.status !== 'done';
+                  const sd = shortening['desc|' + g.name];
                   return [
                     <tr key={g.name} className={`border-b border-slate-100 align-top ${noBinom ? 'opacity-50' : ''}`}>
                       <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-800" title={g.name}>{trimArticle(g.name)}</td>
@@ -1390,6 +1465,12 @@ export function MegatoolAutozalivBuilderPage() {
                           {nbOpen === g.name ? '▾' : '▸'} Edit ads ({ads.length})
                         </button>
                         {nbTextError(ads) && <div className="text-red-600">text too long/short</div>}
+                        {!locked && longDescs(g).length > 0 && (
+                          <button type="button" disabled={sd?.busy} onClick={() => shortenDescriptions(g)} className="block text-blue-600 underline hover:no-underline disabled:text-slate-400">
+                            {sd?.busy ? 'Rewriting…' : `✨ Rewrite ${longDescs(g).length} long description${longDescs(g).length > 1 ? 's' : ''}`}
+                          </button>
+                        )}
+                        {sd?.error && <div className="text-red-600 whitespace-normal break-words">{sd.error}</div>}
                       </td>
                       <td className="px-2 py-1.5 text-xs max-w-[260px] truncate text-slate-500" title={binom[g.name]?.campaignUrl}>
                         {binom[g.name]?.campaignUrl || 'no Binom campaign yet'}
