@@ -742,7 +742,7 @@ export function MegatoolAutozalivBuilderPage() {
     if (nbNames[g.name] !== undefined) return nbNames[g.name];
     const b = binomFor(g);
     const buyer = launchFor(g.name).buyer.trim().split(/\s+/)[0];
-    return `${b.name} | ${b.geo} | ${b.lang} | AZ | RSOC${buyer ? ' | ' + buyer : ''} | ${tomorrowDdMmYy()}`;
+    return `${b.name} | ${b.geo} | ${b.lang} | AUTOZALYV | RSOC${buyer ? ' | ' + buyer : ''} | ${tomorrowDdMmYy()}`;
   };
   const advertiserPartFor = (g: (typeof groups)[number]) =>
     nbAdvertisers[g.name] ?? fitWords(binomFor(g).name, BRAND_MAX - ADVERTISER_PREFIX.length);
