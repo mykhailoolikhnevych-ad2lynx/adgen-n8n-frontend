@@ -594,12 +594,13 @@ export function MegatoolAutozalivBuilderPage() {
     const name = row.name ?? defaultName(g.name);
     const geo = (row.geo ?? binomBulk.geo).trim().toUpperCase();
     const lang = (row.language ?? (articleByTrimmed[trimArticle(g.name)]?.top_language_for_article || 'en')).trim().toUpperCase();
-    const buyer = launchFor(g.name).buyer;
+    // Buyers are stored as "First Last" — names only carry the first name.
+    const buyer = launchFor(g.name).buyer.trim().split(/\s+/)[0];
     const articleUrl = amo[g.name]?.articleUrl || '';
     const amoLabel = (articleUrl.match(/https?:\/\/([^.]+)/) || [])[1] || '';
     const offerName = `${name} | ${geo} | ${lang} | AMO | AUTOZALYV${buyer ? ' | ' + buyer : ''} | ch=auto${amoLabel ? ' | ' + amoLabel : ''}`;
     const tail = [binomBulk.nbAccount, todayDdMm(), binomBulk.suffix.trim()].filter(Boolean).join(' ');
-    const campaignName = `${name} | ${geo} | AMO | AZ | ${buyer} | ${tail}`;
+    const campaignName = `${name} | ${geo} | AMO | AUTOZALYV | ${buyer} | ${tail}`;
     const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), binomBulk.bidType) : '';
     return { name, geo, lang, offerName, campaignName, offerUrl };
   };
@@ -740,7 +741,7 @@ export function MegatoolAutozalivBuilderPage() {
   const nbNameFor = (g: (typeof groups)[number]) => {
     if (nbNames[g.name] !== undefined) return nbNames[g.name];
     const b = binomFor(g);
-    const buyer = launchFor(g.name).buyer;
+    const buyer = launchFor(g.name).buyer.trim().split(/\s+/)[0];
     return `${b.name} | ${b.geo} | ${b.lang} | AZ | RSOC${buyer ? ' | ' + buyer : ''} | ${tomorrowDdMmYy()}`;
   };
   const advertiserPartFor = (g: (typeof groups)[number]) =>
@@ -1167,7 +1168,14 @@ export function MegatoolAutozalivBuilderPage() {
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
               <label className="flex items-center gap-1.5">
                 Buyer
-                <Select value={launchBulk.buyer} onChange={(v) => setLaunchBulk((b) => ({ ...b, buyer: v }))} options={buyers.list.map((b) => b.buyer)} placeholder="— pick —" />
+                <Combobox
+                  value={launchBulk.buyer}
+                  onChange={(v) => setLaunchBulk((b) => ({ ...b, buyer: v }))}
+                  options={buyers.list.map((b) => b.buyer)}
+                  placeholder={buyers.status === 'loading' ? 'Loading…' : 'Search buyer…'}
+                  className="w-52"
+                  inputClassName="h-7 bg-white"
+                />
               </label>
               <span className="text-slate-500">New Source: <b className="text-slate-700">{TRAFFIC_SOURCE}</b></span>
               <label className="flex items-center gap-1.5">
@@ -1213,7 +1221,18 @@ export function MegatoolAutozalivBuilderPage() {
                         {c ? <Badge ok={amoCheck(c).pass}>{amoCheck(c).pass ? 'AMO ok' : 'fails AMO'}</Badge> : <span className="text-slate-400">not read</span>}
                       </td>
                       <td className="px-2 py-1.5">
-                        <Select value={l.buyer} disabled={locked} onChange={(v) => setOverride(g.name, { buyer: v })} options={buyers.list.map((b) => b.buyer)} placeholder="—" />
+                        {locked ? (
+                          <span className="text-xs text-slate-700 whitespace-nowrap">{l.buyer || '—'}</span>
+                        ) : (
+                          <Combobox
+                            value={l.buyer}
+                            onChange={(v) => setOverride(g.name, { buyer: v })}
+                            options={buyers.list.map((b) => b.buyer)}
+                            placeholder="Search…"
+                            className="w-44"
+                            inputClassName="h-7 bg-white text-xs"
+                          />
+                        )}
                       </td>
                       <td className="px-2 py-1.5">
                         <Select value={l.domain} disabled={locked} onChange={(v) => setOverride(g.name, { domain: v })} options={l.domains} placeholder="—" />
