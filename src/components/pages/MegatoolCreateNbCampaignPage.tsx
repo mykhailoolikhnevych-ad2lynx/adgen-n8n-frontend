@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
 import { useAppStore, type ArticleStatus, type SelectedFbAd } from '@/store/useAppStore';
 import { splitIntoAdsets } from '@/lib/splitIntoAdsets';
+import { NbCustomStartField } from '@/components/ui/NbCustomStartField';
+import { customStartError, customStartToUnix, defaultCustomStart } from '@/lib/nbStartTime';
 
 const STATUS_LABEL: Record<ArticleStatus, string> = {
   idle: 'Idle',
@@ -28,7 +30,15 @@ export const START_DATE_OPTIONS = [
   { label: 'Через 3 дні', value: 'tomorrow+2' },
 ] as const;
 
-export type StartDate = 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+/** Presets + "custom" — only for pages that render NbCustomStartField
+ *  (Autozaliv Builder keeps the presets-only list above). */
+export const NB_START_DATE_OPTIONS: ReadonlyArray<{ label: string; value: StartDate }> = [
+  ...START_DATE_OPTIONS,
+  { label: 'Свій час (дата й час)', value: 'custom' },
+];
+
+/** 'custom' = operator-picked moment (NbCustomStartField), sent as Unix `startTime`. */
+export type StartDate = 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2' | 'custom';
 
 /** Relative offsets ignore the timezone picker — they're anchored to "now". */
 export const RELATIVE_START_DATES: StartDate[] = ['now+3h'];
@@ -198,6 +208,8 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
   const manualEventId = nbForm.manualEventId;
   const startDate = nbForm.startDate;
   const startTimezone = nbForm.startTimezone;
+  const customStart = nbForm.customStart;
+  const isCustomStart = startDate === 'custom';
   const adStates = nbForm.adStates;
   const setSelectedAccountName = (v: string) => setNbForm({ selectedAccountName: v });
   const setCampaignName = (v: string) => setNbForm({ campaignName: v });
@@ -208,7 +220,9 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
   const setBidType = (v: 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS') => setNbForm({ bidType: v });
   const setTargetCpaDollars = (v: number) => setNbForm({ targetCpaDollars: v });
   const setManualEventId = (v: string | null) => setNbForm({ manualEventId: v });
-  const setStartDate = (v: StartDate) => setNbForm({ startDate: v });
+  // Re-prefill the custom picker on every pick so an old (possibly past) value never lingers.
+  const setStartDate = (v: StartDate) =>
+    setNbForm(v === 'custom' ? { startDate: v, customStart: defaultCustomStart() } : { startDate: v });
   const setStartTimezone = (v: StartTimezone) => setNbForm({ startTimezone: v });
   const setAdStates = (
     updater: AdFormState[] | ((prev: AdFormState[]) => AdFormState[]),
@@ -324,10 +338,13 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
     && !!selectedAccount
     && !hasFieldErrors
     && budget >= 1
-    && selectedFbAds.length >= 1;
+    && selectedFbAds.length >= 1
+    && !(isCustomStart && customStartError(customStart));
 
   const handleSubmit = () => {
     if (!selectedAccount) return;
+    // Re-check: the page may have sat open long enough for the pick to pass.
+    if (isCustomStart && customStartError(customStart)) return;
     // Pair adStates with selectedFbAds (same order, same length thanks to the
     // resync effect above) to pull each ad's assetUrl.
     const ads = adStates.map((a, i) => ({
@@ -346,6 +363,7 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
       clickThroughUrl: binomOfferResult.binomCampaignUrl,
       budget,
       startDate,
+      ...(isCustomStart ? { startTime: customStartToUnix(customStart) } : {}),
       // Only include when the picker is enabled — old n8n workflow doesn't
       // read this field and shouldn't get a spurious default.
       ...(TIMEZONE_PICKER_ENABLED ? { startTimezone } : {}),
@@ -702,7 +720,7 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
                 onChange={(e) => setStartDate(e.target.value as StartDate)}
                 className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
               >
-                {START_DATE_OPTIONS.map((o) => (
+                {NB_START_DATE_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
               </select>
@@ -713,14 +731,14 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
                 <select
                   value={startTimezone}
                   onChange={(e) => setStartTimezone(e.target.value as StartTimezone)}
-                  disabled={RELATIVE_START_DATES.includes(startDate)}
+                  disabled={isCustomStart || RELATIVE_START_DATES.includes(startDate)}
                   className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:bg-slate-100 disabled:text-slate-400"
                 >
                   {TIMEZONE_OPTIONS.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>
-                {!RELATIVE_START_DATES.includes(startDate) && (
+                {!isCustomStart && !RELATIVE_START_DATES.includes(startDate) && (
                   <p className="text-xs text-slate-600 mt-1">
                     {startTimezone === 'PDT' ? (
                       <>Старт о <strong>00:00 LA</strong> обраного дня (≈ 10:00 Kyiv того ж дня).</>
@@ -732,6 +750,10 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
               </div>
             )}
           </div>
+
+          {isCustomStart && (
+            <NbCustomStartField value={customStart} onChange={(v) => setNbForm({ customStart: v })} />
+          )}
         </section>
 
         {/* Per-ad cards */}
