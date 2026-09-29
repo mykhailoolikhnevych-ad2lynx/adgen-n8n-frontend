@@ -6,6 +6,7 @@ import { listPrompts, type SavedPrompt } from '@/lib/prompts';
 import { getAuthEmail, isAdminEmail } from '@/lib/identity';
 import { adLanguagesForGeo } from '@/lib/geos';
 import { getTrackerFromTrackingUrl, DEFAULT_BINOM_TRACKER } from '@/lib/binomGroups';
+import { customStartToUnix } from '@/lib/nbStartTime';
 import {
   SCENE_SYSTEM_PROMPT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL, FRAME_COUNT,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
@@ -364,7 +365,9 @@ export interface CreateNbCampaignInput {
   /** Per-adset budget in USD/day. Each adset gets this; total spend is
    *  budget * adsetSizes.length. */
   budget: number;
-  startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+  startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2' | 'custom';
+  /** startDate = 'custom': Unix seconds of the operator-picked start. */
+  startTime?: number;
   /** Timezone the 01:00 start hour is anchored to. `PDT` = Pacific Daylight
    *  Time (matches NB's own timezone). `EEST` = Eastern European Summer Time
    *  (Kyiv). Ignored when startDate = 'now+3h'. Optional because the UI picker
@@ -777,8 +780,10 @@ interface AppState {
     bidType: 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
     targetCpaDollars: number;
     manualEventId: string | null;
-    startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+    startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2' | 'custom';
     startTimezone: 'PDT' | 'EEST';
+    /** startDate = 'custom': "YYYY-MM-DDTHH:mm" in the operator's PC timezone. */
+    customStart: string;
     adStates: { adId: string; headline: string; description: string }[];
   };
   /** Persistent Newsbreak Copier form state. Same rationale as megatoolNbForm —
@@ -1548,6 +1553,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     manualEventId: null,
     startDate: 'now+3h',
     startTimezone: 'PDT',
+    customStart: '',
     adStates: [],
   },
   nbCopierForm: {
@@ -2023,6 +2029,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       manualEventId: null,
       startDate: 'now+3h',
       startTimezone: 'PDT',
+      customStart: '',
       adStates: [],
     },
   }),
@@ -2419,7 +2426,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         startDate: form.startDate,
         startTimezone: form.startTimezone,
         // new Date('YYYY-MM-DDTHH:mm') parses as PC-local time → absolute moment.
-        ...(form.startDate === 'custom' ? { startTime: Math.floor(new Date(form.customStart).getTime() / 1000) } : {}),
+        ...(form.startDate === 'custom' ? { startTime: customStartToUnix(form.customStart) } : {}),
         trackingId,
         eventType,
         bidType: form.bidType,
