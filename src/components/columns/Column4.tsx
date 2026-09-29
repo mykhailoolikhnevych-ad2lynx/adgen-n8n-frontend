@@ -148,7 +148,7 @@ export const Column4 = ({
   origin?: 'pipeline' | 'creativeOnly';
   title?: string;
 }) => {
-  const { creatives: allCreatives, deleteCreative, sendToTelegram, toggleCreativeTranslation } = useAppStore();
+  const { creatives: allCreatives, deleteCreative, toggleCreativeTranslation } = useAppStore();
   const creatives = allCreatives.filter(
     (c) => (c.origin === 'creativeOnly') === (origin === 'creativeOnly'),
   );
@@ -461,31 +461,6 @@ export const Column4 = ({
             >
               Download
             </Button>
-
-            {(() => {
-              let label = 'Send to Telegram';
-              let bg = 'bg-[#0088cc] hover:bg-[#0077b3]';
-              let disabled = false;
-              if (creative.isLoading) {
-                label = 'Generating images...';
-                disabled = true;
-              } else if (creative.isSending) {
-                label = 'Sending...';
-                disabled = true;
-              } else if (creative.isSent) {
-                label = 'Sent to Telegram';
-                bg = 'bg-slate-500 hover:bg-slate-600';
-              }
-              return (
-                <Button
-                  onClick={() => sendToTelegram(creative.id)}
-                  disabled={disabled}
-                  className={`w-full text-white ${bg}`}
-                >
-                  {label}
-                </Button>
-              );
-            })()}
           </div>
         </Card>
         );
