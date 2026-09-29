@@ -40,8 +40,9 @@ export type StartTimezone = 'PDT' | 'EEST';
 const TIMEZONE_PICKER_ENABLED = true;
 
 export const TIMEZONE_OPTIONS: Array<{ value: StartTimezone; label: string }> = [
-  { value: 'PDT', label: 'PDT (Los Angeles, UTC-7)' },
-  { value: 'EEST', label: 'EEST (Kyiv, UTC+3)' },
+  // Values stay 'PDT'/'EEST' (n8n contract); labels cover both summer and winter time.
+  { value: 'PDT', label: 'Los Angeles (PDT/PST)' },
+  { value: 'EEST', label: 'Kyiv (EEST/EET)' },
 ];
 
 // NB ad-creation field constraints. brandName 2-25 is confirmed by NB error
@@ -722,9 +723,9 @@ export const MegatoolCreateNbCampaignPage = ({ onClose, embedded = false }: Prop
                 {!RELATIVE_START_DATES.includes(startDate) && (
                   <p className="text-xs text-slate-600 mt-1">
                     {startTimezone === 'PDT' ? (
-                      <>Старт о <strong>00:00 PDT</strong> обраного дня (≈ 10:00 Kyiv того ж дня).</>
+                      <>Старт о <strong>00:00 LA</strong> обраного дня (≈ 10:00 Kyiv того ж дня).</>
                     ) : (
-                      <>Старт о <strong>14:00 PDT</strong> обраного дня (≈ 00:00 Kyiv наступного дня).</>
+                      <>Старт о <strong>14:00 LA</strong> обраного дня (≈ 00:00 Kyiv наступного дня).</>
                     )}
                   </p>
                 )}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Combobox } from '@/components/ui/Combobox';
+import { DateTimePicker24h } from '@/components/ui/DateTimePicker24h';
 import { useAppStore, getNbCopierSelection, type NbCopierAdset, type NbCopierAd } from '@/store/useAppStore';
 import {
   BINOM_AMO_DOMAINS,
@@ -59,7 +60,43 @@ const kyivDateStr = () => {
   return `${get('day')}.${get('month')}.${get('year')}`;
 };
 
-const isActiveStatus = (status: string | undefined) => {
+// Custom start: the operator picks a moment in their own PC timezone; NB runs
+// on Los Angeles time (PDT/PST — Intl handles the DST switch), so we preview it.
+type CopierStartDate = StartDate | 'custom';
+const COPIER_START_OPTIONS: Array<{ label: string; value: CopierStartDate }> = [
+  ...START_DATE_OPTIONS,
+  { label: 'Свій час (дата й час)', value: 'custom' },
+];
+const MIN_START_LEAD_MIN = 5;
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+/** Date → `datetime-local` value in the PC's timezone. */
+const toLocalInputValue = (d: Date) =>
+  `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+
+const formatInZone = (ms: number, timeZone?: string) => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone, day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(ms));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  // en-GB renders LA as "GMT-7"; en-US gives the familiar "PDT"/"PST".
+  const zone = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'short' })
+    .formatToParts(new Date(ms)).find((p) => p.type === 'timeZoneName')?.value ?? '';
+  return `${get('day')}.${get('month')}.${get('year')} ${get('hour')}:${get('minute')} ${zone}`;
+};
+
+const customStartError = (customStart: string): string | null => {
+  if (!customStart) return 'Оберіть дату й час старту';
+  const ms = new Date(customStart).getTime();
+  if (!Number.isFinite(ms)) return 'Невірна дата';
+  if (ms < Date.now() + MIN_START_LEAD_MIN * 60_000) {
+    return `Старт має бути щонайменше через ${MIN_START_LEAD_MIN} хв від поточного часу`;
+  }
+  return null;
+};
+
+const isActiveStatus =(status: string | undefined) => {
   const s = (status ?? '').toUpperCase();
   return s === 'ACTIVE' || s === 'ON';
 };
@@ -149,7 +186,7 @@ export const MegatoolNbCopierPage = () => {
 
   const {
     sourceAccountName, sourceCampaignId, targetAccountName, campaignName, budget,
-    startDate, startTimezone, trackingEventId, bidType, targetCpaDollars, roasPercent,
+    startDate, startTimezone, customStart, trackingEventId, bidType, targetCpaDollars, roasPercent,
     tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup,
     binomCampaignName, binomOfferNames,
   } = form;
@@ -270,18 +307,25 @@ export const MegatoolNbCopierPage = () => {
     void readNbCopierSource();
   };
 
+  const isCustomStart = startDate === 'custom';
+  const startError = isCustomStart ? customStartError(customStart) : null;
+  const customStartMs = isCustomStart && customStart ? new Date(customStart).getTime() : NaN;
+
   const canCopy = read.status === 'success'
     && !!read.result
     && !!selection
     && !isCopying
     && !!targetAccount
     && !!pickedEvent
+    && !startError
     && budget > 0
     && (bidType !== 'TARGET_CPA' || targetCpaDollars > 0)
     && (bidType !== 'TARGET_ROAS' || roasPercent > 0);
 
   const handleCopy = () => {
     if (!canCopy || !pickedEvent) return;
+    // Re-check: the page may have sat open long enough for the pick to pass.
+    if (isCustomStart && customStartError(customStart)) return;
     const offerNames: Record<string, string> = {};
     for (const o of sourceOffers) {
       const n = shownOfferName(o).trim();
@@ -452,10 +496,19 @@ export const MegatoolNbCopierPage = () => {
                   <label className="text-xs font-medium uppercase text-slate-500">Start Date</label>
                   <select
                     value={startDate}
-                    onChange={(e) => setForm({ startDate: e.target.value as StartDate })}
+                    onChange={(e) => {
+                      const v = e.target.value as CopierStartDate;
+                      // Prefill the picker with the actual time + 10 min on every pick,
+                      // so an old (possibly past) value never lingers.
+                      if (v === 'custom') {
+                        setForm({ startDate: v, customStart: toLocalInputValue(new Date(Date.now() + 10 * 60_000)) });
+                      } else {
+                        setForm({ startDate: v });
+                      }
+                    }}
                     className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
                   >
-                    {START_DATE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    {COPIER_START_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </div>
                 <div className="flex-1">
@@ -463,13 +516,33 @@ export const MegatoolNbCopierPage = () => {
                   <select
                     value={startTimezone}
                     onChange={(e) => setForm({ startTimezone: e.target.value as StartTimezone })}
-                    disabled={RELATIVE_START_DATES.includes(startDate)}
+                    disabled={isCustomStart || RELATIVE_START_DATES.includes(startDate as StartDate)}
                     className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:bg-slate-100 disabled:text-slate-400"
                   >
                     {TIMEZONE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </div>
               </div>
+
+              {isCustomStart && (
+                <div>
+                  <label className="text-xs font-medium uppercase text-slate-500">
+                    Start (ваш час · {Intl.DateTimeFormat().resolvedOptions().timeZone})
+                  </label>
+                  <DateTimePicker24h
+                    value={customStart}
+                    minDate={toLocalInputValue(new Date()).slice(0, 10)}
+                    onChange={(v) => setForm({ customStart: v })}
+                  />
+                  {startError ? (
+                    <p className="text-xs text-red-600 mt-1">{startError}</p>
+                  ) : Number.isFinite(customStartMs) && (
+                    <p className="text-xs text-slate-600 mt-1">
+                      = <strong>{formatInZone(customStartMs, 'America/Los_Angeles')}</strong> (час NewsBreak)
+                    </p>
+                  )}
+                </div>
+              )}
 
               {targetAccount && (
                 <div className="border rounded-md bg-slate-50 p-2 text-xs">

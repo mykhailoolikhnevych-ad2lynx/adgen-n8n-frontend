@@ -791,8 +791,11 @@ interface AppState {
     targetAccountName: string;
     campaignName: string;
     budget: number;
-    startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2';
+    startDate: 'now+3h' | 'tomorrow' | 'tomorrow+1' | 'tomorrow+2' | 'custom';
     startTimezone: 'PDT' | 'EEST';
+    /** startDate = 'custom': `datetime-local` value ("YYYY-MM-DDTHH:mm") in the
+     *  operator's own PC timezone; sent to n8n as a Unix `startTime`. */
+    customStart: string;
     trackingEventId: string | null;
     bidType: 'SAME' | 'MAX_CONVERSION' | 'TARGET_CPA' | 'TARGET_ROAS';
     targetCpaDollars: number;
@@ -1555,6 +1558,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     budget: 10,
     startDate: 'now+3h',
     startTimezone: 'PDT',
+    customStart: '',
     trackingEventId: null,
     bidType: 'SAME',
     targetCpaDollars: 5,
@@ -2414,6 +2418,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         budget: form.budget,
         startDate: form.startDate,
         startTimezone: form.startTimezone,
+        // new Date('YYYY-MM-DDTHH:mm') parses as PC-local time → absolute moment.
+        ...(form.startDate === 'custom' ? { startTime: Math.floor(new Date(form.customStart).getTime() / 1000) } : {}),
         trackingId,
         eventType,
         bidType: form.bidType,
