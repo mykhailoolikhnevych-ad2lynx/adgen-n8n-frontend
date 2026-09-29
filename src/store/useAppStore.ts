@@ -717,6 +717,10 @@ interface AppState {
   nbAccountsStatus: ArticleStatus;
   nbAccountsList: { name: string; id: string }[];
   nbAccountsError: string | null;
+  // Binom campaign groups (from the `binom_groups` datatable). Empty until
+  // fetched — getGroupNamesForTracker falls back to the bundled list then.
+  binomGroupsStatus: ArticleStatus;
+  binomGroupsList: { name: string; tracker: string }[];
   // TT advertiser accounts (from the `tt_accounts` datatable) + the selected
   // account's live identities & pixels (from /identity/get/ + /pixel/list/).
   ttAccountsStatus: ArticleStatus;
@@ -901,6 +905,7 @@ interface AppState {
   resetNbCampaign: () => void;
   createNbCampaign: (input: CreateNbCampaignInput) => Promise<void>;
   fetchNbAccounts: () => Promise<void>;
+  fetchBinomGroups: () => Promise<void>;
   fetchTtAccounts: () => Promise<void>;
   fetchTtAccountContext: (advertiserId: string) => Promise<void>;
   fetchNbEvents: (adAccountId: string) => Promise<void>;
@@ -1093,6 +1098,7 @@ const WEBHOOKS = {
   nbCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL,
   ttCampaignCreator: import.meta.env.PUBLIC_WEBHOOK_TT_CAMPAIGN_CREATOR_URL,
   nbAccountsList: import.meta.env.PUBLIC_WEBHOOK_NB_ACCOUNTS_LIST_URL,
+  binomGroupsList: import.meta.env.PUBLIC_WEBHOOK_BINOM_GROUPS_LIST_URL,
   nbEventsList: import.meta.env.PUBLIC_WEBHOOK_NB_EVENTS_LIST_URL,
   nbCopierRead: import.meta.env.PUBLIC_WEBHOOK_NB_COPIER_READ_URL,
   nbCopierCreate: import.meta.env.PUBLIC_WEBHOOK_NB_COPIER_CREATE_URL,
@@ -1524,6 +1530,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   nbCampaignOpen: false,
   nbCampaignStatus: 'idle', nbCampaignResult: null, nbCampaignError: null,
   nbAccountsStatus: 'idle', nbAccountsList: [], nbAccountsError: null,
+  binomGroupsStatus: 'idle', binomGroupsList: [],
   ttAccountsStatus: 'idle', ttAccountsList: [], ttAccountsError: null,
   ttContextStatus: 'idle', ttAccountContext: null, ttContextError: null,
   nbEvents: null, nbEventsAccountId: null, nbEventsStatus: 'idle', nbEventsError: null,
@@ -2570,6 +2577,38 @@ export const useAppStore = create<AppState>((set, get) => ({
       console.error('[fetchNbAccounts]', e);
       const msg = errorFromResponseBody(e) ?? humanizeError(e);
       set({ nbAccountsStatus: 'error', nbAccountsError: msg, nbAccountsList: [] });
+    }
+  },
+
+  // Megatool — Binom campaign groups from the n8n `binom_groups` datatable
+  // (kept fresh by the weekly "Sync Binom Groups" branch). On any failure the
+  // list stays empty and the dropdowns fall back to the bundled BINOM_GROUPS.
+  fetchBinomGroups: async () => {
+    const url = (WEBHOOKS as any).binomGroupsList as string | undefined;
+    if (!url) {
+      console.warn('[fetchBinomGroups] PUBLIC_WEBHOOK_BINOM_GROUPS_LIST_URL is not set — using bundled list');
+      set({ binomGroupsStatus: 'error', binomGroupsList: [] });
+      return;
+    }
+    set({ binomGroupsStatus: 'loading' });
+    try {
+      const { data } = await axios.post(url, {}, { timeout: 30_000 });
+      const rawRows: any[] = Array.isArray(data) ? data : [];
+      const groups = rawRows
+        .map((rawRow) => {
+          const row = rawRow && typeof rawRow === 'object' && rawRow.json ? rawRow.json : rawRow;
+          return {
+            name: String(row?.Group_Name ?? '').trim(),
+            tracker: String(row?.Tracker ?? '').trim(),
+          };
+        })
+        .filter((g) => g.name && g.tracker);
+      set({ binomGroupsStatus: groups.length ? 'success' : 'error', binomGroupsList: groups });
+    } catch (e) {
+      // warn, not error — MainApp turns console.error into a red banner, and
+      // this failure is harmless (bundled list takes over).
+      console.warn('[fetchBinomGroups] using bundled list:', e);
+      set({ binomGroupsStatus: 'error', binomGroupsList: [] });
     }
   },
 

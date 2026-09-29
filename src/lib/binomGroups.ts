@@ -146,11 +146,17 @@ export function getTrackerFromTrackingUrl(
 // Group names belonging to `tracker`. Always prepends "same" as the first
 // option. If `tracker` doesn't match any row, falls back to every known name
 // (de-duped) so we never end up with an empty dropdown.
-export function getGroupNamesForTracker(tracker: string | null | undefined): string[] {
+// `live` is the list fetched from the binom_groups datatable; while it's empty
+// (not loaded yet / fetch failed) the bundled BINOM_GROUPS is used instead.
+export function getGroupNamesForTracker(
+  tracker: string | null | undefined,
+  live: readonly BinomGroup[] = [],
+): string[] {
+  const all = live.length > 0 ? live : BINOM_GROUPS;
   const matches = tracker
-    ? BINOM_GROUPS.filter((g) => g.tracker === tracker).map((g) => g.name)
+    ? all.filter((g) => g.tracker === tracker).map((g) => g.name)
     : [];
-  const source = matches.length > 0 ? matches : BINOM_GROUPS.map((g) => g.name);
+  const source = matches.length > 0 ? matches : all.map((g) => g.name);
   const seen = new Set<string>();
   const dedup: string[] = [];
   for (const n of source) {

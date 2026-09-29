@@ -237,7 +237,16 @@ export const MegatoolNbCopierPage = () => {
 
   const sourceBidSummary = selection ? formatBidType(selection.adset) : '';
 
-  const binomGroupOptions = useMemo(() => getGroupNamesForTracker(tracker), [tracker]);
+  const binomGroupsList = useAppStore((s) => s.binomGroupsList);
+  const binomGroupsStatus = useAppStore((s) => s.binomGroupsStatus);
+  const fetchBinomGroups = useAppStore((s) => s.fetchBinomGroups);
+  useEffect(() => {
+    if (binomGroupsStatus === 'idle') void fetchBinomGroups();
+  }, [binomGroupsStatus, fetchBinomGroups]);
+  const binomGroupOptions = useMemo(
+    () => getGroupNamesForTracker(tracker, binomGroupsList),
+    [tracker, binomGroupsList],
+  );
   const detectedTracker = useMemo(
     () => getTrackerFromTrackingUrl(read.result?.trackingUrl),
     [read.result?.trackingUrl],

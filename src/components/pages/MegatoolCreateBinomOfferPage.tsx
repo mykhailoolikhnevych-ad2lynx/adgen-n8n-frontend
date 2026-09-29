@@ -140,7 +140,16 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     }
   }, [detectedTracker]);
 
-  const binomGroupOptions = useMemo(() => getGroupNamesForTracker(tracker), [tracker]);
+  const binomGroupsList = useAppStore((s) => s.binomGroupsList);
+  const binomGroupsStatus = useAppStore((s) => s.binomGroupsStatus);
+  const fetchBinomGroups = useAppStore((s) => s.fetchBinomGroups);
+  useEffect(() => {
+    if (binomGroupsStatus === 'idle') void fetchBinomGroups();
+  }, [binomGroupsStatus, fetchBinomGroups]);
+  const binomGroupOptions = useMemo(
+    () => getGroupNamesForTracker(tracker, binomGroupsList),
+    [tracker, binomGroupsList],
+  );
 
   // ── NB pre-Binom state (Account + Tracking Event + Bid Type + CPA + ROAS)
   // Lives in the shared store so the NB embedded section below reads the same
