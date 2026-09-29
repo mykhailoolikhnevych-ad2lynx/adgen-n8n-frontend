@@ -36,9 +36,7 @@ const MEGATOOL_NAV: { value: MegatoolPage; label: string; adminOnly?: boolean }[
 
 const BASE_NAV: { value: Page; label: string }[] = [
   { value: 'keywords', label: 'Keywords' },
-  { value: 'angles', label: 'Angles' },
   { value: 'article', label: 'Article' },
-  { value: 'creatives', label: 'Creatives' },
 ];
 
 // Video generator is admin-only too, but it sits ahead of Creative Gen rather
