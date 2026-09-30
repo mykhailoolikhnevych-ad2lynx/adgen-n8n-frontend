@@ -101,7 +101,7 @@ const COMPETITORS: Record<string, string[]> = {
     'geeksstory.com', 'finomira.com', 'fintreat.com', 'healquix.com', 'moneytano.com',
   ],
   amo: ['financeply.com', 'contraspero.com', 'fortunevia.com', 'retrotreat.com', 'thetopselected.com', 'topfindtoday.com'],
-  orbitpeek: ['orbitpeek.com'],
+  'Orbitpeek (Tonic)': ['orbitpeek.com'],
   theunexploredroad: ['theunexploredroad.com'],
 };
 const competitorOf = (url: string) =>
