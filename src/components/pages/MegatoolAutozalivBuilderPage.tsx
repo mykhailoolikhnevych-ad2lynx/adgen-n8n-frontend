@@ -96,11 +96,13 @@ function pickAds(ads: Row[], s: Settings): Row[] {
 const COMPETITORS: Record<string, string[]> = {
   organizertone: ['organizertone', 'balancebazar.com'],
   sarb: ['sarb'],
-  nashi: [
+  ad2lynx: [
     'perabianco.com', 'pancettafuns.com', 'walletilo.com', 'contranoche.com', 'contradia.com', 'healthquix.com',
     'geeksstory.com', 'finomira.com', 'fintreat.com', 'healquix.com', 'moneytano.com',
   ],
 };
+const competitorOf = (url: string) =>
+  Object.keys(COMPETITORS).find((c) => COMPETITORS[c].some((s) => url.toLowerCase().includes(s))) || '';
 
 // Same as formatCtaText() in the Apps Script: LEARN_MORE → Learn More.
 const formatCta = (s: string) => s.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
@@ -599,7 +601,9 @@ export function MegatoolAutozalivBuilderPage() {
     const articleUrl = amo[g.name]?.articleUrl || '';
     const amoLabel = (articleUrl.match(/https?:\/\/([^.]+)/) || [])[1] || '';
     const offerName = `${name} | ${geo} | ${lang} | AMO | AUTOZALYV${buyer ? ' | ' + buyer : ''} | ch=auto${amoLabel ? ' | ' + amoLabel : ''}`;
-    const tail = [binomBulk.nbAccount, todayDdMm(), binomBulk.suffix.trim()].filter(Boolean).join(' ');
+    // Empty suffix → the competitor the article's landing page belongs to.
+    const suffix = binomBulk.suffix.trim() || competitorOf(articleByTrimmed[trimArticle(g.name)]?.examp_landing_page || '');
+    const tail = [binomBulk.nbAccount, todayDdMm(), suffix].filter(Boolean).join(' ');
     const campaignName = `${name} | ${geo} | AMO | AUTOZALYV | ${buyer} | ${tail}`;
     const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), binomBulk.bidType) : '';
     return { name, geo, lang, offerName, campaignName, offerUrl };
@@ -1308,7 +1312,7 @@ export function MegatoolAutozalivBuilderPage() {
               </label>
               <label className="flex items-center gap-1.5">
                 Cmp name suffix
-                <Input value={binomBulk.suffix} onChange={(e) => setBinomBulk((b) => ({ ...b, suffix: e.target.value }))} placeholder="e.g. spike" className="h-7 w-28 bg-white" />
+                <Input value={binomBulk.suffix} onChange={(e) => setBinomBulk((b) => ({ ...b, suffix: e.target.value }))} placeholder="auto: competitor" className="h-7 w-32 bg-white" />
               </label>
               <span className="text-xs text-slate-500">
                 {trackerOpts?.status === 'loading' && 'Loading groups and domains…'}
