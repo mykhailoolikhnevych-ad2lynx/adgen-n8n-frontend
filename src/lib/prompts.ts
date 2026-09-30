@@ -15,7 +15,12 @@ import { getAuthEmail } from '@/lib/identity';
  *  backs both, so every consumer filters by this. Rows written before the
  *  column existed have no value and read back as 'image' — which is what they
  *  all are. */
-export type PromptKind = 'image' | 'video';
+export type PromptKind = 'image' | 'video' | 'frame';
+
+// 'frame' rows are the Video Generator's first-frame photos: `image` holds the
+// photo itself (a ~1024px JPEG, not a thumbnail) and `prompt` an optional note
+// about who and where it is, passed to the model that writes the video prompt.
+const toKind = (v: unknown): PromptKind => (v === 'video' || v === 'frame' ? v : 'image');
 
 export interface SavedPrompt {
   id: string | number;
@@ -66,7 +71,7 @@ export const listPrompts = async (): Promise<SavedPrompt[]> => {
       id: typeof r.id === 'number' ? r.id : String(r.id),
       name: String(r.name ?? ''),
       prompt: String(r.prompt ?? ''),
-      kind: r.kind === 'video' ? 'video' as const : 'image' as const,
+      kind: toKind(r.kind),
       ua_description: r.ua_description ? String(r.ua_description) : undefined,
       image: r.image ? String(r.image) : undefined,
       updated_at: r.updated_at ? String(r.updated_at) : undefined,
@@ -111,7 +116,7 @@ export const savePrompt = async (input: {
     id: saved.id ?? input.id ?? '',
     name: String(saved.name ?? input.name),
     prompt: String(saved.prompt ?? input.prompt),
-    kind: saved.kind === 'video' || saved.kind === 'image' ? saved.kind : input.kind,
+    kind: saved.kind ? toKind(saved.kind) : input.kind,
     ua_description: saved.ua_description != null
       ? String(saved.ua_description)
       : input.ua_description,

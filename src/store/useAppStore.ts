@@ -8,9 +8,9 @@ import { adLanguagesForGeo } from '@/lib/geos';
 import { getTrackerFromTrackingUrl, DEFAULT_BINOM_TRACKER } from '@/lib/binomGroups';
 import { customStartToUnix } from '@/lib/nbStartTime';
 import {
-  SCENE_SYSTEM_PROMPT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL, FRAME_COUNT,
+  SCENE_SYSTEM_PROMPT, PROMPT_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
-  LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT,
+  LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT, LEONARDO_MODE,
   animateModelFor, ANIMATE_LOOP_RULE, VIDEO_DAILY_LIMIT, type VideoProvider,
 } from '@/lib/videoGenPrompts';
 import { normalizeWords, groupWordsIntoCues, type CaptionCue } from '@/lib/captions';
@@ -939,10 +939,9 @@ interface AppState {
   generateCreativeOnly: () => Promise<void>;
   setVideoGenLine: (v: string) => void;
   setVideoGenArticleUrl: (v: string) => void;
-  setVideoGenProvider: (v: VideoProvider) => void;
-  selectVideoGenFrame: (frameId: string) => void;
-  /** Phase 1 — read the article, write 4 scenes, render a still for each. */
-  generateVideoFrames: () => Promise<void>;
+  /** Phase 1 — park the picked first-frame photo and have the model write its
+   *  video prompt from the article; on success it starts phase 2 itself. */
+  generateVideoFrames: (preset: SavedPrompt) => Promise<void>;
   /** Phase 2 — animate the selected still with the typed line. */
   generateVideo: () => Promise<void>;
   /** Phase 3 — transcribe the clip for word-level caption timings. */
@@ -1485,7 +1484,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
-  videoGenLine: '', videoGenArticleUrl: '', videoGenProvider: 'openrouter',
+  videoGenLine: '', videoGenArticleUrl: '', videoGenProvider: 'leonardo',
   videoGenFrames: [], videoGenFramesStatus: 'idle', videoGenFramesError: null,
   videoGenSelectedFrameId: null,
   videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
@@ -3366,24 +3365,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setVideoGenLine: (v) => set({ videoGenLine: v }),
   setVideoGenArticleUrl: (v) => set({ videoGenArticleUrl: v }),
-  setVideoGenProvider: (v) => set({ videoGenProvider: v }),
-  selectVideoGenFrame: (frameId) => set({ videoGenSelectedFrameId: frameId }),
 
-  generateVideoFrames: async () => {
+  generateVideoFrames: async (preset) => {
     const articleUrl = get().videoGenArticleUrl.trim();
     const line = get().videoGenLine.trim();
-    if (!articleUrl || !line) return;
+    if (!articleUrl || !line || !preset.image) return;
 
     const payload = {
       article_url: articleUrl,
       line,
       scene_system_prompt: SCENE_SYSTEM_PROMPT,
-      frame_count: FRAME_COUNT,
       prompt_model: PROMPT_MODEL,
-      image_model: IMAGE_MODEL,
-      aspect_ratio: VIDEO_ASPECT_RATIO,
+      // The photo goes along as a data URL: the model looks at it to write the
+      // prompt, and n8n parks it in video_frames for the Leonardo leg to upload.
+      frame_image: preset.image,
+      frame_name: preset.name,
+      frame_note: preset.prompt,
     };
-    const logMeta = { articleUrl, line, promptModel: PROMPT_MODEL, imageModel: IMAGE_MODEL };
+    const logMeta = { articleUrl, line, promptModel: PROMPT_MODEL, frame: preset.name };
 
     // Starting a new batch invalidates whatever clip the previous one produced.
     set({
@@ -3417,8 +3416,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     let result: any;
     try {
-      // Article fetch + one LLM call + 4 images. Comfortably inside 5 min, but
-      // give it the same headroom as the video leg.
+      // Article fetch + one LLM call. Well inside 5 min, but give it the same
+      // headroom as the video leg.
       result = await pollCreativeExecution(jobId, () => get().videoGenFramesStatus !== 'loading', 'Aggregate Frames', 120);
     } catch (e) {
       fail(`Scene generation failed: ${humanizeError(e)}`, (e as any)?.responseBody ?? (e as any)?.response?.data);
@@ -3438,20 +3437,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       : [];
 
     if (!frames.length) {
-      fail(result.error ? String(result.error) : 'Run finished but returned no images', result);
+      fail(result.error ? String(result.error) : 'Run finished but returned no video prompt', result);
       return;
     }
 
     set({
       videoGenFramesStatus: 'success',
       videoGenFrames: frames,
-      // Pre-select the first so the operator can go straight to Generate.
       videoGenSelectedFrameId: frames[0].frameId,
     });
     logEvent({
       tab: 'video_gen', action: 'generateVideoFrames', meta: logMeta,
-      metaOut: { count: frames.length, scenes_cost: result.scenes_cost, images_cost: result.images_cost },
+      metaOut: { scenes_cost: result.scenes_cost },
     });
+    // One button: the prompt is written, so go straight on to the video.
+    await get().generateVideo();
   },
 
   generateVideo: async () => {
@@ -3471,6 +3471,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // Leonardo takes explicit pixels rather than a resolution tier.
           width: LEONARDO_WIDTH,
           height: LEONARDO_HEIGHT,
+          mode: LEONARDO_MODE,
         }
       : {
           frame_id: frame.frameId,

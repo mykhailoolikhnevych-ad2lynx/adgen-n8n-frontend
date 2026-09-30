@@ -6,7 +6,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { SavedPromptPicker } from '@/components/ui/SavedPromptPicker';
 import {
-  MAX_LINE_WORDS, FRAME_COUNT, PROMPT_MODEL, IMAGE_MODEL, VIDEO_MODEL,
+  MAX_LINE_WORDS, PROMPT_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
   ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
   ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, ANIMATE_CUSTOM_PRESET_ID,
@@ -34,15 +34,15 @@ const STATUS_COLOR: Record<Status, string> = {
 };
 
 const INPUT_HELP =
-  'Репліка для ліпсінку + URL статті. Зі статті модель пише 4 різні сцени — різні люди, локації та кадрування.';
+  'Репліка для ліпсінку + URL статті. Модель дивиться на обраний перший кадр і зі статті пише під нього відео-промт.';
 
 const FRAME_HELP =
-  'Чотири варіанти першого кадру. Обери той, що подобається, і тисни «Generate video from selected».';
+  'Готове фото для першого кадру. Обери одне й тисни «Generate video». Додати чи змінити фото — Docs → First frames.';
 
-const VIDEO_HELP = 'Обраний кадр, оживлений з твоєю реплікою. Seedance генерує ~5 хвилин.';
+const VIDEO_HELP = 'Обраний кадр, оживлений з твоєю реплікою через Leonardo. Генерується ~3 хвилини.';
 
 const MODE_HELP =
-  'From article — модель пише 4 сцени зі статті, рендерить кадри й оживляє обраний з реплікою (ліпсінк). ' +
+  'From article — обираєш готове фото першого кадру, модель пише відео-промт зі статті, і Leonardo оживляє фото з реплікою (ліпсінк). ' +
   'Animate image — завантажуєш готовий статичний банер, і він оживає як є: текст і композиція не змінюються, ' +
   'додається лише легкий рух, підсвітка та фонова музика.';
 
@@ -212,20 +212,14 @@ const countWords = (s: string): number => s.trim().split(/\s+/).filter(Boolean).
 export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const videoGenLine = useAppStore((s) => s.videoGenLine);
   const videoGenArticleUrl = useAppStore((s) => s.videoGenArticleUrl);
-  const videoGenFrames = useAppStore((s) => s.videoGenFrames);
   const videoGenFramesStatus = useAppStore((s) => s.videoGenFramesStatus);
   const videoGenFramesError = useAppStore((s) => s.videoGenFramesError);
-  const videoGenSelectedFrameId = useAppStore((s) => s.videoGenSelectedFrameId);
   const videoGenStatus = useAppStore((s) => s.videoGenStatus);
   const videoGenError = useAppStore((s) => s.videoGenError);
   const videoGenResult = useAppStore((s) => s.videoGenResult);
   const setVideoGenLine = useAppStore((s) => s.setVideoGenLine);
   const setVideoGenArticleUrl = useAppStore((s) => s.setVideoGenArticleUrl);
-  const selectVideoGenFrame = useAppStore((s) => s.selectVideoGenFrame);
   const generateVideoFrames = useAppStore((s) => s.generateVideoFrames);
-  const generateVideo = useAppStore((s) => s.generateVideo);
-  const videoGenProvider = useAppStore((s) => s.videoGenProvider);
-  const setVideoGenProvider = useAppStore((s) => s.setVideoGenProvider);
 
   const videoGenCaptions = useAppStore((s) => s.videoGenCaptions);
   const videoGenCaptionsStatus = useAppStore((s) => s.videoGenCaptionsStatus);
@@ -272,6 +266,10 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const [hoveredMotionKey, setHoveredMotionKey] = useState<string | null>(null);
 
   const savedVideoPrompts = useAppStore((s) => s.savedPrompts).filter((p) => p.kind === 'video');
+  // First-frame photos for From article, managed in Docs → First frames.
+  const savedFramePresets = useAppStore((s) => s.savedPrompts).filter((p) => p.kind === 'frame' && p.image);
+  const [framePresetId, setFramePresetId] = useState<string | null>(null);
+  const [framePreview, setFramePreview] = useState<string | null>(null);
 
   // Built-ins first, then whatever the operator added, then Custom last — the
   // same order the image presets use, so the two panels read alike.
@@ -481,15 +479,6 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
     }
   };
 
-  const downloadStill = async (url: string, frameId: string) => {
-    setExportError(null);
-    try {
-      await downloadAs(url, `${videoGenFileName('image', frameId)}.png`);
-    } catch (e) {
-      setExportError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
   // Real-time render — an 8s clip takes 8s, and the page must stay open.
   const downloadVideoWithCaptions = async () => {
     if (!videoGenResult) return;
@@ -520,16 +509,14 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const tooLong = words > MAX_LINE_WORDS;
   const urlOk = /^https?:\/\/\S+$/i.test(videoGenArticleUrl.trim());
 
-  let framesLabel = `Generate ${FRAME_COUNT} variants`;
-  if (framesLoading) framesLabel = 'Reading article, drawing…';
-  else if (words === 0) framesLabel = 'Enter the line to lip-sync';
-  else if (!urlOk) framesLabel = 'Paste the article URL';
+  const selectedFrame = savedFramePresets.find((p) => String(p.id) === framePresetId);
 
-  const selected = videoGenFrames.find((f) => f.frameId === videoGenSelectedFrameId);
-
-  let videoLabel = 'Generate video from selected';
-  if (videoLoading) videoLabel = 'Generating… (~5 min)';
-  else if (!selected) videoLabel = 'Pick an image first';
+  let runLabel = 'Generate video';
+  if (framesLoading) runLabel = 'Writing the video prompt…';
+  else if (videoLoading) runLabel = 'Generating… (~3 min)';
+  else if (words === 0) runLabel = 'Enter the line to lip-sync';
+  else if (!urlOk) runLabel = 'Paste the article URL';
+  else if (!selectedFrame) runLabel = 'Pick a first frame';
 
   // Nothing to toggle for a non-admin — Animate image is the only mode they have.
   const modeToggle = !isAdmin ? null : (
@@ -995,33 +982,11 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
 
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-600 space-y-1">
             <div className="flex justify-between gap-3"><span>Scenes</span><span className="font-mono text-slate-800 truncate">{PROMPT_MODEL}</span></div>
-            <div className="flex justify-between gap-3"><span>Image</span><span className="font-mono text-slate-800 truncate">{IMAGE_MODEL}</span></div>
             <div className="flex justify-between gap-3">
               <span>Video</span>
-              <span className="font-mono text-slate-800 truncate">
-                {videoGenProvider === 'leonardo' ? LEONARDO_VIDEO_MODEL : VIDEO_MODEL}
-              </span>
+              <span className="font-mono text-slate-800 truncate">{LEONARDO_VIDEO_MODEL}</span>
             </div>
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <span>Provider</span>
-              <div className="flex rounded-md border border-slate-300 overflow-hidden">
-                {(['openrouter', 'leonardo'] as const).map((p) => (
-                  <button
-                    key={p}
-                    type="button"
-                    onClick={() => setVideoGenProvider(p)}
-                    disabled={busy}
-                    className={`px-2 py-0.5 text-[11px] capitalize transition ${
-                      videoGenProvider === p
-                        ? 'bg-slate-800 text-white'
-                        : 'bg-white text-slate-600 hover:bg-slate-100'
-                    } disabled:opacity-50`}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
+            <div className="flex justify-between gap-3"><span>Provider</span><span className="font-mono text-slate-800">Leonardo</span></div>
             <div className="flex justify-between"><span>Format</span><span className="font-mono text-slate-800">{VIDEO_ASPECT_RATIO} · {VIDEO_RESOLUTION} · {VIDEO_DURATION_SEC}s</span></div>
           </div>
 
@@ -1053,107 +1018,59 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
             )}
           </div>
 
-          <Button
-            onClick={() => void generateVideoFrames()}
-            disabled={!urlOk || words === 0 || busy}
-            className="w-full"
-          >
-            {framesLabel}
-          </Button>
-
-          {videoGenFramesStatus === 'error' && videoGenFramesError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 whitespace-pre-wrap">
-              {videoGenFramesError}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 2. First frame (webhook 1 output) */}
-      <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
-        <div className="flex flex-col gap-4 flex-1 min-h-0">
-          <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2 shrink-0">
-            2. First frame
-            <InfoTooltip text={FRAME_HELP} />
-          </h2>
-
-          <StatusBar status={videoGenFramesStatus} />
-
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            {videoGenFramesStatus === 'idle' && (
-              <div className="text-gray-400 italic">Waiting for input</div>
+          {/* First frame — same add-then-row shape as Saved prompts in Creative
+              Gen, but single-select: picking another replaces the current one. */}
+          <div>
+            <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 mb-1">
+              First frame
+              <InfoTooltip text={FRAME_HELP} iconSize={11} />
+            </label>
+            {savedFramePresets.length === 0 ? (
+              <p className="text-xs text-slate-400 italic">None yet — add photos in Docs → First frames.</p>
+            ) : (
+              <SavedPromptPicker
+                available={savedFramePresets.filter((p) => String(p.id) !== framePresetId)}
+                onPick={(id) => setFramePresetId(id)}
+                placeholder={selectedFrame ? 'Change first frame…' : 'Add a first frame…'}
+              />
             )}
-            {framesLoading && videoGenFrames.length === 0 && (
-              <div className="text-gray-400 italic">
-                Reading the article and drawing {FRAME_COUNT} scenes…
-              </div>
-            )}
-
-            {/* Sized off viewport height, not a fixed width, so all four stay on
-                one screen on any monitor: at 9:16 a thumb is 0.5625× its height,
-                so two columns of ~34vh-tall stills need ~38vh of width. They are
-                pickers, not previews — full size is one click away. */}
-            <div className="grid grid-cols-2 gap-2 max-w-[min(38vh,360px)]">
-              {videoGenFrames.map((f) => {
-                const isSelected = f.frameId === videoGenSelectedFrameId;
-                return (
-                  <button
-                    key={f.frameId}
-                    type="button"
-                    onClick={() => selectVideoGenFrame(f.frameId)}
+            {selectedFrame && (
+              <div className="mt-1.5 flex items-center gap-1.5 text-xs">
+                <label className="flex items-center gap-1.5 cursor-pointer select-none flex-1 min-w-0">
+                  <input
+                    type="checkbox"
+                    checked
+                    onChange={() => setFramePresetId(null)}
                     disabled={busy}
-                    title={f.label}
-                    className={`text-left rounded-lg border-2 overflow-hidden transition ${
-                      isSelected
-                        ? 'border-blue-600 ring-2 ring-blue-200'
-                        : 'border-slate-200 hover:border-slate-400'
-                    } disabled:opacity-60`}
-                  >
-                    <img
-                      src={f.url}
-                      alt={f.label}
-                      className="w-full aspect-[9/16] object-cover bg-slate-50 block"
-                    />
-                    <span className="block px-1.5 py-1 text-[11px] leading-tight text-slate-600 truncate">
-                      {f.label}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {selected && (
-              <div className="mt-2 flex items-center gap-4 text-xs">
-                <a
-                  href={selected.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-blue-600 hover:underline"
-                >
-                  Open selected full size
-                </a>
+                  />
+                  <span className="font-medium text-slate-800 truncate" title={selectedFrame.name}>
+                    {selectedFrame.name}
+                  </span>
+                </label>
                 <button
                   type="button"
-                  onClick={() => void downloadStill(selected.url, selected.frameId)}
-                  className="text-blue-600 hover:underline"
+                  onClick={() => setFramePreview(selectedFrame.image!)}
+                  className="shrink-0 rounded border border-slate-300 hover:ring-2 hover:ring-blue-400 transition"
+                  aria-label="Preview first frame"
+                  title="Click to preview"
                 >
-                  Download still
+                  <img src={selectedFrame.image} alt="" className="w-10 h-10 object-cover rounded block" />
                 </button>
+                <InfoTooltip
+                  text={(selectedFrame.ua_description && selectedFrame.ua_description.trim()) || selectedFrame.prompt || selectedFrame.name}
+                  iconSize={11}
+                />
               </div>
             )}
           </div>
 
-          {videoGenFrames.length > 0 && (
-            <div className="shrink-0 space-y-2">
-              <Button
-                onClick={() => void generateVideo()}
-                disabled={!selected || busy}
-                className="w-full"
-              >
-                {videoLabel}
-              </Button>
-            </div>
-          )}
+          <Button
+            onClick={() => { if (selectedFrame) void generateVideoFrames(selectedFrame); }}
+            disabled={!urlOk || words === 0 || !selectedFrame || busy}
+            className="w-full"
+          >
+            {runLabel}
+          </Button>
         </div>
       </div>
 
@@ -1161,19 +1078,27 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
       <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
         <div className="flex flex-col gap-4 flex-1 min-h-0">
           <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2 shrink-0">
-            3. Video
+            2. Video
             <InfoTooltip text={VIDEO_HELP} />
           </h2>
 
-          <StatusBar status={videoGenStatus} />
+          <StatusBar status={framesLoading || videoGenFramesStatus === 'error' ? videoGenFramesStatus : videoGenStatus} />
 
           <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
-            {videoGenStatus === 'idle' && (
+            {videoGenStatus === 'idle' && videoGenFramesStatus !== 'loading' && videoGenFramesStatus !== 'error' && (
               <div className="text-gray-400 italic">Waiting for a picked frame</div>
+            )}
+            {framesLoading && (
+              <div className="text-gray-400 italic">Reading the article and writing the video prompt…</div>
+            )}
+            {videoGenFramesStatus === 'error' && videoGenFramesError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 whitespace-pre-wrap">
+                {videoGenFramesError}
+              </div>
             )}
             {videoLoading && (
               <div className="text-gray-400 italic">
-                Animating the selected still — Seedance takes about 5 minutes.
+                Animating the selected frame — Leonardo takes about 3 minutes.
               </div>
             )}
             {videoGenStatus === 'error' && videoGenError && (
@@ -1188,7 +1113,7 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
                   <span>
                     Video{' '}
                     <span className="font-mono text-slate-900">
-                      {videoGenResult.provider === 'leonardo'
+                      {videoGenResult.provider === 'leonardo' && !videoGenResult.videoCost
                         ? `${videoGenResult.credits} credits`
                         : `$${videoGenResult.videoCost.toFixed(4)}`}
                     </span>
@@ -1279,6 +1204,15 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
           </div>
         </div>
       </div>
+
+      {framePreview && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setFramePreview(null)}
+        >
+          <img src={framePreview} alt="First frame" className="max-w-[92vw] max-h-[92vh] rounded-md" />
+        </div>
+      )}
     </div>
   );
 };

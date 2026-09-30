@@ -10,7 +10,7 @@ import { listPrompts, savePrompt, deletePrompt, type SavedPrompt, type PromptKin
 //                         right with prompt / note / table blocks.
 //   - Prompt Bases      : admin-only (same gate as Dashboard).
 
-type Section = 'kb' | 'prompts' | 'prompts-video';
+type Section = 'kb' | 'prompts' | 'prompts-video' | 'prompts-frame';
 
 // ---------------------------------------------------------------------------
 // Knowledge Base — typed content model + renderer.
@@ -3019,7 +3019,7 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
   const handleSave = async () => {
     const name = draftName.trim();
     const body = draftBody;
-    if (!name || !body.trim()) return;
+    if (!canSave) return;
     setBusy('saving');
     setOpError(null);
     try {
@@ -3073,6 +3073,16 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
   const handleImageFile = async (file: File) => {
     setImageError(null);
     try {
+      if (isFrame) {
+        // A first frame is the actual start image Leonardo animates, so it is
+        // kept far larger than a thumbnail — but still under the 500k-char cap
+        // the save workflow puts on the `image` column.
+        let dataUrl = await resizeImageToJpegDataUrl(file, 1024, 0.85);
+        if (dataUrl.length > 480_000) dataUrl = await resizeImageToJpegDataUrl(file, 1024, 0.7);
+        if (dataUrl.length > 480_000) throw new Error('Image is too detailed to store — try a smaller or simpler photo.');
+        setDraftImage(dataUrl);
+        return;
+      }
       const dataUrl = await resizeImageToJpegDataUrl(file, 480, 0.8);
       setDraftImage(dataUrl);
     } catch (e) {
@@ -3095,9 +3105,12 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
     e.target.value = '';
   };
 
-  const canSave = draftName.trim().length > 0 && draftBody.trim().length > 0 && busy === null;
-
   const isVideo = kind === 'video';
+  // First frames need the photo; the note about it is optional.
+  const isFrame = kind === 'frame';
+
+  const canSave = draftName.trim().length > 0 && busy === null
+    && (isFrame ? draftImage !== '' : draftBody.trim().length > 0);
 
   return (
     <div className="flex h-full w-full gap-4 overflow-hidden">
@@ -3116,7 +3129,7 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
         <div className="p-3 border-b sticky top-0 bg-white z-10 space-y-2">
           <div>
             <h3 className="font-bold text-sm">
-              {isVideo ? 'Saved video prompts' : 'Saved image prompts'}
+              {isFrame ? 'Saved first frames' : isVideo ? 'Saved video prompts' : 'Saved image prompts'}
             </h3>
             <p className="text-[11px] text-slate-500 mt-0.5">
               {fetchStatus === 'loading' && 'loading…'}
@@ -3167,7 +3180,7 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
                       <img
                         src={p.image}
                         alt=""
-                        className="w-8 h-8 shrink-0 object-cover rounded border"
+                        className={`${isFrame ? 'w-10 h-16' : 'w-8 h-8'} shrink-0 object-cover rounded border`}
                       />
                     )}
                     <div className="font-semibold text-sm truncate" title={p.name}>
@@ -3211,7 +3224,7 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
       {/* Form */}
       <div className="flex-1 bg-white rounded-xl border shadow-sm p-4 overflow-y-auto flex flex-col">
         <h3 className="font-bold text-sm mb-3">
-          {editingId ? 'Edit prompt' : 'New prompt'}
+          {isFrame ? (editingId ? 'Edit first frame' : 'New first frame') : editingId ? 'Edit prompt' : 'New prompt'}
         </h3>
 
         <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
@@ -3226,18 +3239,25 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
         />
 
         <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
-          {isVideo ? 'Motion prompt' : 'Custom prompt'}
+          {isFrame ? 'Note' : isVideo ? 'Motion prompt' : 'Custom prompt'}
+          {isFrame && (
+            <span className="ml-1 normal-case font-normal text-slate-400">
+              — optional, in English, passed to the model that writes the video prompt
+            </span>
+          )}
         </label>
         <Textarea
           value={draftBody}
           onChange={(e) => setDraftBody(e.target.value)}
           placeholder={
-            isVideo
+            isFrame
+              ? 'e.g. Woman in her 40s next to her car in a parking lot, holding the keys.'
+              : isVideo
               ? 'Describe the motion in English. Say what must NOT change too — the composition and every letter of the text.'
               : 'Write the full prompt body here…'
           }
-          rows={14}
-          className="font-mono text-sm flex-1 min-h-[260px] mb-4"
+          rows={isFrame ? 3 : 14}
+          className={`font-mono text-sm mb-4 ${isFrame ? 'min-h-[70px]' : 'flex-1 min-h-[260px]'}`}
           disabled={busy !== null}
         />
 
@@ -3245,7 +3265,7 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
           UA description{' '}
           <span className="ml-1 normal-case font-normal text-slate-400">
             — optional, shown in the (i) tooltip in{' '}
-            {isVideo ? 'Video Generator → Motion preset' : 'Concepts → Image presets'}
+            {isFrame ? 'Video Generator → First frame' : isVideo ? 'Video Generator → Motion preset' : 'Concepts → Image presets'}
           </span>
         </label>
         <Textarea
@@ -3258,9 +3278,11 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
         />
 
         <label className="text-[10px] font-bold uppercase text-slate-500 block mb-1">
-          {isVideo ? 'Reference still' : 'Creative image'}{' '}
+          {isFrame ? 'Photo' : isVideo ? 'Reference still' : 'Creative image'}{' '}
           <span className="ml-1 normal-case font-normal text-slate-400">
-            — optional{isVideo && ', a frame showing the look this motion suits'}
+            {isFrame
+              ? '— required, the first frame Leonardo animates. Vertical 9:16 works best; mouth and jaw must be visible'
+              : <>— optional{isVideo && ', a frame showing the look this motion suits'}</>}
           </span>
         </label>
         <label
@@ -3274,7 +3296,7 @@ const PromptBasesView = ({ kind }: { kind: PromptKind }) => {
               : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
           }`}
         >
-          <span>{draftImage ? 'Replace creative' : 'Upload creative'}</span>
+          <span>{isFrame ? (draftImage ? 'Replace photo' : 'Upload photo') : draftImage ? 'Replace creative' : 'Upload creative'}</span>
           <span className="mt-0.5 text-[11px] font-normal text-slate-500">or drag & drop here</span>
           <input
             type="file"
@@ -3364,6 +3386,7 @@ export const DocsPage = ({ isAdmin }: DocsPageProps) => {
         {isAdmin && ([
           ['prompts', 'Prompt image'],
           ['prompts-video', 'Prompt video'],
+          ['prompts-frame', 'First frames'],
         ] as [Section, string][]).map(([value, label]) => (
           <button
             key={value}
@@ -3387,6 +3410,7 @@ export const DocsPage = ({ isAdmin }: DocsPageProps) => {
             for the new kind, rather than carrying the other tab's form over. */}
         {section === 'prompts' && isAdmin && <PromptBasesView key="image" kind="image" />}
         {section === 'prompts-video' && isAdmin && <PromptBasesView key="video" kind="video" />}
+        {section === 'prompts-frame' && isAdmin && <PromptBasesView key="frame" kind="frame" />}
       </div>
     </div>
   );

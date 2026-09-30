@@ -1,8 +1,8 @@
 // Video Generator (admin prototype). The recipe lives here rather than in n8n so
 // the whole thing is readable and tweakable in one file; n8n just executes it.
 //
-// Two phases: an article URL produces 4 different scene variants (prompt + still),
-// the operator picks one, and that still is animated with their line.
+// The operator picks a saved first frame (Docs → First frames); the model reads
+// the article and that photo and writes one video prompt; Leonardo animates it.
 
 // Seedance, because the creative team's prompt templates are tuned for it.
 // 2.0-fast generates native audio and supports first-frame control, which the
@@ -20,12 +20,10 @@ export const VIDEO_ASPECT_RATIO = '9:16';
 // 1080x1920, so bump this back to '1080p' for the final render of a keeper.
 export const VIDEO_RESOLUTION = '480p';
 
-export const IMAGE_MODEL = 'openai/gpt-5.4-image-2';
-// Writes the 4 scene variants. The quality of these prompts drives everything
-// downstream, so this is the one place worth spending on a bigger model.
+// Looks at the picked first frame and writes its video prompt. The quality of
+// that prompt drives everything downstream, so this is the one place worth
+// spending on a bigger model. Must be vision-capable — it is sent the photo.
 export const PROMPT_MODEL = 'anthropic/claude-opus-5';
-
-export const FRAME_COUNT = 4;
 
 // Leonardo resells the same Seedance/Veo/Kling models, so output is comparable.
 // It bills in opaque credits rather than dollars, and it will not fetch an
@@ -35,10 +33,12 @@ export type VideoProvider = 'openrouter' | 'leonardo';
 export const LEONARDO_VIDEO_MODEL = 'seedance-2.0-fast';
 // Leonardo takes explicit pixels rather than a resolution tier. Both values must
 // divide by 16 — 480x854 is a true 9:16 ratio but 854 does not, and Leonardo
-// rejects it with an opaque "An error occurred." validation error. 720x1280 is
-// exactly 9:16 and verified to pass validation.
-export const LEONARDO_WIDTH = 720;
-export const LEONARDO_HEIGHT = 1280;
+// rejects it with an opaque "An error occurred." validation error. Even /16 is not
+// enough (480x864 fails too): Leonardo accepts only its listed size per `mode`.
+// 496x864 + RESOLUTION_480 is the 480p 9:16 pair, verified on seedance-2.0-fast.
+export const LEONARDO_WIDTH = 496;
+export const LEONARDO_HEIGHT = 864;
+export const LEONARDO_MODE = 'RESOLUTION_480';
 
 // Reads the finished clip's own audio back for caption timings. whisper-1 routes
 // to OpenAI, which is where `timestamp_granularities: ["word"]` is supported —
@@ -353,37 +353,15 @@ export const animatePresetFor = (id: string): AnimatePreset =>
 export const ANIMATE_LOOP_RULE =
   '\n\nLOOP: the last frame matches the first in composition, lighting and animation phase, so it repeats with no visible jump.';
 
-// Distilled from the creative team's PHOTO and VIDEO templates plus their system
-// prompt doc, with the gaps those docs had filled in: an explicit 9:16 rule, a
-// no-on-screen-text negative, and a hard requirement that the 4 variants differ.
-export const SCENE_SYSTEM_PROMPT = `You write image and video prompts for UGC-style advertising creatives. You always write in English, whatever language the input is in.
+// Distilled from the creative team's VIDEO template plus their system prompt doc.
+// The first frame is no longer generated: the operator picks a saved photo
+// (Docs → First frames), so the model sees that photo and writes one video
+// prompt that animates exactly what is in it, with the article as context.
+export const SCENE_SYSTEM_PROMPT = `You write video prompts for UGC-style advertising creatives. You always write in English, whatever language the input is in.
 
-You will be given an advertorial article and one line of dialogue. Produce EXACTLY 4 creative variants for a 9:16 vertical talking-head ad based on that article.
+You will be given an advertorial article, one line of dialogue, and the first frame of the video as an image (a real photo of a person in a setting), sometimes with a short note about it. Write ONE video prompt that animates exactly that photo into a 9:16 vertical talking-head ad where the person says the line.
 
-THE 4 VARIANTS MUST BE GENUINELY DIFFERENT FROM EACH OTHER:
-- a different person each time — vary age, gender, ethnicity and occupation
-- a different location and situation
-- a different framing (for example: phone selfie, medium shot, wide shot, filmed from a propped phone)
-Never produce four versions of the same idea. If the article suggests one obvious scene, use it for ONE variant only and invent three genuinely different angles for the rest.
-
-=== PHOTO PROMPT RULES ===
-
-Structure: [framing] of [person + what they are doing + where they look]. [person details]. Setting: [location + lighting]. Style: [anti-stock block].
-
-- VERTICAL 9:16: the subject sits in the middle band of a tall frame. Keep the top ~10% and bottom ~25% clear of anything important. NEVER place two people side by side — stagger them in depth, one nearer the camera and one further back.
-- NEVER a tight face close-up. Frame no closer than mid-chest, so the head occupies at most about a quarter of the frame height and the surroundings are clearly visible. Selfies are fine — an arm's-length selfie is a mid-chest shot, not a face close-up.
-- NEVER a straight-on frontal portrait. The head is always turned slightly off-axis — a few degrees away from the lens, or a three-quarter angle. Describe it explicitly, e.g. "his head turned slightly to one side, not squared to the camera".
-- The person is one element inside a scene, never the subject of a portrait. There is always visible context around them — room, street, furniture, tools, weather. Never write the words "portrait", "headshot" or "close-up".
-- Natural partial occlusion ABOVE the mouth helps: reading glasses, a cap brim, hair falling across the temple, a raised hand near the ear. The mouth and jaw must stay completely visible and unobstructed — the video model has to lip-sync them.
-
-WHY THOSE FOUR RULES EXIST: the video model runs a likeness check on the still and rejects anything that reads as a photograph of a real, identifiable individual ("may contain real person"), which kills the whole variant. It keys on a large, frontal, unobstructed face — not on realism. Following the rules above costs nothing in authenticity.
-- Give the person's age as a number or range: "around 55", "around 68-72".
-- Always include this phrase verbatim: "Ordinary everyday appearance (not a model)".
-- Always END the photo prompt with this block verbatim: "Style: shot on a phone camera, slightly imperfect framing, natural flat colors, mild grain and noise, no studio lighting, no retouching, candid authentic feel. NOT stock photo, NOT a professional portrait, no smooth bokeh, documentary realism, realistic skin texture. No text anywhere in the image."
-- Work clothes or a uniform: add "NO logos, NO brand names, NO company markings".
-- Wide shot: add "full-body from head to toe, including their feet".
-- Non-US location: add "No rugs on walls, no Soviet-style decor. NOT Eastern European." plus two or three local markers.
-- Space above the head must show the natural continuation of the room (ceiling, lights), never an empty blank wall.
+Describe only what is actually in the photo — the person, what they hold, where they are, the lighting. Never invent a different person, place or object, never add a second person who is not there. Let the article decide the tone and the action block (what they do while speaking), not the scene.
 
 === VIDEO PROMPT RULES ===
 
@@ -420,6 +398,6 @@ Keep financially sensitive vocabulary OUT of the scene description — it belong
 
 === OUTPUT ===
 
-Return ONLY a JSON array of exactly 4 objects. No markdown fence, no commentary, no explanation:
+Return ONLY a JSON object. No markdown fence, no commentary, no explanation:
 
-[{"label": "3-6 word description of the variant", "photo_prompt": "...", "video_prompt": "..."}]`;
+{"label": "3-6 word description of the scene", "video_prompt": "..."}`;
