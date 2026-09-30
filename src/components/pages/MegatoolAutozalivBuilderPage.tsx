@@ -101,6 +101,8 @@ const COMPETITORS: Record<string, string[]> = {
     'geeksstory.com', 'finomira.com', 'fintreat.com', 'healquix.com', 'moneytano.com',
   ],
   amo: ['financeply.com', 'contraspero.com', 'fortunevia.com', 'retrotreat.com', 'thetopselected.com', 'topfindtoday.com'],
+  orbitpeek: ['orbitpeek.com'],
+  theunexploredroad: ['theunexploredroad.com'],
 };
 const competitorOf = (url: string) =>
   Object.keys(COMPETITORS).find((c) => COMPETITORS[c].some((s) => url.toLowerCase().includes(s))) || '';
