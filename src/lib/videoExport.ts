@@ -119,6 +119,12 @@ const renderToCanvas = async (
   video.src = videoUrl;
   video.playsInline = true;
   await once(video, 'loadedmetadata');
+  // An unplayed, never-seeked <video> hands drawImage a black frame until it
+  // starts presenting frames, so the export opened on black. An explicit seek
+  // to 0 makes frame 0 drawable before recording starts.
+  const seeked = once(video, 'seeked');
+  video.currentTime = 0;
+  await seeked;
 
   const srcW = video.videoWidth;
   const srcH = video.videoHeight;
@@ -200,6 +206,7 @@ const renderToCanvas = async (
   const timer = window.setInterval(draw, 1000 / 30);
 
   try {
+    draw(); // frame 0 on the canvas before the first captured frame
     recorder.start();
     await video.play();
     pump();
