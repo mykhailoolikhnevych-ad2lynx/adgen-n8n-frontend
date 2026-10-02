@@ -8,8 +8,8 @@ import { adLanguagesForGeo } from '@/lib/geos';
 import { getTrackerFromTrackingUrl, DEFAULT_BINOM_TRACKER } from '@/lib/binomGroups';
 import { customStartToUnix } from '@/lib/nbStartTime';
 import {
-  SCENE_SYSTEM_PROMPT, PROMPT_MODEL, VIDEO_MODEL,
-  VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
+  SCENE_SYSTEM_PROMPT, PROMPT_MODEL,
+  VIDEO_DURATION_SEC, TRANSCRIBE_MODEL,
   LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT, LEONARDO_MODE,
   countLineWords, lipSyncDurationSec,
   animateModelFor, ANIMATE_LOOP_RULE, VIDEO_DAILY_LIMIT, type VideoProvider,
@@ -630,7 +630,6 @@ interface AppState {
   videoGenArticleUrl: string;
   /** Clip length typed by the operator; null = sized to the line automatically. */
   videoGenDurationOverride: number | null;
-  videoGenProvider: VideoProvider;
   /** Phase 1 — the 4 variants written from the article. */
   videoGenFrames: VideoGenFrame[];
   videoGenFramesStatus: 'idle' | 'loading' | 'success' | 'error';
@@ -1488,7 +1487,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
-  videoGenLine: '', videoGenArticleUrl: '', videoGenDurationOverride: null, videoGenProvider: 'leonardo',
+  videoGenLine: '', videoGenArticleUrl: '', videoGenDurationOverride: null,
   videoGenFrames: [], videoGenFramesStatus: 'idle', videoGenFramesError: null,
   videoGenSelectedFrameId: null,
   videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
@@ -3463,30 +3462,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     const frame = get().videoGenFrames.find((f) => f.frameId === get().videoGenSelectedFrameId);
     if (!frame) return;
 
-    const provider = get().videoGenProvider;
-    const leonardo = provider === 'leonardo';
-    const model = leonardo ? LEONARDO_VIDEO_MODEL : VIDEO_MODEL;
-
-    const payload = leonardo
-      ? {
-          frame_id: frame.frameId,
-          video_prompt: frame.videoPrompt,
-          video_model: model,
-          duration: get().videoGenDurationOverride ?? lipSyncDurationSec(countLineWords(get().videoGenLine)),
-          // Leonardo takes explicit pixels rather than a resolution tier.
-          width: LEONARDO_WIDTH,
-          height: LEONARDO_HEIGHT,
-          mode: LEONARDO_MODE,
-        }
-      : {
-          frame_id: frame.frameId,
-          video_prompt: frame.videoPrompt,
-          video_model: model,
-          duration: VIDEO_DURATION_SEC,
-          aspect_ratio: VIDEO_ASPECT_RATIO,
-          resolution: VIDEO_RESOLUTION,
-        };
-    const logMeta = { frameId: frame.frameId, label: frame.label, videoModel: model, provider };
+    // From article always renders on Leonardo.
+    const model = LEONARDO_VIDEO_MODEL;
+    const payload = {
+      frame_id: frame.frameId,
+      video_prompt: frame.videoPrompt,
+      video_model: model,
+      duration: get().videoGenDurationOverride ?? lipSyncDurationSec(countLineWords(get().videoGenLine)),
+      // Leonardo takes explicit pixels rather than a resolution tier.
+      width: LEONARDO_WIDTH,
+      height: LEONARDO_HEIGHT,
+      mode: LEONARDO_MODE,
+    };
+    const logMeta = { frameId: frame.frameId, label: frame.label, videoModel: model };
 
     set({
       videoGenStatus: 'loading', videoGenError: null, videoGenResult: null,
@@ -3498,9 +3486,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       logEvent({ tab: 'video_gen', action: 'generateVideo', meta: logMeta, metaOut: responseBody, errorMessage: message });
     };
 
-    const endpoint = leonardo ? WEBHOOKS.videoGenLeonardo : WEBHOOKS.videoGen;
+    const endpoint = WEBHOOKS.videoGenLeonardo;
     if (!endpoint) {
-      fail(`PUBLIC_WEBHOOK_VIDEO_${leonardo ? 'LEONARDO' : 'GEN'}_URL is not set in .env`);
+      fail('PUBLIC_WEBHOOK_VIDEO_LEONARDO_URL is not set in .env');
       return;
     }
 
@@ -3523,6 +3511,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         fail(`Daily limit reached — ${used} of ${limit} videos used today. Resets at midnight UTC.`, startPayload);
         return;
       }
+      // The Leonardo leg reports the allowance on every accepted run (not to admins).
+      if (startPayload?.used != null && startPayload?.limit != null) {
+        set({ videoGenQuota: { used: Number(startPayload.used), limit: Number(startPayload.limit) } });
+      }
       jobId = (startPayload?.job_id ?? startPayload?.execution_id ?? startPayload?.id) ?? null;
       if (!jobId) throw new Error('Webhook did not return a job_id');
     } catch (e) {
@@ -3537,7 +3529,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 60 attempts (5 min) times out right as the run finishes. 120 = 10 min.
       result = await pollCreativeExecution(
         jobId, () => get().videoGenStatus !== 'loading',
-        leonardo ? 'Aggregate Video Leo' : 'Aggregate Video', 120,
+        'Aggregate Video Leo', 120,
       );
     } catch (e) {
       fail(`Video generation failed: ${humanizeError(e)}`, (e as any)?.responseBody ?? (e as any)?.response?.data);
@@ -3560,8 +3552,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         model: String(result.video_model || model),
         jobId: String(jobId),
         prompt: frame.videoPrompt,
-        openrouterId: String(result.openrouter_id || ''),
-        provider,
+        openrouterId: '',
+        provider: 'leonardo',
         credits: Number(result.credits) || 0,
       },
     });
@@ -3571,22 +3563,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     // Captions are effectively mandatory for sound-off viewing, so there is
-    // nothing to opt into — fetch them as soon as the clip lands. OpenRouter
-    // clips are pulled by job id, Leonardo clips by their public CDN URL.
+    // nothing to opt into — fetch them as soon as the clip lands. n8n pulls
+    // the clip from Leonardo's public CDN URL.
     void get().fetchVideoCaptions();
   },
 
   fetchVideoCaptions: async () => {
-    const result = get().videoGenResult;
-    const openrouterId = result?.openrouterId;
-    const videoUrl = result?.provider === 'leonardo' ? result.videoUrl : '';
-    if (!openrouterId && !videoUrl) return;
+    const videoUrl = get().videoGenResult?.videoUrl;
+    if (!videoUrl) return;
 
     set({ videoGenCaptionsStatus: 'loading', videoGenCaptionsError: null, videoGenCaptions: [] });
 
     const fail = (message: string) => {
       set({ videoGenCaptionsStatus: 'error', videoGenCaptionsError: message });
-      logEvent({ tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId, videoUrl }, errorMessage: message });
+      logEvent({ tab: 'video_gen', action: 'fetchVideoCaptions', meta: { videoUrl }, errorMessage: message });
     };
 
     if (!WEBHOOKS.videoTranscribe) {
@@ -3598,7 +3588,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       // Synchronous — an 8s clip transcribes in seconds, well inside the edge cap.
       const res = await axios.post(WEBHOOKS.videoTranscribe, {
-        openrouter_id: openrouterId,
         video_url: videoUrl,
         model: TRANSCRIBE_MODEL,
       });
@@ -3617,7 +3606,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set({ videoGenCaptionsStatus: 'success', videoGenCaptions: cues });
     logEvent({
-      tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId, videoUrl },
+      tab: 'video_gen', action: 'fetchVideoCaptions', meta: { videoUrl },
       metaOut: { cues: cues.length, cost: data?.cost },
     });
   },
