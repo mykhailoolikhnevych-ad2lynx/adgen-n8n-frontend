@@ -23,7 +23,7 @@ export const VIDEO_RESOLUTION = '480p';
 // Looks at the picked first frame and writes its video prompt. The quality of
 // that prompt drives everything downstream, so this is the one place worth
 // spending on a bigger model. Must be vision-capable — it is sent the photo.
-export const PROMPT_MODEL = 'anthropic/claude-opus-5';
+export const PROMPT_MODEL = 'anthropic/claude-opus-5.5';
 
 // Leonardo resells the same Seedance/Veo/Kling models, so output is comparable.
 // It bills in opaque credits rather than dollars, and it will not fetch an
