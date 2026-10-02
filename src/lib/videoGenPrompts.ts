@@ -45,9 +45,19 @@ export const LEONARDO_MODE = 'RESOLUTION_480';
 // other providers reject that parameter. Pennies per clip.
 export const TRANSCRIBE_MODEL = 'openai/whisper-1';
 
-// Roughly 2.5–3 spoken words per second, so an 8s clip fits ~24 words. Past that
-// the model rushes the delivery or cuts the line off mid-sentence.
-export const MAX_LINE_WORDS = 24;
+// From article clips are sized to the line: speaking time at a lively natural
+// pace (~2.7 words/s — a 23-word line filled an 8s clip) plus 1s of breathing
+// room, rounded up and kept inside Seedance 2.0's 4–15s range on Leonardo.
+export const LIPSYNC_WORDS_PER_SEC = 2.7;
+export const VIDEO_MIN_SEC = 4;
+export const VIDEO_MAX_SEC = 15;
+// Past this even a 15s clip is too short — the model rushes or cuts the line off.
+export const MAX_LINE_WORDS = Math.floor((VIDEO_MAX_SEC - 1) * LIPSYNC_WORDS_PER_SEC);
+
+export const countLineWords = (s: string): number => s.trim().split(/\s+/).filter(Boolean).length;
+
+export const lipSyncDurationSec = (words: number): number =>
+  Math.min(VIDEO_MAX_SEC, Math.max(VIDEO_MIN_SEC, Math.ceil(words / LIPSYNC_WORDS_PER_SEC + 1)));
 
 // Videos an operator may generate per day. The real gate is in n8n — it counts
 // per email in the `video_quota` datatable and refuses the run before any model

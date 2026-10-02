@@ -14,6 +14,9 @@ export interface CaptionCue {
   start: number;
   end: number;
   text: string;
+  /** The words in this cue with their own timings, for the TikTok-style
+   *  highlight of the word being spoken. */
+  words: CaptionWord[];
 }
 
 // Short bursts read better than full sentences on a 9:16 ad — the eye catches
@@ -46,6 +49,7 @@ export const groupWordsIntoCues = (words: CaptionWord[]): CaptionCue[] => {
       start: bucket[0].start,
       end: bucket[bucket.length - 1].end,
       text: bucket.map((w) => w.word).join(' '),
+      words: bucket,
     });
     bucket = [];
   };
@@ -80,3 +84,14 @@ export const toSrt = (cues: CaptionCue[]): string =>
 
 export const cueAt = (cues: CaptionCue[], t: number): CaptionCue | null =>
   cues.find((c) => t >= c.start && t <= c.end) ?? null;
+
+/** Index of the word being spoken: the last one that has started, so the
+ *  highlight holds through the small gaps between words instead of flickering. */
+export const activeWordIndex = (cue: CaptionCue, t: number): number => {
+  let idx = -1;
+  cue.words.forEach((w, i) => { if (t >= w.start) idx = i; });
+  return idx;
+};
+
+/** TikTok-style highlight colour for the word being spoken. */
+export const CAPTION_HIGHLIGHT = '#FFE600';

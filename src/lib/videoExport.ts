@@ -18,7 +18,7 @@
 // buys us the audio track for free, which the alternatives (WebCodecs, mp4box
 // demuxing) would each make us reassemble by hand.
 
-import { cueAt, type CaptionCue } from '@/lib/captions';
+import { cueAt, activeWordIndex, CAPTION_HIGHLIGHT, type CaptionCue } from '@/lib/captions';
 import { createResampler } from '@/lib/videoResample';
 
 const once = (el: HTMLMediaElement, ev: string): Promise<void> =>
@@ -51,33 +51,46 @@ export const extensionFor = (mimeType: string): string =>
 
 // Same look as the on-screen overlay: bold uppercase, white, heavy black
 // outline, sitting at 62% of the frame — clear of TikTok's bottom-quarter UI.
+// Drawn word by word so the one being spoken can be highlighted, TikTok-style.
 const drawCaption = (
   ctx: CanvasRenderingContext2D,
-  text: string,
+  cue: CaptionCue,
+  t: number,
   w: number,
   h: number,
 ): void => {
+  const words = cue.words.length ? cue.words.map((x) => x.word.toUpperCase()) : [cue.text.toUpperCase()];
+  const active = cue.words.length ? activeWordIndex(cue, t) : -1;
   let fontSize = Math.round(h * 0.045);
-  ctx.textAlign = 'center';
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
 
   // Shrink rather than wrap — cues are capped at 22 chars, so one line always fits.
   const maxWidth = w * 0.86;
+  let space = 0;
+  let widths: number[] = [];
   for (let i = 0; i < 8; i++) {
     ctx.font = `800 ${fontSize}px Inter, Arial, sans-serif`;
-    if (ctx.measureText(text).width <= maxWidth) break;
+    space = ctx.measureText(' ').width;
+    widths = words.map((word) => ctx.measureText(word).width);
+    const total = widths.reduce((a, b) => a + b, 0) + space * (words.length - 1);
+    if (total <= maxWidth) break;
     fontSize = Math.round(fontSize * 0.92);
   }
 
-  const x = w / 2;
+  const total = widths.reduce((a, b) => a + b, 0) + space * (words.length - 1);
+  let x = (w - total) / 2;
   const y = h * 0.62;
   ctx.lineJoin = 'round';
   ctx.miterLimit = 2;
   ctx.lineWidth = Math.max(2, fontSize * 0.22);
   ctx.strokeStyle = '#000';
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = '#fff';
-  ctx.fillText(text, x, y);
+  words.forEach((word, i) => {
+    ctx.strokeText(word, x, y);
+    ctx.fillStyle = i === active ? CAPTION_HIGHLIGHT : '#fff';
+    ctx.fillText(word, x, y);
+    x += widths[i] + space;
+  });
 };
 
 export interface ExportResult {
@@ -164,7 +177,7 @@ const renderToCanvas = async (
     } else {
       ctx.drawImage(video, 0, 0, w, h);
       const cue = cueAt(cues, video.currentTime);
-      if (cue) drawCaption(ctx, cue.text, w, h);
+      if (cue) drawCaption(ctx, cue, video.currentTime, w, h);
     }
     const dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
     if (++frame % 5 === 0 && dur) onProgress?.(Math.min(1, video.currentTime / dur));

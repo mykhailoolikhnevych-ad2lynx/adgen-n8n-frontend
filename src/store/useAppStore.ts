@@ -11,6 +11,7 @@ import {
   SCENE_SYSTEM_PROMPT, PROMPT_MODEL, VIDEO_MODEL,
   VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, TRANSCRIBE_MODEL,
   LEONARDO_VIDEO_MODEL, LEONARDO_WIDTH, LEONARDO_HEIGHT, LEONARDO_MODE,
+  countLineWords, lipSyncDurationSec,
   animateModelFor, ANIMATE_LOOP_RULE, VIDEO_DAILY_LIMIT, type VideoProvider,
 } from '@/lib/videoGenPrompts';
 import { normalizeWords, groupWordsIntoCues, type CaptionCue } from '@/lib/captions';
@@ -627,6 +628,8 @@ interface AppState {
    *  generates the still, then animates it. */
   videoGenLine: string;
   videoGenArticleUrl: string;
+  /** Clip length typed by the operator; null = sized to the line automatically. */
+  videoGenDurationOverride: number | null;
   videoGenProvider: VideoProvider;
   /** Phase 1 — the 4 variants written from the article. */
   videoGenFrames: VideoGenFrame[];
@@ -939,6 +942,7 @@ interface AppState {
   generateCreativeOnly: () => Promise<void>;
   setVideoGenLine: (v: string) => void;
   setVideoGenArticleUrl: (v: string) => void;
+  setVideoGenDurationOverride: (v: number | null) => void;
   /** Phase 1 — park the picked first-frame photo and have the model write its
    *  video prompt from the article; on success it starts phase 2 itself. */
   generateVideoFrames: (preset: SavedPrompt) => Promise<void>;
@@ -1484,7 +1488,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   isLoadingAngles: false, isLoadingConcepts: false, isLoadingCreatives: false,
   creativeOnlyHook: '', creativeOnlyAccent: '', creativeOnlyCta: '',
   isLoadingCreativeOnly: false,
-  videoGenLine: '', videoGenArticleUrl: '', videoGenProvider: 'leonardo',
+  videoGenLine: '', videoGenArticleUrl: '', videoGenDurationOverride: null, videoGenProvider: 'leonardo',
   videoGenFrames: [], videoGenFramesStatus: 'idle', videoGenFramesError: null,
   videoGenSelectedFrameId: null,
   videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
@@ -3365,6 +3369,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setVideoGenLine: (v) => set({ videoGenLine: v }),
   setVideoGenArticleUrl: (v) => set({ videoGenArticleUrl: v }),
+  setVideoGenDurationOverride: (v) => set({ videoGenDurationOverride: v }),
 
   generateVideoFrames: async (preset) => {
     const articleUrl = get().videoGenArticleUrl.trim();
@@ -3467,7 +3472,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           frame_id: frame.frameId,
           video_prompt: frame.videoPrompt,
           video_model: model,
-          duration: VIDEO_DURATION_SEC,
+          duration: get().videoGenDurationOverride ?? lipSyncDurationSec(countLineWords(get().videoGenLine)),
           // Leonardo takes explicit pixels rather than a resolution tier.
           width: LEONARDO_WIDTH,
           height: LEONARDO_HEIGHT,
@@ -3566,21 +3571,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
 
     // Captions are effectively mandatory for sound-off viewing, so there is
-    // nothing to opt into — fetch them as soon as the clip lands.
-    // The caption pass pulls the clip from OpenRouter by job id. A Leonardo
-    // run has no such id, so it simply skips — no captions on that path yet.
+    // nothing to opt into — fetch them as soon as the clip lands. OpenRouter
+    // clips are pulled by job id, Leonardo clips by their public CDN URL.
     void get().fetchVideoCaptions();
   },
 
   fetchVideoCaptions: async () => {
-    const openrouterId = get().videoGenResult?.openrouterId;
-    if (!openrouterId) return;
+    const result = get().videoGenResult;
+    const openrouterId = result?.openrouterId;
+    const videoUrl = result?.provider === 'leonardo' ? result.videoUrl : '';
+    if (!openrouterId && !videoUrl) return;
 
     set({ videoGenCaptionsStatus: 'loading', videoGenCaptionsError: null, videoGenCaptions: [] });
 
     const fail = (message: string) => {
       set({ videoGenCaptionsStatus: 'error', videoGenCaptionsError: message });
-      logEvent({ tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId }, errorMessage: message });
+      logEvent({ tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId, videoUrl }, errorMessage: message });
     };
 
     if (!WEBHOOKS.videoTranscribe) {
@@ -3593,6 +3599,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Synchronous — an 8s clip transcribes in seconds, well inside the edge cap.
       const res = await axios.post(WEBHOOKS.videoTranscribe, {
         openrouter_id: openrouterId,
+        video_url: videoUrl,
         model: TRANSCRIBE_MODEL,
       });
       data = Array.isArray(res.data) ? res.data[0] : res.data;
@@ -3610,7 +3617,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set({ videoGenCaptionsStatus: 'success', videoGenCaptions: cues });
     logEvent({
-      tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId },
+      tab: 'video_gen', action: 'fetchVideoCaptions', meta: { openrouterId, videoUrl },
       metaOut: { cues: cues.length, cost: data?.cost },
     });
   },

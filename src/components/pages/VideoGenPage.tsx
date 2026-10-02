@@ -6,14 +6,14 @@ import { Textarea } from '@/components/ui/textarea';
 import { InfoTooltip } from '@/components/ui/InfoTooltip';
 import { SavedPromptPicker } from '@/components/ui/SavedPromptPicker';
 import {
-  MAX_LINE_WORDS, PROMPT_MODEL,
-  VIDEO_DURATION_SEC, VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
+  MAX_LINE_WORDS, PROMPT_MODEL, VIDEO_MIN_SEC, VIDEO_MAX_SEC, countLineWords, lipSyncDurationSec,
+  VIDEO_ASPECT_RATIO, VIDEO_RESOLUTION, LEONARDO_VIDEO_MODEL,
   ANIMATE_VIDEO_MODELS, ANIMATE_MODEL_DEFAULT,
   ANIMATE_PRESETS, ANIMATE_PRESET_DEFAULT, ANIMATE_CUSTOM_PRESET_ID,
   motionSampleSrc, motionPosterSrc,
   animateModelFor, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
-import { cueAt, toSrt } from '@/lib/captions';
+import { cueAt, activeWordIndex, CAPTION_HIGHLIGHT, toSrt } from '@/lib/captions';
 import { burnCaptions, upscaleVideo, downloadAs, saveBlob } from '@/lib/videoExport';
 import { videoGenFileName } from '@/lib/creativeFilename';
 
@@ -207,8 +207,6 @@ const StatusBar = ({ status }: { status: Status }) => (
   </div>
 );
 
-const countWords = (s: string): number => s.trim().split(/\s+/).filter(Boolean).length;
-
 export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const videoGenLine = useAppStore((s) => s.videoGenLine);
   const videoGenArticleUrl = useAppStore((s) => s.videoGenArticleUrl);
@@ -219,6 +217,8 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   const videoGenResult = useAppStore((s) => s.videoGenResult);
   const setVideoGenLine = useAppStore((s) => s.setVideoGenLine);
   const setVideoGenArticleUrl = useAppStore((s) => s.setVideoGenArticleUrl);
+  const videoGenDurationOverride = useAppStore((s) => s.videoGenDurationOverride);
+  const setVideoGenDurationOverride = useAppStore((s) => s.setVideoGenDurationOverride);
   const generateVideoFrames = useAppStore((s) => s.generateVideoFrames);
 
   const videoGenCaptions = useAppStore((s) => s.videoGenCaptions);
@@ -420,15 +420,30 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
     const el = videoRef.current;
     if (!el) return;
     const onTime = () => setPlayhead(el.currentTime);
+    // timeupdate fires only ~4x a second — too coarse for a per-word highlight,
+    // so follow the clock every frame while the clip is playing.
+    let raf = 0;
+    const tick = () => { onTime(); raf = requestAnimationFrame(tick); };
+    const onPlay = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
+    const onStop = () => { cancelAnimationFrame(raf); onTime(); };
     el.addEventListener('timeupdate', onTime);
     el.addEventListener('seeked', onTime);
+    el.addEventListener('play', onPlay);
+    el.addEventListener('pause', onStop);
+    el.addEventListener('ended', onStop);
+    if (!el.paused) onPlay();
     return () => {
+      cancelAnimationFrame(raf);
       el.removeEventListener('timeupdate', onTime);
       el.removeEventListener('seeked', onTime);
+      el.removeEventListener('play', onPlay);
+      el.removeEventListener('pause', onStop);
+      el.removeEventListener('ended', onStop);
     };
   }, [videoGenResult?.videoUrl]);
 
   const activeCue = cueAt(videoGenCaptions, playhead);
+  const activeWord = activeCue ? activeWordIndex(activeCue, playhead) : -1;
 
   const [exportPct, setExportPct] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -505,7 +520,9 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   // upscale on download. `resolutions` is ordered cheapest first.
   const animateResolution = animateSpec.resolutions[0];
 
-  const words = countWords(videoGenLine);
+  const words = countLineWords(videoGenLine);
+  const autoDurationSec = lipSyncDurationSec(words);
+  const durationSec = videoGenDurationOverride ?? autoDurationSec;
   const tooLong = words > MAX_LINE_WORDS;
   const urlOk = /^https?:\/\/\S+$/i.test(videoGenArticleUrl.trim());
 
@@ -987,7 +1004,7 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
               <span className="font-mono text-slate-800 truncate">{LEONARDO_VIDEO_MODEL}</span>
             </div>
             <div className="flex justify-between gap-3"><span>Provider</span><span className="font-mono text-slate-800">Leonardo</span></div>
-            <div className="flex justify-between"><span>Format</span><span className="font-mono text-slate-800">{VIDEO_ASPECT_RATIO} · {VIDEO_RESOLUTION} · {VIDEO_DURATION_SEC}s</span></div>
+            <div className="flex justify-between"><span>Format</span><span className="font-mono text-slate-800">{VIDEO_ASPECT_RATIO} · {VIDEO_RESOLUTION} · {durationSec}s</span></div>
           </div>
 
           <div>
@@ -1001,8 +1018,35 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
               disabled={busy}
             />
             <p className={`text-xs mt-1 ${tooLong ? 'text-amber-600' : 'text-slate-500'}`}>
-              {words} words{tooLong && ` — over ~${MAX_LINE_WORDS}, the model will rush or cut the line off in ${VIDEO_DURATION_SEC}s`}
+              {words} words{tooLong && ` — over ~${MAX_LINE_WORDS}, too long even for ${VIDEO_MAX_SEC}s: the model will rush or cut the line off`}
             </p>
+            {/* Clip length follows the line (speaking time + 1s, 4–15s) until the
+                operator types their own; "auto" hands it back to the line. */}
+            <div className="flex items-center gap-1.5 text-xs text-slate-600 mt-1">
+              <span>Video length</span>
+              <select
+                value={durationSec}
+                onChange={(e) => setVideoGenDurationOverride(Number(e.target.value))}
+                disabled={busy}
+                className="border rounded-md px-1 py-0.5 text-xs bg-white"
+              >
+                {Array.from({ length: VIDEO_MAX_SEC - VIDEO_MIN_SEC + 1 }, (_, i) => VIDEO_MIN_SEC + i).map((n) => (
+                  <option key={n} value={n}>{n}s</option>
+                ))}
+              </select>
+              {videoGenDurationOverride == null ? (
+                <span className="text-slate-400">auto</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setVideoGenDurationOverride(null)}
+                  disabled={busy}
+                  className="text-blue-600 hover:underline"
+                >
+                  back to auto ({autoDurationSec}s)
+                </button>
+              )}
+            </div>
           </div>
 
           <div>
@@ -1141,7 +1185,13 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
                         className="text-center font-extrabold uppercase leading-tight text-white text-[15px] tracking-tight"
                         style={{ textShadow: '0 2px 0 #000, 0 -2px 0 #000, 2px 0 0 #000, -2px 0 0 #000, 0 0 6px rgba(0,0,0,.9)' }}
                       >
-                        {activeCue.text}
+                        {activeCue.words.length
+                          ? activeCue.words.map((w, i) => (
+                              <span key={i} style={i === activeWord ? { color: CAPTION_HIGHLIGHT } : undefined}>
+                                {i > 0 && ' '}{w.word}
+                              </span>
+                            ))
+                          : activeCue.text}
                       </span>
                     </div>
                   )}
