@@ -4,15 +4,7 @@
 // The operator picks a saved first frame (Docs → First frames); the model reads
 // the article and that photo and writes one video prompt; Leonardo animates it.
 
-// Seedance, because the creative team's prompt templates are tuned for it.
-// 2.0-fast generates native audio and supports first-frame control, which the
-// lip-sync and the caption pass both depend on.
-//
-// NOTE on price: OpenRouter's headline per-second rate is the 480p floor, and
-// the real rate scales steeply with resolution — an 8s 1080p clip has billed
-// around a dollar in practice, not the ~$0.18 the rate card implies. Dropping
-// VIDEO_RESOLUTION to '720p' is the single biggest cost lever here.
-export const VIDEO_MODEL = 'bytedance/seedance-1-5-pro';
+// Animate image clip length. From article sizes its clip to the line instead.
 export const VIDEO_DURATION_SEC = 8;
 export const VIDEO_ASPECT_RATIO = '9:16';
 // 480p is the cheapest tier and the rate card's floor — good for testing scenes
@@ -25,10 +17,9 @@ export const VIDEO_RESOLUTION = '480p';
 // spending on a bigger model. Must be vision-capable — it is sent the photo.
 export const PROMPT_MODEL = 'anthropic/claude-opus-5.5';
 
-// Leonardo resells the same Seedance/Veo/Kling models, so output is comparable.
-// It bills in opaque credits rather than dollars, and it will not fetch an
-// external start-frame URL — the still has to be uploaded to their account
-// first — so this stays a parallel path, not a replacement.
+// From article renders on Leonardo (Seedance 2.0 Fast); Animate image renders
+// on OpenRouter. Leonardo will not fetch an external start-frame URL — n8n
+// uploads the still to their account first.
 export type VideoProvider = 'openrouter' | 'leonardo';
 export const LEONARDO_VIDEO_MODEL = 'seedance-2.0-fast';
 // Leonardo takes explicit pixels rather than a resolution tier. Both values must

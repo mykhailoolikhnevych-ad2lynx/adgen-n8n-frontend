@@ -542,10 +542,10 @@ export default function MainApp() {
               <OfferArticlePage onClose={handleCloseOffer} />
             </KeepAlive>
           )}
-          {/* Open to everyone, but only in Animate image mode — the article
-              pipeline inside it stays admin-only. */}
+          {/* Open to everyone, both modes. Non-admins are held to the shared
+              daily video quota, enforced in n8n. */}
           <KeepAlive active={!megatool && page === 'video-gen'}>
-            <VideoGenPage isAdmin={isAdmin} />
+            <VideoGenPage />
           </KeepAlive>
           {isAdmin && (
             <KeepAlive active={!megatool && page === 'dashboard'}>
