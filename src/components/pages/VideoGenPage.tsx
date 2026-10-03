@@ -207,7 +207,7 @@ const StatusBar = ({ status }: { status: Status }) => (
   </div>
 );
 
-export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
+export const VideoGenPage = () => {
   const videoGenLine = useAppStore((s) => s.videoGenLine);
   const videoGenArticleUrl = useAppStore((s) => s.videoGenArticleUrl);
   const videoGenFramesStatus = useAppStore((s) => s.videoGenFramesStatus);
@@ -238,11 +238,9 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   // ------------------------------------------------------------- Animate mode
   // Local, not the store: the tab is kept alive across switches, so component
   // state survives just as well, and the File itself has no business in zustand.
-  // The article pipeline stays admin-only; everyone else gets Animate image and
-  // no toggle. Derived rather than seeded into state because isAdmin resolves
-  // asynchronously — a non-admin must land on 'animate' whatever the timing.
-  const [modeChoice, setModeChoice] = useState<VideoGenMode>('scene');
-  const mode: VideoGenMode = isAdmin ? modeChoice : 'animate';
+  // Both modes are open to everyone; the daily quota in n8n is what limits
+  // non-admins, and it is shared across both generators.
+  const [mode, setModeChoice] = useState<VideoGenMode>('scene');
   const [animateFile, setAnimateFile] = useState<File | null>(null);
   const [animatePreview, setAnimatePreview] = useState<string | null>(null);
   const [animateDims, setAnimateDims] = useState<{ w: number; h: number } | null>(null);
@@ -534,9 +532,12 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
   else if (words === 0) runLabel = 'Enter the line to lip-sync';
   else if (!urlOk) runLabel = 'Paste the article URL';
   else if (!selectedFrame) runLabel = 'Pick a first frame';
+  // Same shared allowance as Animate image. The gate is in n8n; this only stops
+  // a click that is certain to be refused.
+  const quotaSpent = videoGenQuota != null && videoGenQuota.used >= videoGenQuota.limit;
+  if (!framesLoading && !videoLoading && quotaSpent) runLabel = `Daily limit reached (${videoGenQuota.used}/${videoGenQuota.limit})`;
 
-  // Nothing to toggle for a non-admin — Animate image is the only mode they have.
-  const modeToggle = !isAdmin ? null : (
+  const modeToggle = (
     <div>
       <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400 mb-1">
         Mode
@@ -1110,11 +1111,18 @@ export const VideoGenPage = ({ isAdmin }: { isAdmin: boolean }) => {
 
           <Button
             onClick={() => { if (selectedFrame) void generateVideoFrames(selectedFrame); }}
-            disabled={!urlOk || words === 0 || !selectedFrame || busy}
+            disabled={!urlOk || words === 0 || !selectedFrame || busy || quotaSpent}
             className="w-full"
           >
             {runLabel}
           </Button>
+          {videoGenQuota && (
+            <p className={`-mt-2 text-[11px] ${quotaSpent ? 'text-amber-700' : 'text-slate-500'}`}>
+              {quotaSpent
+                ? `Ліміт на сьогодні вичерпано (${videoGenQuota.used}/${videoGenQuota.limit}). Оновиться опівночі UTC.`
+                : `Сьогодні використано ${videoGenQuota.used} з ${videoGenQuota.limit} відео.`}
+            </p>
+          )}
         </div>
       </div>
 
