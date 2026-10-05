@@ -13,7 +13,7 @@ import {
   motionSampleSrc, motionPosterSrc,
   animateModelFor, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
-import { cueAt, activeWordIndex, CAPTION_HIGHLIGHT, toSrt } from '@/lib/captions';
+import { cueAt, activeWordIndex, CAPTION_HIGHLIGHT } from '@/lib/captions';
 import { burnCaptions, upscaleVideo, downloadAs, saveBlob } from '@/lib/videoExport';
 import { videoGenFileName } from '@/lib/creativeFilename';
 
@@ -39,7 +39,9 @@ const INPUT_HELP =
 const FRAME_HELP =
   'Готове фото для першого кадру. Обери одне й тисни «Generate video». Додати чи змінити фото — Docs → First frames.';
 
-const VIDEO_HELP = 'Обраний кадр, оживлений з твоєю реплікою через Leonardo. Генерується ~3 хвилини.';
+const VIDEO_HELP =
+  'Обраний кадр, оживлений з твоєю реплікою через Leonardo. Генерується ~3 хвилини. ' +
+  'Нові відео додаються знизу й не стирають попередні — прибрати їх можна лише кнопкою Clear results.';
 
 const MODE_HELP =
   'From article — обираєш готове фото першого кадру, модель пише відео-промт зі статті, і Leonardo оживляє фото з реплікою (ліпсінк). ' +
@@ -207,6 +209,144 @@ const StatusBar = ({ status }: { status: Status }) => (
   </div>
 );
 
+// One From article clip. Its own component because the caption overlay follows
+// this clip's player clock, and every clip in the stack has its own player.
+const SceneClipCard = ({ clip, index, autoPlay, onRetryCaptions }: {
+  clip: VideoGenResult;
+  index: number;
+  autoPlay: boolean;
+  onRetryCaptions: () => void;
+}) => {
+  const captions = clip.captions ?? [];
+  const captionsStatus = clip.captionsStatus ?? 'idle';
+
+  // Driven off the player's own clock so the overlay matches what you hear.
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [playhead, setPlayhead] = useState(0);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    const onTime = () => setPlayhead(el.currentTime);
+    // timeupdate fires only ~4x a second — too coarse for a per-word highlight,
+    // so follow the clock every frame while the clip is playing.
+    let raf = 0;
+    const tick = () => { onTime(); raf = requestAnimationFrame(tick); };
+    const onPlay = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
+    const onStop = () => { cancelAnimationFrame(raf); onTime(); };
+    el.addEventListener('timeupdate', onTime);
+    el.addEventListener('seeked', onTime);
+    el.addEventListener('play', onPlay);
+    el.addEventListener('pause', onStop);
+    el.addEventListener('ended', onStop);
+    if (!el.paused) onPlay();
+    return () => {
+      cancelAnimationFrame(raf);
+      el.removeEventListener('timeupdate', onTime);
+      el.removeEventListener('seeked', onTime);
+      el.removeEventListener('play', onPlay);
+      el.removeEventListener('pause', onStop);
+      el.removeEventListener('ended', onStop);
+    };
+  }, [clip.videoUrl]);
+
+  const activeCue = cueAt(captions, playhead);
+  const activeWord = activeCue ? activeWordIndex(activeCue, playhead) : -1;
+
+  const [exportPct, setExportPct] = useState<number | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  // Real-time render — an 8s clip takes 8s, and the page must stay open.
+  const downloadVideoWithCaptions = async () => {
+    setExportError(null);
+    setExportPct(0);
+    try {
+      const { blob, extension } = await burnCaptions(clip.videoUrl, captions, setExportPct);
+      saveBlob(blob, `${videoGenFileName('video', clip.jobId)}.${extension}`);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportPct(null);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-[10px] font-bold uppercase text-gray-400">Generation #{index + 1}</div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
+        <span>
+          Video{' '}
+          <span className="font-mono text-slate-900">
+            {clip.provider === 'leonardo' && !clip.videoCost
+              ? `${clip.credits} credits`
+              : `$${clip.videoCost.toFixed(4)}`}
+          </span>
+        </span>
+      </div>
+
+      {/* Captions sit at ~62% down — clear of TikTok's UI, which
+          covers roughly the bottom quarter of a 9:16 frame. */}
+      <div className="relative w-full max-w-[300px]">
+        <video
+          ref={videoRef}
+          src={clip.videoUrl}
+          controls
+          autoPlay={autoPlay}
+          loop
+          className="rounded-lg border bg-black w-full block"
+        />
+        {activeCue && (
+          <div className="pointer-events-none absolute inset-x-0 top-[62%] flex justify-center px-4">
+            <span
+              className="text-center font-extrabold uppercase leading-tight text-white text-[15px] tracking-tight"
+              style={{ textShadow: '0 2px 0 #000, 0 -2px 0 #000, 2px 0 0 #000, -2px 0 0 #000, 0 0 6px rgba(0,0,0,.9)' }}
+            >
+              {activeCue.words.length
+                ? activeCue.words.map((w, i) => (
+                    <span key={i} style={i === activeWord ? { color: CAPTION_HIGHLIGHT } : undefined}>
+                      {i > 0 && ' '}{w.word}
+                    </span>
+                  ))
+                : activeCue.text}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+        {captionsStatus === 'loading' && (
+          <span className="flex items-center gap-1.5 text-slate-500">
+            <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
+            Reading captions…
+          </span>
+        )}
+        {/* The one download — always with the subtitles burned in. */}
+        {captionsStatus === 'success' && (
+          <button
+            type="button"
+            onClick={() => void downloadVideoWithCaptions()}
+            disabled={exportPct !== null}
+            className="font-medium text-blue-600 hover:underline disabled:text-slate-400"
+          >
+            {exportPct === null
+              ? 'Download video'
+              : `Rendering ${Math.round(exportPct * 100)}%…`}
+          </button>
+        )}
+        {exportError && <span className="text-red-600">{exportError}</span>}
+        {captionsStatus === 'error' && (
+          <>
+            <span className="text-red-600">{clip.captionsError}</span>
+            <button type="button" onClick={onRetryCaptions} className="text-blue-600 hover:underline">
+              Retry captions
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const VideoGenPage = () => {
   const videoGenLine = useAppStore((s) => s.videoGenLine);
   const videoGenArticleUrl = useAppStore((s) => s.videoGenArticleUrl);
@@ -214,16 +354,14 @@ export const VideoGenPage = () => {
   const videoGenFramesError = useAppStore((s) => s.videoGenFramesError);
   const videoGenStatus = useAppStore((s) => s.videoGenStatus);
   const videoGenError = useAppStore((s) => s.videoGenError);
-  const videoGenResult = useAppStore((s) => s.videoGenResult);
+  const videoGenResults = useAppStore((s) => s.videoGenResults);
+  const clearVideoGenResults = useAppStore((s) => s.clearVideoGenResults);
   const setVideoGenLine = useAppStore((s) => s.setVideoGenLine);
   const setVideoGenArticleUrl = useAppStore((s) => s.setVideoGenArticleUrl);
   const videoGenDurationOverride = useAppStore((s) => s.videoGenDurationOverride);
   const setVideoGenDurationOverride = useAppStore((s) => s.setVideoGenDurationOverride);
   const generateVideoFrames = useAppStore((s) => s.generateVideoFrames);
 
-  const videoGenCaptions = useAppStore((s) => s.videoGenCaptions);
-  const videoGenCaptionsStatus = useAppStore((s) => s.videoGenCaptionsStatus);
-  const videoGenCaptionsError = useAppStore((s) => s.videoGenCaptionsError);
   const fetchVideoCaptions = useAppStore((s) => s.fetchVideoCaptions);
 
   const animateUploadedImage = useAppStore((s) => s.animateUploadedImage);
@@ -232,8 +370,6 @@ export const VideoGenPage = () => {
   const videoGenAnimateResults = useAppStore((s) => s.videoGenAnimateResults);
   const clearVideoGenAnimateResults = useAppStore((s) => s.clearVideoGenAnimateResults);
   const videoGenQuota = useAppStore((s) => s.videoGenQuota);
-
-  const [showPrompt, setShowPrompt] = useState(false);
 
   // ------------------------------------------------------------- Animate mode
   // Local, not the store: the tab is kept alive across switches, so component
@@ -410,46 +546,7 @@ export const VideoGenPage = () => {
   };
 
 
-  // Driven off the player's own clock so the overlay matches what you hear.
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [playhead, setPlayhead] = useState(0);
-
-  useEffect(() => {
-    const el = videoRef.current;
-    if (!el) return;
-    const onTime = () => setPlayhead(el.currentTime);
-    // timeupdate fires only ~4x a second — too coarse for a per-word highlight,
-    // so follow the clock every frame while the clip is playing.
-    let raf = 0;
-    const tick = () => { onTime(); raf = requestAnimationFrame(tick); };
-    const onPlay = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
-    const onStop = () => { cancelAnimationFrame(raf); onTime(); };
-    el.addEventListener('timeupdate', onTime);
-    el.addEventListener('seeked', onTime);
-    el.addEventListener('play', onPlay);
-    el.addEventListener('pause', onStop);
-    el.addEventListener('ended', onStop);
-    if (!el.paused) onPlay();
-    return () => {
-      cancelAnimationFrame(raf);
-      el.removeEventListener('timeupdate', onTime);
-      el.removeEventListener('seeked', onTime);
-      el.removeEventListener('play', onPlay);
-      el.removeEventListener('pause', onStop);
-      el.removeEventListener('ended', onStop);
-    };
-  }, [videoGenResult?.videoUrl]);
-
-  const activeCue = cueAt(videoGenCaptions, playhead);
-  const activeWord = activeCue ? activeWordIndex(activeCue, playhead) : -1;
-
-  const [exportPct, setExportPct] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
-
-  const downloadSrt = () => {
-    const name = videoGenFileName('video', videoGenResult?.jobId ?? 'clip');
-    saveBlob(new Blob([toSrt(videoGenCaptions)], { type: 'text/plain;charset=utf-8' }), `${name}.srt`);
-  };
 
   // Animate clips carry the ratio / model / preset tail an image file has, so a
   // folder of downloads still says which preset produced each one. Scene clips
@@ -489,23 +586,6 @@ export const VideoGenPage = () => {
       setExportError(e instanceof Error ? e.message : String(e));
     } finally {
       setUpscaleJob(null);
-    }
-  };
-
-  // Real-time render — an 8s clip takes 8s, and the page must stay open.
-  const downloadVideoWithCaptions = async () => {
-    if (!videoGenResult) return;
-    setExportError(null);
-    setExportPct(0);
-    try {
-      const { blob, extension } = await burnCaptions(
-        videoGenResult.videoUrl, videoGenCaptions, setExportPct,
-      );
-      saveBlob(blob, `${videoGenFileName('video', videoGenResult.jobId)}.${extension}`);
-    } catch (e) {
-      setExportError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setExportPct(null);
     }
   };
 
@@ -1129,17 +1209,45 @@ export const VideoGenPage = () => {
       {/* 3. Video (webhook 2 output) */}
       <div className="flex-1 bg-white rounded-xl border p-4 overflow-hidden shadow-sm flex flex-col">
         <div className="flex flex-col gap-4 flex-1 min-h-0">
-          <h2 className="flex items-center gap-1.5 font-bold text-xl mb-2 shrink-0">
-            2. Video
-            <InfoTooltip text={VIDEO_HELP} />
-          </h2>
+          {/* Clips accumulate; only this button removes them. Same rule as
+              Animate mode and the generated batches in Creative Gen. */}
+          <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
+            <h2 className="flex items-center gap-1.5 font-bold text-xl">
+              2. Video
+              <InfoTooltip text={VIDEO_HELP} />
+            </h2>
+            {videoGenResults.length > 0 && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={clearVideoGenResults}
+                disabled={busy}
+                title="Remove every generated clip from this panel"
+              >
+                Clear results ({videoGenResults.length})
+              </Button>
+            )}
+          </div>
 
           <StatusBar status={framesLoading || videoGenFramesStatus === 'error' ? videoGenFramesStatus : videoGenStatus} />
 
-          <div className="flex-1 min-h-0 overflow-y-auto space-y-3">
-            {videoGenStatus === 'idle' && videoGenFramesStatus !== 'loading' && videoGenFramesStatus !== 'error' && (
+          <div className="flex-1 min-h-0 overflow-y-auto space-y-6">
+            {videoGenResults.length === 0 && videoGenStatus !== 'loading' && videoGenStatus !== 'error'
+              && videoGenFramesStatus !== 'loading' && videoGenFramesStatus !== 'error' && (
               <div className="text-gray-400 italic">Waiting for a picked frame</div>
             )}
+
+            {videoGenResults.map((clip, i) => (
+              <SceneClipCard
+                key={clip.jobId}
+                clip={clip}
+                index={i}
+                // Only the newest clip autoplays — a stack all playing at once is unusable.
+                autoPlay={i === videoGenResults.length - 1}
+                onRetryCaptions={() => void fetchVideoCaptions(clip.jobId)}
+              />
+            ))}
+
             {framesLoading && (
               <div className="text-gray-400 italic">Reading the article and writing the video prompt…</div>
             )}
@@ -1157,107 +1265,6 @@ export const VideoGenPage = () => {
               <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 whitespace-pre-wrap">
                 {videoGenError}
               </div>
-            )}
-
-            {videoGenResult && (
-              <>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
-                  <span>
-                    Video{' '}
-                    <span className="font-mono text-slate-900">
-                      {videoGenResult.provider === 'leonardo' && !videoGenResult.videoCost
-                        ? `${videoGenResult.credits} credits`
-                        : `$${videoGenResult.videoCost.toFixed(4)}`}
-                    </span>
-                  </span>
-                  <span>Execution <span className="font-mono text-slate-900">{videoGenResult.jobId}</span></span>
-                  <a href={videoGenResult.videoUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
-                    Open mp4
-                  </a>
-                </div>
-
-                {/* Captions sit at ~62% down — clear of TikTok's UI, which
-                    covers roughly the bottom quarter of a 9:16 frame. */}
-                <div className="relative w-full max-w-[300px]">
-                  <video
-                    ref={videoRef}
-                    src={videoGenResult.videoUrl}
-                    controls
-                    autoPlay
-                    loop
-                    className="rounded-lg border bg-black w-full block"
-                  />
-                  {activeCue && (
-                    <div className="pointer-events-none absolute inset-x-0 top-[62%] flex justify-center px-4">
-                      <span
-                        className="text-center font-extrabold uppercase leading-tight text-white text-[15px] tracking-tight"
-                        style={{ textShadow: '0 2px 0 #000, 0 -2px 0 #000, 2px 0 0 #000, -2px 0 0 #000, 0 0 6px rgba(0,0,0,.9)' }}
-                      >
-                        {activeCue.words.length
-                          ? activeCue.words.map((w, i) => (
-                              <span key={i} style={i === activeWord ? { color: CAPTION_HIGHLIGHT } : undefined}>
-                                {i > 0 && ' '}{w.word}
-                              </span>
-                            ))
-                          : activeCue.text}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-                  {videoGenCaptionsStatus === 'loading' && (
-                    <span className="flex items-center gap-1.5 text-slate-500">
-                      <span className="inline-block h-2.5 w-2.5 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
-                      Reading captions…
-                    </span>
-                  )}
-                  {videoGenCaptionsStatus === 'success' && (
-                    <>
-                      <span className="text-slate-600">{videoGenCaptions.length} caption lines</span>
-                      <button
-                        type="button"
-                        onClick={() => void downloadVideoWithCaptions()}
-                        disabled={exportPct !== null}
-                        className="font-medium text-blue-600 hover:underline disabled:text-slate-400"
-                      >
-                        {exportPct === null
-                          ? 'Download video with subtitles'
-                          : `Rendering ${Math.round(exportPct * 100)}%…`}
-                      </button>
-                      <button type="button" onClick={downloadSrt} className="text-blue-600 hover:underline">
-                        .srt only
-                      </button>
-                    </>
-                  )}
-                  {exportError && <span className="text-red-600">{exportError}</span>}
-                  {videoGenCaptionsStatus === 'error' && (
-                    <>
-                      <span className="text-red-600">{videoGenCaptionsError}</span>
-                      <button
-                        type="button"
-                        onClick={() => void fetchVideoCaptions()}
-                        className="text-blue-600 hover:underline"
-                      >
-                        Retry captions
-                      </button>
-                    </>
-                  )}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setShowPrompt((v) => !v)}
-                  className="text-xs text-slate-600 hover:text-slate-900"
-                >
-                  {showPrompt ? 'Hide' : 'Show'} the video prompt that was sent
-                </button>
-                {showPrompt && (
-                  <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50 border rounded-lg p-2">
-                    {videoGenResult.prompt}
-                  </pre>
-                )}
-              </>
             )}
           </div>
         </div>

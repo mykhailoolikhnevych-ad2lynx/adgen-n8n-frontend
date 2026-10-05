@@ -581,6 +581,11 @@ export interface VideoGenResult {
    *  operator may have changed since. Absent on scene runs, which have neither. */
   preset?: string;
   aspectRatio?: string;
+  /** From article clips only — word-timed captions read back off the clip's own
+   *  audio. Kept per clip so earlier clips keep their captions when a new one lands. */
+  captions?: CaptionCue[];
+  captionsStatus?: 'idle' | 'loading' | 'success' | 'error';
+  captionsError?: string | null;
 }
 
 interface AppState {
@@ -637,15 +642,13 @@ interface AppState {
   videoGenSelectedFrameId: string | null;
   /** Phase 2 — animating the picked still. */
   videoGenStatus: 'idle' | 'loading' | 'success' | 'error';
-  /** Phase 3 — word-timed captions read back off the finished clip's own audio. */
-  videoGenCaptions: CaptionCue[];
-  videoGenCaptionsStatus: 'idle' | 'loading' | 'success' | 'error';
-  videoGenCaptionsError: string | null;
   videoGenError: string | null;
-  videoGenResult: VideoGenResult | null;
+  /** Finished clips, oldest first. New runs append; only "Clear results"
+   *  removes them — same rule as Animate mode and Creative Gen. */
+  videoGenResults: VideoGenResult[];
   /** Animate mode keeps its own status and a growing list of clips — runs stack
    *  up the way generations do in Creative Gen, and only "Clear results" removes
-   *  them. Separate from videoGenStatus/videoGenResult so the two modes cannot
+   *  them. Separate from videoGenStatus/videoGenResults so the two modes cannot
    *  overwrite each other's panel. */
   videoGenAnimateStatus: 'idle' | 'loading' | 'success' | 'error';
   videoGenAnimateError: string | null;
@@ -947,8 +950,9 @@ interface AppState {
   generateVideoFrames: (preset: SavedPrompt) => Promise<void>;
   /** Phase 2 — animate the selected still with the typed line. */
   generateVideo: () => Promise<void>;
-  /** Phase 3 — transcribe the clip for word-level caption timings. */
-  fetchVideoCaptions: () => Promise<void>;
+  /** Phase 3 — transcribe one clip (by jobId) for word-level caption timings. */
+  fetchVideoCaptions: (jobId: string) => Promise<void>;
+  clearVideoGenResults: () => void;
   /** Video Generator daily allowance for the signed-in operator, as last
    *  reported by n8n. Null until the first run of the session — the count is
    *  owned server-side and is only echoed back on a generate call, so the page
@@ -1490,10 +1494,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   videoGenLine: '', videoGenArticleUrl: '', videoGenDurationOverride: null,
   videoGenFrames: [], videoGenFramesStatus: 'idle', videoGenFramesError: null,
   videoGenSelectedFrameId: null,
-  videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
+  videoGenStatus: 'idle', videoGenError: null, videoGenResults: [],
   videoGenAnimateStatus: 'idle', videoGenAnimateError: null, videoGenAnimateResults: [],
   videoGenQuota: null,
-  videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
   articleHtml: null, articleStatus: 'idle', articleError: null,
   articleInputs: null, offerArticleOpen: false,
   articleForm: {
@@ -3388,12 +3391,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     const logMeta = { articleUrl, line, promptModel: PROMPT_MODEL, frame: preset.name };
 
-    // Starting a new batch invalidates whatever clip the previous one produced.
+    // Earlier clips stay in videoGenResults — a new run only appends.
     set({
       videoGenFramesStatus: 'loading', videoGenFramesError: null,
       videoGenFrames: [], videoGenSelectedFrameId: null,
-      videoGenStatus: 'idle', videoGenError: null, videoGenResult: null,
-      videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
+      videoGenStatus: 'idle', videoGenError: null,
     });
 
     const fail = (message: string, responseBody?: unknown) => {
@@ -3476,10 +3478,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     };
     const logMeta = { frameId: frame.frameId, label: frame.label, videoModel: model };
 
-    set({
-      videoGenStatus: 'loading', videoGenError: null, videoGenResult: null,
-      videoGenCaptions: [], videoGenCaptionsStatus: 'idle', videoGenCaptionsError: null,
-    });
+    set({ videoGenStatus: 'loading', videoGenError: null });
 
     const fail = (message: string, responseBody?: unknown) => {
       set({ videoGenStatus: 'error', videoGenError: message });
@@ -3542,21 +3541,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    set({
+    const clip: VideoGenResult = {
+      imageUrl: frame.url,
+      videoUrl: result.video_url,
+      imageCost: 0,
+      videoCost: Number(result.video_cost) || 0,
+      model: String(result.video_model || model),
+      jobId: String(jobId),
+      prompt: frame.videoPrompt,
+      openrouterId: '',
+      provider: 'leonardo',
+      credits: Number(result.credits) || 0,
+      captions: [],
+      captionsStatus: 'idle',
+      captionsError: null,
+    };
+    // Append — the newest clip lands at the bottom, earlier ones are kept.
+    set((s) => ({
       videoGenStatus: 'success',
-      videoGenResult: {
-        imageUrl: frame.url,
-        videoUrl: result.video_url,
-        imageCost: 0,
-        videoCost: Number(result.video_cost) || 0,
-        model: String(result.video_model || model),
-        jobId: String(jobId),
-        prompt: frame.videoPrompt,
-        openrouterId: '',
-        provider: 'leonardo',
-        credits: Number(result.credits) || 0,
-      },
-    });
+      videoGenResults: [...s.videoGenResults, clip],
+    }));
     logEvent({
       tab: 'video_gen', action: 'generateVideo', meta: logMeta,
       metaOut: { video_cost: result.video_cost, video_model: result.video_model },
@@ -3565,17 +3569,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Captions are effectively mandatory for sound-off viewing, so there is
     // nothing to opt into — fetch them as soon as the clip lands. n8n pulls
     // the clip from Leonardo's public CDN URL.
-    void get().fetchVideoCaptions();
+    void get().fetchVideoCaptions(clip.jobId);
   },
 
-  fetchVideoCaptions: async () => {
-    const videoUrl = get().videoGenResult?.videoUrl;
+  fetchVideoCaptions: async (jobId) => {
+    const videoUrl = get().videoGenResults.find((c) => c.jobId === jobId)?.videoUrl;
     if (!videoUrl) return;
 
-    set({ videoGenCaptionsStatus: 'loading', videoGenCaptionsError: null, videoGenCaptions: [] });
+    // Patch just this clip — the others keep their captions.
+    const patch = (p: Partial<VideoGenResult>) =>
+      set((s) => ({
+        videoGenResults: s.videoGenResults.map((c) => (c.jobId === jobId ? { ...c, ...p } : c)),
+      }));
+
+    patch({ captionsStatus: 'loading', captionsError: null, captions: [] });
 
     const fail = (message: string) => {
-      set({ videoGenCaptionsStatus: 'error', videoGenCaptionsError: message });
+      patch({ captionsStatus: 'error', captionsError: message });
       logEvent({ tab: 'video_gen', action: 'fetchVideoCaptions', meta: { videoUrl }, errorMessage: message });
     };
 
@@ -3604,7 +3614,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return;
     }
 
-    set({ videoGenCaptionsStatus: 'success', videoGenCaptions: cues });
+    patch({ captionsStatus: 'success', captions: cues });
     logEvent({
       tab: 'video_gen', action: 'fetchVideoCaptions', meta: { videoUrl },
       metaOut: { cues: cues.length, cost: data?.cost },
@@ -3766,6 +3776,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     // Deliberately does NOT reset videoGenQuota — clearing the panel throws away
     // the clips, not the fact that the day's allowance was spent on them.
     set({ videoGenAnimateResults: [], videoGenAnimateStatus: 'idle', videoGenAnimateError: null }),
+
+  clearVideoGenResults: () =>
+    set({ videoGenResults: [], videoGenStatus: 'idle', videoGenError: null }),
 
 
   sendToTelegram: async (creativeId) => {
