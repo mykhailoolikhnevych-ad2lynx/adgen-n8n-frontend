@@ -13,7 +13,7 @@ import {
   motionSampleSrc, motionPosterSrc,
   animateModelFor, nearestAspectRatio, type VideoGenMode,
 } from '@/lib/videoGenPrompts';
-import { cueAt, activeWordIndex, CAPTION_HIGHLIGHT, toSrt } from '@/lib/captions';
+import { cueAt, activeWordIndex, CAPTION_HIGHLIGHT } from '@/lib/captions';
 import { burnCaptions, upscaleVideo, downloadAs, saveBlob } from '@/lib/videoExport';
 import { videoGenFileName } from '@/lib/creativeFilename';
 
@@ -219,7 +219,6 @@ const SceneClipCard = ({ clip, index, autoPlay, onRetryCaptions }: {
 }) => {
   const captions = clip.captions ?? [];
   const captionsStatus = clip.captionsStatus ?? 'idle';
-  const [showPrompt, setShowPrompt] = useState(false);
 
   // Driven off the player's own clock so the overlay matches what you hear.
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -257,11 +256,6 @@ const SceneClipCard = ({ clip, index, autoPlay, onRetryCaptions }: {
   const [exportPct, setExportPct] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const downloadSrt = () => {
-    const name = videoGenFileName('video', clip.jobId);
-    saveBlob(new Blob([toSrt(captions)], { type: 'text/plain;charset=utf-8' }), `${name}.srt`);
-  };
-
   // Real-time render — an 8s clip takes 8s, and the page must stay open.
   const downloadVideoWithCaptions = async () => {
     setExportError(null);
@@ -288,10 +282,6 @@ const SceneClipCard = ({ clip, index, autoPlay, onRetryCaptions }: {
               : `$${clip.videoCost.toFixed(4)}`}
           </span>
         </span>
-        <span>Execution <span className="font-mono text-slate-900">{clip.jobId}</span></span>
-        <a href={clip.videoUrl} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
-          Open mp4
-        </a>
       </div>
 
       {/* Captions sit at ~62% down — clear of TikTok's UI, which
@@ -330,23 +320,18 @@ const SceneClipCard = ({ clip, index, autoPlay, onRetryCaptions }: {
             Reading captions…
           </span>
         )}
+        {/* The one download — always with the subtitles burned in. */}
         {captionsStatus === 'success' && (
-          <>
-            <span className="text-slate-600">{captions.length} caption lines</span>
-            <button
-              type="button"
-              onClick={() => void downloadVideoWithCaptions()}
-              disabled={exportPct !== null}
-              className="font-medium text-blue-600 hover:underline disabled:text-slate-400"
-            >
-              {exportPct === null
-                ? 'Download video with subtitles'
-                : `Rendering ${Math.round(exportPct * 100)}%…`}
-            </button>
-            <button type="button" onClick={downloadSrt} className="text-blue-600 hover:underline">
-              .srt only
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={() => void downloadVideoWithCaptions()}
+            disabled={exportPct !== null}
+            className="font-medium text-blue-600 hover:underline disabled:text-slate-400"
+          >
+            {exportPct === null
+              ? 'Download video'
+              : `Rendering ${Math.round(exportPct * 100)}%…`}
+          </button>
         )}
         {exportError && <span className="text-red-600">{exportError}</span>}
         {captionsStatus === 'error' && (
@@ -358,19 +343,6 @@ const SceneClipCard = ({ clip, index, autoPlay, onRetryCaptions }: {
           </>
         )}
       </div>
-
-      <button
-        type="button"
-        onClick={() => setShowPrompt((v) => !v)}
-        className="text-xs text-slate-600 hover:text-slate-900 self-start"
-      >
-        {showPrompt ? 'Hide' : 'Show'} the video prompt that was sent
-      </button>
-      {showPrompt && (
-        <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-slate-600 bg-slate-50 border rounded-lg p-2">
-          {clip.prompt}
-        </pre>
-      )}
     </div>
   );
 };
