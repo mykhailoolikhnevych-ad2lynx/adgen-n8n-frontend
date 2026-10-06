@@ -19,9 +19,12 @@ const CONTENT_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL as 
 // Step 4 publishes AMO articles (megatool-autozaliv-launch). Buyer → email lives in
 // the autozaliv_buyers datatable; the email picks the RSOC account, and the
 // existing RSOC options webhook tells us which AMO domains that account has.
-// Autozaliv only runs on NewsBreak, so the traffic source is fixed.
+// The platform (NewsBreak or Facebook) is picked in the header; from step 4 on it changes the
+// AMO traffic source, the offer URL params, the Binom offer group / traffic source and step 6.
 const LAUNCH_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL as string | undefined;
 const RSOC_OPTIONS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_RSOC_OPTIONS_URL as string | undefined;
+// Step 6 on Facebook (megatool-autozaliv-fb): FB accounts / pages / pixels and the campaign → ad set → ads launch.
+const FB_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_FB_URL as string | undefined;
 
 type Sheet = { headers: string[]; rows: string[][] };
 type Row = Record<string, string>;
@@ -131,10 +134,14 @@ const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string }> =>
   post(WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL', body, 180_000);
 const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL', body, 300_000);
 const callLaunch = (body: object) => post(LAUNCH_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL', body, 180_000);
+const callFb = (body: object, timeout = 60_000) => post(FB_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_FB_URL', body, timeout);
+
+type Platform = 'nb' | 'fb';
+// RSOC traffic source slug per platform.
+const TRAFFIC_SOURCE: Record<Platform, string> = { nb: 'newsbreak', fb: 'facebook' };
 
 type Buyer = { buyer: string; email: string };
 type LaunchSettings = { buyer: string; domain: string };
-const TRAFFIC_SOURCE = 'newsbreak';
 type RsocOptions = {
   provider_fields?: { amo?: { domain?: Record<string, Record<string, string>> } };
 };
@@ -150,7 +157,7 @@ const TRACKER_DOMAIN: Record<string, string> = {
   'jaguars.nnctrack.com': 'pancettafuns.com',
   'pumas.nnctrack.com': 'alfredofuns.com',
 };
-type BinomSettings = { tracker: string; group: string; geo: string; nbAccount: string; bidType: string; event: string; suffix: string };
+type BinomSettings = { tracker: string; group: string; geo: string; nbAccount: string; fbAccount: string; bidType: string; event: string; suffix: string };
 type BinomRow = { name?: string; geo?: string; language?: string };
 type BinomOptions = { status: 'loading' | 'ready' | 'error'; groups: string[]; domains: { id: string; host: string }[]; error?: string };
 type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignUrl?: string; error?: string };
@@ -166,12 +173,18 @@ function defaultName(article: string): string {
 // Same default as the sheet: complete_payment for TARGET_ROAS, otherwise click_button.
 const resolveEvent = (event: string, bidType: string) => (event !== 'auto' ? event : bidType === 'TARGET_ROAS' ? 'complete_payment' : 'click_button');
 // "URL for offer" formula from the sheet: article URL + NB macros (+ _roas) + ad_id + utm_term + empty channel.
-function offerUrlFor(articleUrl: string, keywords: string, bidType: string): string {
+// The FB sheet uses fbclid and appends ad_id={t6} after the channel.
+function offerUrlFor(articleUrl: string, keywords: string, bidType: string, platform: Platform): string {
   const base = articleUrl.split(/[?#]/)[0];
   const kw = keywords.split(',').map((k) => k.trim()).filter(Boolean).join(',');
+  const term = kw ? '&utm_term=' + encodeURIComponent(kw) : '';
+  if (platform === 'fb') {
+    return base + '?m=og&part=bol&utm_source=facebook&utm_medium=gs&fbclid={t10}&term1={clickid}_{campaign_id}'
+      + '&term2={campaign_domain}&utm_content={t12}' + term + '&channel=&ad_id={t6}';
+  }
   return base + '?m=og&part=bol&utm_source=newsbreak&utm_medium=gs&newsbreak_cid={t10}&term1={clickid}_{campaign_id}'
     + (bidType === 'TARGET_ROAS' ? '_roas' : '') + '&term2={campaign_domain}&utm_content={t12}&ad_id={t2}'
-    + (kw ? '&utm_term=' + encodeURIComponent(kw) : '') + '&channel=';
+    + term + '&channel=';
 }
 // ---- Step 6: NB — reuses the MEGATOOL Create NB Campaign webhook (campaign → 1 ad set → ads) ----
 const NB_CAMPAIGN_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL as string | undefined;
@@ -192,13 +205,48 @@ function fitWords(text: string, max: number): string {
   const space = cut.lastIndexOf(' ');
   return (space > 0 ? cut.slice(0, space) : text.slice(0, max)).trim();
 }
-// Row of the autozaliv_used datatable: written after an NB campaign is created.
-type UsedRow = { article: string; used_at: string; nb_campaign_id: string; buyer: string; nb_account: string };
+// Row of the autozaliv_used datatable: written after an NB / FB campaign is created
+// (on FB, nb_campaign_id / nb_account hold the FB campaign / account).
+type UsedRow = { article: string; used_at: string; nb_campaign_id: string; buyer: string; nb_account: string; source?: string };
 const formatUsedDate = (iso: string) => {
   const d = new Date(iso);
   return isNaN(d.getTime()) ? '' : String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
 };
 type NbState = { status: 'running' | 'done' | 'error'; campaignId?: string; adsetId?: string; adIds?: string[]; error?: string };
+
+// ---- Step 6 on FB: port of CampaignAutomation.js in the FB sheet ----
+// Defaults = the sheet's usual row: LEAD / OUTCOME_LEADS / MULTIPLIER / LOWEST_COST_WITHOUT_CAP / no cap / NONE / OFFSITE_CONVERSIONS.
+type FbSettings = {
+  page: string; pixel: string; event: string; objective: string; goal: string; bidStrategy: string; bidAmount: number;
+  budgetMode: string; budget: number; special: string; startDate: string; status: string;
+};
+const FB_DEFAULTS: FbSettings = {
+  page: '', pixel: '', event: 'LEAD', objective: 'OUTCOME_LEADS', goal: 'OFFSITE_CONVERSIONS', bidStrategy: 'LOWEST_COST_WITHOUT_CAP',
+  bidAmount: 0, budgetMode: 'MULTIPLIER', budget: 10, special: 'NONE', startDate: 'tomorrow', status: 'ACTIVE',
+};
+const FB_EVENTS = ['LEAD', 'COMPLETE_REGISTRATION', 'PURCHASE', 'CONTACT', 'SUBMIT_APPLICATION', 'SEARCH', 'VIEW_CONTENT', 'ADD_TO_CART', 'INITIATED_CHECKOUT', 'OTHER'];
+const FB_OBJECTIVES = ['OUTCOME_LEADS', 'OUTCOME_SALES', 'OUTCOME_TRAFFIC', 'OUTCOME_ENGAGEMENT'];
+const FB_GOALS = ['OFFSITE_CONVERSIONS', 'LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'IMPRESSIONS', 'REACH'];
+const FB_BID_STRATEGIES = ['LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_BID_CAP', 'COST_CAP'];
+const FB_BID_NEEDS_AMOUNT = ['LOWEST_COST_WITH_BID_CAP', 'COST_CAP'];
+const FB_PIXEL_GOALS = ['OFFSITE_CONVERSIONS', 'LANDING_PAGE_VIEWS'];
+const FB_SPECIAL = ['NONE', 'FINANCIAL_PRODUCTS_SERVICES', 'EMPLOYMENT', 'HOUSING', 'ISSUES_ELECTIONS_POLITICS'];
+const FB_START = ['now', 'tomorrow', 'tomorrow+1', 'tomorrow+2'];
+const FB_CTAS = ['LEARN_MORE', 'SHOP_NOW', 'SIGN_UP', 'APPLY_NOW', 'GET_OFFER', 'GET_QUOTE', 'CONTACT_US', 'DOWNLOAD', 'SUBSCRIBE', 'BOOK_TRAVEL', 'ORDER_NOW', 'SEE_MORE', 'WATCH_MORE', 'GET_STARTED'];
+// Same as formatCtaText() in the FB sheet: "Learn more" → LEARN_MORE; anything FB doesn't know → LEARN_MORE.
+const fbCta = (s: string) => {
+  const v = s.trim().toUpperCase().replace(/\s+/g, '_');
+  return FB_CTAS.includes(v) ? v : 'LEARN_MORE';
+};
+// FB has no hard 90-char cut like NB; these only catch empty or absurd texts.
+const FB_TEXT = { headline: { min: 0, max: 255 }, body: { min: 1, max: 2200 } };
+type FbItem = { id: string; name: string };
+// "Page name (id)" keeps same-named pages apart in the pickers.
+const itemLabel = (i: FbItem) => `${i.name} (${i.id})`;
+type FbOptions = { status: 'idle' | 'loading' | 'ready' | 'error'; accounts: FbItem[]; pages: FbItem[]; error?: string };
+type FbPixels = { status: 'loading' | 'ready' | 'error'; pixels: FbItem[]; error?: string };
+type FbPartial = { campaignId?: string; adsetId?: string; ads?: Record<string, string> };
+type FbState = { status: 'running' | 'done' | 'error'; campaignId?: string; adsetId?: string; adIds?: string[]; partial?: FbPartial; error?: string };
 type EventsState = { status: 'loading' | 'ready' | 'error'; events: NbEvent[]; error?: string };
 // "Source Cmp name" from the sheet: Name | GEO | LANG | AZ | RSOC | Buyer | <tomorrow dd/mm/yy>
 const tomorrowDdMmYy = () => {
@@ -234,6 +282,8 @@ async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>)
 
 export function MegatoolAutozalivBuilderPage() {
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
+  const [platform, setPlatform] = useState<Platform>('nb');
+  const trafficSource = TRAFFIC_SOURCE[platform];
 
   // Step 1 — articles
   const [articles, setArticles] = useState<Sheet | null>(null);
@@ -277,7 +327,7 @@ export function MegatoolAutozalivBuilderPage() {
   const [publishing, setPublishing] = useState(false);
 
   // Step 5 — Binom
-  const [binomBulk, setBinomBulk] = useState<BinomSettings>({ tracker: BINOM_TRACKERS[0], group: '', geo: 'US', nbAccount: '', bidType: 'MAX_CONVERSION', event: 'auto', suffix: '' });
+  const [binomBulk, setBinomBulk] = useState<BinomSettings>({ tracker: BINOM_TRACKERS[0], group: '', geo: 'US', nbAccount: '', fbAccount: '', bidType: 'MAX_CONVERSION', event: 'auto', suffix: '' });
   const [binomRows, setBinomRows] = useState<Record<string, BinomRow>>({});
   const [binomOptions, setBinomOptions] = useState<Record<string, BinomOptions>>({});
   const [binom, setBinom] = useState<Record<string, BinomState>>({});
@@ -298,6 +348,13 @@ export function MegatoolAutozalivBuilderPage() {
   const [nbRunning, setNbRunning] = useState(false);
   // AI shortening (step 5 names, step 6 descriptions), keyed 'name|<article>' / 'desc|<article>'.
   const [shortening, setShortening] = useState<Record<string, { busy?: boolean; error?: string }>>({});
+
+  // Step 6 — FB (campaign names and ad text edits are shared with the NB state above)
+  const [fbOptions, setFbOptions] = useState<FbOptions>({ status: 'idle', accounts: [], pages: [] });
+  const [fbPixels, setFbPixels] = useState<Record<string, FbPixels>>({});
+  const [fbBulk, setFbBulk] = useState<FbSettings>(FB_DEFAULTS);
+  const [fb, setFb] = useState<Record<string, FbState>>({});
+  const [fbRunning, setFbRunning] = useState(false);
 
   const loadArticles = async () => {
     setArticlesLoading(true);
@@ -516,7 +573,7 @@ export function MegatoolAutozalivBuilderPage() {
     }
   };
   const domainsFor = (email: string) =>
-    Object.keys(optionsByEmail[email]?.data?.provider_fields?.amo?.domain?.[TRAFFIC_SOURCE] || {});
+    Object.keys(optionsByEmail[email]?.data?.provider_fields?.amo?.domain?.[trafficSource] || {});
 
   // Row value = override ?? default; a domain the account can't use falls back to its first one.
   const launchFor = (name: string): LaunchSettings & { email: string; domains: string[] } => {
@@ -548,7 +605,7 @@ export function MegatoolAutozalivBuilderPage() {
       const error = !c ? 'No content — read it in step 3'
         : !amoCheck(c).pass ? 'Content fails AMO rules — fix it in step 3'
         : !l.email ? 'Pick a buyer'
-        : !l.domain ? 'This buyer has no AMO domain for newsbreak' : '';
+        : !l.domain ? `This buyer has no AMO domain for ${trafficSource}` : '';
       if (error) {
         setAmo((s) => ({ ...s, [g.name]: { status: 'error', error } }));
         continue;
@@ -556,7 +613,7 @@ export function MegatoolAutozalivBuilderPage() {
       setAmo((s) => ({ ...s, [g.name]: { status: 'running' } }));
       try {
         const res = await callLaunch({
-          action: 'amo-article', email: l.email, domain: l.domain, trafficSource: TRAFFIC_SOURCE, keywords: keywordsFor(g), content: c,
+          action: 'amo-article', email: l.email, domain: l.domain, trafficSource, keywords: keywordsFor(g), content: c,
         });
         setAmo((s) => ({ ...s, [g.name]: { status: 'done', offerUrl: res.offerUrl, articleUrl: res.articleUrl } }));
       } catch (e: any) {
@@ -580,10 +637,23 @@ export function MegatoolAutozalivBuilderPage() {
       setBinomOptions((s) => ({ ...s, [tracker]: { status: 'error', groups: [], domains: [], error: e.message } }));
     }
   };
+  // FB accounts + pages come from the fb_accounts / fb_pages datatables (weekly "Sync FB" in n8n).
+  const loadFbOptions = async () => {
+    setFbOptions((s) => ({ ...s, status: 'loading', error: undefined }));
+    try {
+      const res = await callFb({ action: 'options' });
+      setFbOptions({ status: 'ready', accounts: res.accounts || [], pages: res.pages || [] });
+    } catch (e: any) {
+      setFbOptions({ status: 'error', accounts: [], pages: [], error: e.message });
+    }
+  };
   const goToBinom = () => {
     setStep(5);
-    if (nbAccountsStatus === 'idle') void fetchNbAccounts();
+    if (platform === 'nb' && nbAccountsStatus === 'idle') void fetchNbAccounts();
+    if (platform === 'fb' && (fbOptions.status === 'idle' || fbOptions.status === 'error')) loadFbOptions();
   };
+  // The account goes into the Binom campaign name, so it is picked in step 5 for both platforms.
+  const launchAccount = platform === 'fb' ? binomBulk.fbAccount : binomBulk.nbAccount;
   useEffect(() => {
     if (step === 5 && !binomOptions[binomBulk.tracker]) loadBinomOptions(binomBulk.tracker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -606,9 +676,9 @@ export function MegatoolAutozalivBuilderPage() {
     const offerName = `${name} | ${geo} | ${lang} | AMO | AUTOZALYV${buyer ? ' | ' + buyer : ''} | ch=auto${amoLabel ? ' | ' + amoLabel : ''}`;
     // Empty suffix → the competitor the article's landing page belongs to.
     const suffix = binomBulk.suffix.trim() || competitorOf(articleByTrimmed[trimArticle(g.name)]?.examp_landing_page || '');
-    const tail = [binomBulk.nbAccount, todayDdMm(), suffix].filter(Boolean).join(' ');
+    const tail = [launchAccount, todayDdMm(), suffix].filter(Boolean).join(' ');
     const campaignName = `${name} | ${geo} | AMO | AUTOZALYV | ${buyer} | ${tail}`;
-    const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), binomBulk.bidType) : '';
+    const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), binomBulk.bidType, platform) : '';
     return { name, geo, lang, offerName, campaignName, offerUrl };
   };
   const setBinomRow = (name: string, patch: BinomRow) => setBinomRows((r) => ({ ...r, [name]: { ...r[name], ...patch } }));
@@ -616,8 +686,9 @@ export function MegatoolAutozalivBuilderPage() {
     setShortening((s) => ({ ...s, ...Object.fromEntries(keys.map((k) => [k, v])) }));
 
   // AI-shorten Names over NAME_MAX, all in one call. Rows already sent to Binom keep theirs.
+  // The limit only exists because the Name is the NB advertiser — FB has no such field.
   const binomLocked = (name: string) => binom[name]?.status === 'done' || binom[name]?.status === 'running';
-  const longNames = groups.filter((g) => !binomLocked(g.name) && binomFor(g).name.length > NAME_MAX);
+  const longNames = platform === 'nb' ? groups.filter((g) => !binomLocked(g.name) && binomFor(g).name.length > NAME_MAX) : [];
   const shortenNames = async (list: typeof groups) => {
     const keys = list.map((g) => 'name|' + g.name);
     setShort(keys, { busy: true });
@@ -639,7 +710,7 @@ export function MegatoolAutozalivBuilderPage() {
       const error = amo[g.name]?.status !== 'done' ? 'Create the AMO article first (step 4)'
         : !bulkGroup ? 'Pick a Binom group'
         : !bulkDomain ? `Tracker domain ${domainHost || '?'} not found on ${binomBulk.tracker}`
-        : !binomBulk.nbAccount ? 'Pick the NB account (it is part of the campaign name)'
+        : !launchAccount ? `Pick the ${platform.toUpperCase()} account (it is part of the campaign name)`
         : !b.name.trim() ? 'Name is empty' : '';
       if (error) {
         setBinom((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'error', error } }));
@@ -649,7 +720,7 @@ export function MegatoolAutozalivBuilderPage() {
       setBinom((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'running', error: undefined } }));
       try {
         const res = await callLaunch({
-          action: 'binom', tracker: binomBulk.tracker, group: bulkGroup, domainId: bulkDomain?.id, geo: b.geo,
+          action: 'binom', tracker: binomBulk.tracker, group: bulkGroup, domainId: bulkDomain?.id, geo: b.geo, trafficSource,
           event: resolveEvent(binomBulk.event, binomBulk.bidType), offerName: b.offerName, offerUrl: b.offerUrl,
           campaignName: b.campaignName, offerId: prev?.offerId,
         });
@@ -702,6 +773,7 @@ export function MegatoolAutozalivBuilderPage() {
         return {
           key,
           img: ad.img_url,
+          isVideo,
           adName: isVideo ? `${name}_VIDEO_${++videos}` : `${name}_IMAGE_${++images}`,
           headline: edit.headline ?? (ad.ad_title || ''),
           body: edit.body ?? (ad.ad_text || ''),
@@ -831,16 +903,110 @@ export function MegatoolAutozalivBuilderPage() {
   };
   const nbDone = selectedList.filter((n) => nb[n]?.status === 'done').length;
 
+  // ---- Step 6: FB ----
+  const fbAccountId = fbOptions.accounts.find((a) => a.name === binomBulk.fbAccount)?.id || '';
+  const fbPageId = fbOptions.pages.find((p) => itemLabel(p) === fbBulk.page)?.id || '';
+  const loadFbPixels = async (accountId: string) => {
+    setFbPixels((s) => ({ ...s, [accountId]: { status: 'loading', pixels: [] } }));
+    try {
+      const res = await callFb({ action: 'pixels', accountId });
+      setFbPixels((s) => ({ ...s, [accountId]: { status: 'ready', pixels: res.pixels || [] } }));
+    } catch (e: any) {
+      setFbPixels((s) => ({ ...s, [accountId]: { status: 'error', pixels: [], error: e.message } }));
+    }
+  };
+  useEffect(() => {
+    if (step === 6 && platform === 'fb' && fbAccountId && !fbPixels[fbAccountId]) loadFbPixels(fbAccountId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, platform, fbAccountId]);
+  const accountPixels = fbPixels[fbAccountId];
+  // A pixel picked for another account doesn't count; an account with one pixel gets it by default.
+  const fbPixel = accountPixels?.pixels.find((p) => itemLabel(p) === fbBulk.pixel)
+    || (accountPixels?.pixels.length === 1 ? accountPixels.pixels[0] : undefined);
+  const fbNeedsPixel = FB_PIXEL_GOALS.includes(fbBulk.goal);
+  // Ad URL formula from the FB sheet: the Binom link with funnel=funnel → funnel=<pixel id>.
+  const fbLinkFor = (name: string) => {
+    const url = binom[name]?.campaignUrl || '';
+    return fbPixel ? url.replace('funnel=funnel', 'funnel=' + fbPixel.id) : url;
+  };
+  const fbTextError = (ads: ReturnType<typeof nbAdsFor>) => {
+    for (const ad of ads) {
+      const h = ad.headline.trim().length;
+      const b = ad.body.trim().length;
+      if (h > FB_TEXT.headline.max) return `${ad.adName}: headline is ${h} chars (max ${FB_TEXT.headline.max})`;
+      if (b < FB_TEXT.body.min || b > FB_TEXT.body.max) return `${ad.adName}: primary text is ${b} chars (FB allows ${FB_TEXT.body.min}–${FB_TEXT.body.max})`;
+    }
+    return '';
+  };
+
+  // 3️⃣ Create FB — one campaign + one ad set per article, all its ads inside (like the sheet).
+  // A failed run keeps what FB already created (partial) and Retry continues from there.
+  const createFb = async () => {
+    setFbRunning(true);
+    const todo = groups.filter((g) => fb[g.name]?.status !== 'done');
+    for (const [n, g] of todo.entries()) {
+      const ads = nbAdsFor(g);
+      const prev = fb[g.name];
+      const error = binom[g.name]?.status !== 'done' ? 'Create the Binom campaign first (step 5)'
+        : !fbAccountId ? 'Pick the FB account in step 5'
+        : !fbPageId ? 'Pick a page'
+        : fbNeedsPixel && !fbPixel ? `Pick a pixel — ${fbBulk.goal} needs one`
+        : FB_BID_NEEDS_AMOUNT.includes(fbBulk.bidStrategy) && !(fbBulk.bidAmount > 0) ? `Set the bid amount for ${fbBulk.bidStrategy}`
+        : !(fbBulk.budget > 0) ? 'Set the daily budget'
+        : ads.length === 0 ? 'No ads left for this article'
+        : fbTextError(ads) ? fbTextError(ads) + ' — fix it under "Edit ads"' : '';
+      if (error) {
+        setFb((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'error', error } }));
+        continue;
+      }
+      setFb((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'running', error: undefined } }));
+      try {
+        const res = await callFb({
+          action: 'launch', accountId: fbAccountId, pageId: fbPageId, pixelId: fbNeedsPixel ? fbPixel?.id : '',
+          event: fbBulk.event, objective: fbBulk.objective, optimizationGoal: fbBulk.goal, bidStrategy: fbBulk.bidStrategy,
+          bidAmount: fbBulk.bidAmount, budgetMode: fbBulk.budgetMode, budget: fbBulk.budget, specialAdCategory: fbBulk.special,
+          geo: binomFor(g).geo, startDate: fbBulk.startDate, status: fbBulk.status, campaignName: nbNameFor(g), link: fbLinkFor(g.name),
+          ads: ads.map((ad) => ({
+            key: ad.key, adName: ad.adName, title: ad.headline.trim(), body: ad.body.trim(), cta: fbCta(ad.cta),
+            imageUrl: ad.img || '', videoUrl: ad.isVideo ? ad.assetUrl : '',
+          })),
+          resume: prev?.partial,
+        }, 600_000);
+        setFb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: res.campaignId, adsetId: res.adsetId, adIds: res.adIds } }));
+        const used: UsedRow = {
+          article: g.name, used_at: new Date().toISOString(), nb_campaign_id: String(res.campaignId || ''),
+          buyer: launchFor(g.name).buyer, nb_account: binomBulk.fbAccount, source: 'fb',
+        };
+        callLaunch({
+          action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id, source: 'fb',
+          binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
+        })
+          .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
+          .catch((err: any) => setFb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
+      } catch (e: any) {
+        const partial: FbPartial | undefined = e.data?.partial || prev?.partial;
+        setFb((s) => ({ ...s, [g.name]: { status: 'error', error: e.message, partial } }));
+      }
+      if (n < todo.length - 1) await sleep(1000);
+    }
+    setFbRunning(false);
+  };
+  const fbDone = selectedList.filter((n) => fb[n]?.status === 'done').length;
+
   // "New run": forget this step's results (and the later steps', which were built on them) so the
   // same articles can be launched again for another buyer / account. Nothing is deleted remotely.
   const newRun = (from: 4 | 5 | 6) => {
-    const what = from === 4 ? 'AMO, Binom and NB' : from === 5 ? 'Binom and NB' : 'NB';
-    if (!window.confirm(`Start a new run? The ${what} results on this page are cleared so you can create them again with other settings. Nothing is deleted in AMO / Binom / NB.`)) return;
+    const p = platform.toUpperCase();
+    const what = from === 4 ? `AMO, Binom and ${p}` : from === 5 ? `Binom and ${p}` : p;
+    if (!window.confirm(`Start a new run? The ${what} results on this page are cleared so you can create them again with other settings. Nothing is deleted in AMO / Binom / ${p}.`)) return;
     if (from === 4) setAmo({});
     if (from <= 5) setBinom({});
     setNb({});
+    setFb({});
   };
-  const anyRunning = publishing || binomRunning || nbRunning;
+  const anyRunning = publishing || binomRunning || nbRunning || fbRunning;
+  // The platform changes the AMO article URL params, so it is fixed once articles exist (New run frees it).
+  const platformLocked = Object.keys(amo).length > 0 || anyRunning;
 
   const toggleAd = (k: string) =>
     setExcluded((s) => {
@@ -862,7 +1028,26 @@ export function MegatoolAutozalivBuilderPage() {
         <span className="text-slate-400">→</span>
         <StepPill n={5} label="Binom" active={step === 5} onClick={goToBinom} disabled={amoDone === 0} />
         <span className="text-slate-400">→</span>
-        <StepPill n={6} label="NB" active={step === 6} onClick={goToNb} disabled={binomDone === 0} />
+        <StepPill n={6} label={platform.toUpperCase()} active={step === 6} onClick={goToNb} disabled={binomDone === 0} />
+        <div
+          className="ml-auto flex items-center gap-1.5"
+          title={platformLocked ? 'AMO articles were already created for this platform — use "↻ New run" in step 4 to switch' : 'Where the campaigns go — changes steps 4–6'}
+        >
+          <span className="text-slate-500">Platform</span>
+          {(['nb', 'fb'] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              disabled={platformLocked}
+              onClick={() => setPlatform(p)}
+              className={`rounded px-2.5 py-1 border text-xs font-semibold ${
+                platform === p ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200'
+              } ${platformLocked && platform !== p ? 'opacity-40 cursor-not-allowed' : ''}`}
+            >
+              {p === 'nb' ? 'NewsBreak' : 'Facebook'}
+            </button>
+          ))}
+        </div>
       </div>
 
       {step === 1 && (
@@ -948,7 +1133,7 @@ export function MegatoolAutozalivBuilderPage() {
                       <td
                         className="px-2 py-1 max-w-[160px] truncate text-xs"
                         title={a.launched
-                          ? `Launched in the Builder ${new Date(a.launched.used_at).toLocaleString()} · buyer ${a.launched.buyer || '—'} · NB campaign ${a.launched.nb_campaign_id || '—'}`
+                          ? `Launched in the Builder ${new Date(a.launched.used_at).toLocaleString()} · buyer ${a.launched.buyer || '—'} · ${a.launched.source === 'fb' ? 'FB' : 'NB'} campaign ${a.launched.nb_campaign_id || '—'}`
                           : a.used}
                       >
                         {a.launched ? (
@@ -1184,7 +1369,7 @@ export function MegatoolAutozalivBuilderPage() {
                   inputClassName="h-7 bg-white"
                 />
               </label>
-              <span className="text-slate-500">New Source: <b className="text-slate-700">{TRAFFIC_SOURCE}</b></span>
+              <span className="text-slate-500">New Source: <b className="text-slate-700">{trafficSource}</b></span>
               <label className="flex items-center gap-1.5">
                 domain amo
                 <Select
@@ -1293,26 +1478,46 @@ export function MegatoolAutozalivBuilderPage() {
                 Geo
                 <Input value={binomBulk.geo} onChange={(e) => setBinomBulk((b) => ({ ...b, geo: e.target.value.toUpperCase() }))} className="h-7 w-16 bg-white" />
               </label>
-              <label className="flex items-center gap-1.5">
-                NB Account
-                <Combobox
-                  value={binomBulk.nbAccount}
-                  onChange={(v) => setBinomBulk((b) => ({ ...b, nbAccount: v }))}
-                  options={nbAccountsList.map((a) => a.name)}
-                  placeholder={nbAccountsStatus === 'loading' ? 'Loading…' : 'Search account…'}
-                  className="w-64"
-                  inputClassName="h-7 bg-white"
-                />
-              </label>
-              <label className="flex items-center gap-1.5">
-                Bid Type
-                <Select value={binomBulk.bidType} onChange={(v) => setBinomBulk((b) => ({ ...b, bidType: v }))} options={BID_TYPES} />
-              </label>
-              <label className="flex items-center gap-1.5">
-                Tracking event
-                <Select value={binomBulk.event} onChange={(v) => setBinomBulk((b) => ({ ...b, event: v }))} options={['auto', 'click_button', 'complete_payment']} />
-                {binomBulk.event === 'auto' && <span className="text-xs text-slate-500">→ {resolveEvent('auto', binomBulk.bidType)}</span>}
-              </label>
+              {platform === 'nb' ? (
+                <>
+                  <label className="flex items-center gap-1.5">
+                    NB Account
+                    <Combobox
+                      value={binomBulk.nbAccount}
+                      onChange={(v) => setBinomBulk((b) => ({ ...b, nbAccount: v }))}
+                      options={nbAccountsList.map((a) => a.name)}
+                      placeholder={nbAccountsStatus === 'loading' ? 'Loading…' : 'Search account…'}
+                      className="w-64"
+                      inputClassName="h-7 bg-white"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    Bid Type
+                    <Select value={binomBulk.bidType} onChange={(v) => setBinomBulk((b) => ({ ...b, bidType: v }))} options={BID_TYPES} />
+                  </label>
+                  <label className="flex items-center gap-1.5">
+                    Tracking event
+                    <Select value={binomBulk.event} onChange={(v) => setBinomBulk((b) => ({ ...b, event: v }))} options={['auto', 'click_button', 'complete_payment']} />
+                    {binomBulk.event === 'auto' && <span className="text-xs text-slate-500">→ {resolveEvent('auto', binomBulk.bidType)}</span>}
+                  </label>
+                </>
+              ) : (
+                <label className="flex items-center gap-1.5">
+                  FB Account
+                  <Combobox
+                    value={binomBulk.fbAccount}
+                    onChange={(v) => setBinomBulk((b) => ({ ...b, fbAccount: v }))}
+                    options={fbOptions.accounts.map((a) => a.name)}
+                    placeholder={fbOptions.status === 'loading' ? 'Loading…' : 'Search account…'}
+                    className="w-64"
+                    inputClassName="h-7 bg-white"
+                  />
+                  {fbOptions.status === 'error' && <span className="text-xs text-red-600">{fbOptions.error}</span>}
+                  {fbOptions.status === 'ready' && fbOptions.accounts.length === 0 && (
+                    <span className="text-xs text-slate-500">fb_accounts is empty — run "Sync FB" in n8n</span>
+                  )}
+                </label>
+              )}
               <label className="flex items-center gap-1.5">
                 Cmp name suffix
                 <Input value={binomBulk.suffix} onChange={(e) => setBinomBulk((b) => ({ ...b, suffix: e.target.value }))} placeholder="auto: competitor" className="h-7 w-32 bg-white" />
@@ -1323,14 +1528,16 @@ export function MegatoolAutozalivBuilderPage() {
               </span>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-sm">
-            <span className="text-slate-600">Name ≤ {NAME_MAX} chars — it is also the NB advertiser after "{ADVERTISER_PREFIX.trim()}"</span>
-            <div className="ml-auto flex gap-2">
-              <Button size="sm" disabled={longNames.length === 0 || longNames.some((g) => shortening['name|' + g.name]?.busy)} onClick={() => shortenNames(longNames)}>
-                Shorten all long names ({longNames.length})
-              </Button>
+          {platform === 'nb' && (
+            <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-sm">
+              <span className="text-slate-600">Name ≤ {NAME_MAX} chars — it is also the NB advertiser after "{ADVERTISER_PREFIX.trim()}"</span>
+              <div className="ml-auto flex gap-2">
+                <Button size="sm" disabled={longNames.length === 0 || longNames.some((g) => shortening['name|' + g.name]?.busy)} onClick={() => shortenNames(longNames)}>
+                  Shorten all long names ({longNames.length})
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
           <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
             <table className="w-full text-sm border-collapse">
               <thead className="sticky top-0 bg-slate-100 z-10">
@@ -1356,8 +1563,8 @@ export function MegatoolAutozalivBuilderPage() {
                       <td className="px-2 py-1.5 min-w-[160px]">
                         <Input value={b.name} disabled={locked || sn?.busy} onChange={(e) => setBinomRow(g.name, { name: e.target.value })} className="h-7 bg-white text-xs" />
                         <div className="mt-0.5 flex items-center gap-2 text-[11px]">
-                          <span className={b.name.length > NAME_MAX ? 'text-red-600' : 'text-slate-400'}>{b.name.length}/{NAME_MAX}</span>
-                          {!locked && b.name.length > NAME_MAX && (
+                          {platform === 'nb' && <span className={b.name.length > NAME_MAX ? 'text-red-600' : 'text-slate-400'}>{b.name.length}/{NAME_MAX}</span>}
+                          {platform === 'nb' && !locked && b.name.length > NAME_MAX && (
                             <button type="button" disabled={sn?.busy} onClick={() => shortenNames([g])} className="text-blue-600 underline hover:no-underline disabled:text-slate-400">
                               {sn?.busy ? 'Shortening…' : '✨ Shorten'}
                             </button>
@@ -1410,12 +1617,12 @@ export function MegatoolAutozalivBuilderPage() {
               {binomRunning ? 'Creating…' : '2️⃣ Create Binom'}
             </Button>
             <Button variant="outline" disabled={anyRunning || Object.keys(binom).length === 0} onClick={() => newRun(5)}>↻ New run</Button>
-            <Button variant="outline" disabled={binomDone === 0} onClick={goToNb}>Next: NB →</Button>
+            <Button variant="outline" disabled={binomDone === 0} onClick={goToNb}>Next: {platform.toUpperCase()} →</Button>
           </div>
         </>
       )}
 
-      {step === 6 && (
+      {step === 6 && platform === 'nb' && (
         <>
           <div className="mx-4 mb-2 rounded border border-slate-200 bg-white px-3 py-2">
             <div className="text-[10px] font-bold uppercase text-gray-500 mb-1.5">NB settings for all articles</div>
@@ -1564,6 +1771,170 @@ export function MegatoolAutozalivBuilderPage() {
               {nbRunning ? 'Creating…' : '3️⃣ Create NB campaigns'}
             </Button>
             <Button variant="outline" disabled={anyRunning || Object.keys(nb).length === 0} onClick={() => newRun(6)}>↻ New run</Button>
+          </div>
+        </>
+      )}
+
+      {step === 6 && platform === 'fb' && (
+        <>
+          <div className="mx-4 mb-2 rounded border border-slate-200 bg-white px-3 py-2">
+            <div className="text-[10px] font-bold uppercase text-gray-500 mb-1.5">FB settings for all articles</div>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
+              <span className="text-slate-500">
+                Account: <b className="text-slate-700">{binomBulk.fbAccount || '— pick in step 5 —'}</b>
+                {fbAccountId && <span className="text-xs"> ({fbAccountId})</span>}
+              </span>
+              <label className="flex items-center gap-1.5">
+                Page
+                <Combobox
+                  value={fbBulk.page}
+                  onChange={(v) => setFbBulk((b) => ({ ...b, page: v }))}
+                  options={fbOptions.pages.map(itemLabel)}
+                  placeholder={fbOptions.status === 'loading' ? 'Loading…' : 'Search page…'}
+                  className="w-72"
+                  inputClassName="h-7 bg-white"
+                />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Pixel
+                <Select
+                  value={fbPixel ? itemLabel(fbPixel) : fbBulk.pixel}
+                  onChange={(v) => setFbBulk((b) => ({ ...b, pixel: v }))}
+                  options={(accountPixels?.pixels || []).map(itemLabel)}
+                  placeholder={accountPixels?.status === 'loading' ? 'Loading…' : '— pick —'}
+                  disabled={!fbNeedsPixel}
+                />
+                {accountPixels?.status === 'error' && <span className="text-xs text-red-600">{accountPixels.error}</span>}
+                {accountPixels?.status === 'ready' && accountPixels.pixels.length === 0 && <span className="text-xs text-red-600">no pixels on this account</span>}
+              </label>
+              <label className="flex items-center gap-1.5">
+                Event
+                <Select value={fbBulk.event} onChange={(v) => setFbBulk((b) => ({ ...b, event: v }))} options={FB_EVENTS} disabled={!fbNeedsPixel} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Objective
+                <Select value={fbBulk.objective} onChange={(v) => setFbBulk((b) => ({ ...b, objective: v }))} options={FB_OBJECTIVES} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Performance goal
+                <Select value={fbBulk.goal} onChange={(v) => setFbBulk((b) => ({ ...b, goal: v }))} options={FB_GOALS} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Bid strategy
+                <Select value={fbBulk.bidStrategy} onChange={(v) => setFbBulk((b) => ({ ...b, bidStrategy: v }))} options={FB_BID_STRATEGIES} />
+                {FB_BID_NEEDS_AMOUNT.includes(fbBulk.bidStrategy) && (
+                  <>
+                    <Input type="number" min={0} step="0.01" value={fbBulk.bidAmount} onChange={(e) => setFbBulk((b) => ({ ...b, bidAmount: Number(e.target.value) || 0 }))} className="h-7 w-20 bg-white" />
+                    <span className="text-xs text-slate-500">$</span>
+                  </>
+                )}
+              </label>
+              <label className="flex items-center gap-1.5">
+                Budget
+                <Select value={fbBulk.budgetMode} onChange={(v) => setFbBulk((b) => ({ ...b, budgetMode: v }))} options={['MULTIPLIER', 'ABSOLUTE']} />
+                <span className="text-xs text-slate-500">{fbBulk.budgetMode === 'ABSOLUTE' ? 'on the campaign' : 'on the ad set'}</span>
+                <Input type="number" min={1} value={fbBulk.budget} onChange={(e) => setFbBulk((b) => ({ ...b, budget: Number(e.target.value) || 0 }))} className="h-7 w-20 bg-white" />
+                <span className="text-xs text-slate-500">$ / day</span>
+              </label>
+              <label className="flex items-center gap-1.5">
+                Special ad category
+                <Select value={fbBulk.special} onChange={(v) => setFbBulk((b) => ({ ...b, special: v }))} options={FB_SPECIAL} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Start
+                <Select value={fbBulk.startDate} onChange={(v) => setFbBulk((b) => ({ ...b, startDate: v }))} options={FB_START} />
+                <span className="text-xs text-slate-500">{fbBulk.startDate === 'now' ? '' : '01:00 account time'}</span>
+              </label>
+              <label className="flex items-center gap-1.5">
+                Create as
+                <Select value={fbBulk.status} onChange={(v) => setFbBulk((b) => ({ ...b, status: v }))} options={['ACTIVE', 'PAUSED']} />
+              </label>
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
+            <table className="w-full text-sm border-collapse">
+              <thead className="sticky top-0 bg-slate-100 z-10">
+                <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+                  <th className="px-2 py-2">article</th>
+                  <th className="px-2 py-2">FB campaign / ad set name</th>
+                  <th className="px-2 py-2">ads</th>
+                  <th className="px-2 py-2">ad URL (Binom, funnel = pixel)</th>
+                  <th className="px-2 py-2">3️⃣ FB</th>
+                </tr>
+              </thead>
+              <tbody>
+                {groups.map((g) => {
+                  const ads = nbAdsFor(g);
+                  const r = fb[g.name];
+                  const locked = r?.status === 'done' || r?.status === 'running';
+                  const noBinom = binom[g.name]?.status !== 'done';
+                  const link = fbLinkFor(g.name);
+                  return [
+                    <tr key={g.name} className={`border-b border-slate-100 align-top ${noBinom ? 'opacity-50' : ''}`}>
+                      <td className="px-2 py-1.5 max-w-[220px] truncate text-slate-800" title={g.name}>{trimArticle(g.name)}</td>
+                      <td className="px-2 py-1.5 min-w-[320px]">
+                        <Input value={nbNameFor(g)} disabled={locked || !!r?.partial?.campaignId} onChange={(e) => setNbNames((s) => ({ ...s, [g.name]: e.target.value }))} className="h-7 bg-white text-xs" />
+                      </td>
+                      <td className="px-2 py-1.5 text-xs text-slate-600 whitespace-nowrap">
+                        <button type="button" onClick={() => setNbOpen(nbOpen === g.name ? null : g.name)} className="underline hover:no-underline">
+                          {nbOpen === g.name ? '▾' : '▸'} Edit ads ({ads.length})
+                        </button>
+                        {fbTextError(ads) && <div className="text-red-600">text too long/short</div>}
+                      </td>
+                      <td className="px-2 py-1.5 text-xs max-w-[260px] truncate text-slate-500" title={link}>
+                        {link || 'no Binom campaign yet'}
+                        {link && !link.includes('funnel=') && <div className="text-amber-600">no funnel= in the Binom link</div>}
+                      </td>
+                      <td className="px-2 py-1.5 text-xs max-w-[320px]">
+                        {r?.status === 'running' && <span className="text-slate-500">Uploading creatives & creating…</span>}
+                        {r?.status === 'done' && (
+                          <div className="text-slate-600">
+                            campaign {r.campaignId} · ad set {r.adsetId} · {r.adIds?.length || 0} ads
+                            {r.error && <div className="text-amber-600">{r.error}</div>}
+                          </div>
+                        )}
+                        {r?.status === 'error' && (
+                          <span className="text-red-600 break-words">
+                            {r.error}
+                            {r.partial?.campaignId && ` (campaign ${r.partial.campaignId}${r.partial.adsetId ? ' · ad set ' + r.partial.adsetId : ''} kept — Retry continues it)`}
+                          </span>
+                        )}
+                      </td>
+                    </tr>,
+                    nbOpen === g.name && (
+                      <tr key={g.name + '|ads'} className="border-b border-slate-200 bg-slate-50">
+                        <td colSpan={5} className="px-3 py-2 space-y-2">
+                          {ads.map((ad) => (
+                            <div key={ad.key} className="flex gap-3 rounded border border-slate-200 bg-white p-2">
+                              {ad.img && <img src={ad.img} loading="lazy" alt="" className="h-16 w-16 max-w-none rounded object-cover bg-slate-100" />}
+                              <div className="flex-1 space-y-1.5 min-w-0">
+                                <div className="text-[10px] font-bold uppercase text-gray-500">{ad.adName} · {fbCta(ad.cta)}</div>
+                                <TextCounter
+                                  label="Headline" value={ad.headline} limit={FB_TEXT.headline} disabled={locked || !!r?.partial?.ads?.[ad.key]}
+                                  onChange={(v) => editAd(ad.key, { headline: v })}
+                                />
+                                <TextCounter
+                                  label="Primary text" value={ad.body} limit={FB_TEXT.body} disabled={locked || !!r?.partial?.ads?.[ad.key]}
+                                  onChange={(v) => editAd(ad.key, { body: v })}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    ),
+                  ];
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-3 px-4 py-3 border-t border-slate-200 bg-white">
+            <Button variant="outline" onClick={() => setStep(5)}>← Binom</Button>
+            <span className="text-sm text-slate-700">{fbDone} of {selectedList.length} FB campaigns created</span>
+            <Button className="ml-auto" disabled={fbRunning || fbDone === selectedList.length} onClick={createFb}>
+              {fbRunning ? 'Creating…' : '3️⃣ Create FB campaigns'}
+            </Button>
+            <Button variant="outline" disabled={anyRunning || Object.keys(fb).length === 0} onClick={() => newRun(6)}>↻ New run</Button>
           </div>
         </>
       )}
