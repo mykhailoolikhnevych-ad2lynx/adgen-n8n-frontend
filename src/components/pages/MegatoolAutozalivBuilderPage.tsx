@@ -653,7 +653,13 @@ export function MegatoolAutozalivBuilderPage() {
     if (platform === 'fb' && (fbOptions.status === 'idle' || fbOptions.status === 'error')) loadFbOptions();
   };
   // The account goes into the Binom campaign name, so it is picked in step 5 for both platforms.
-  const launchAccount = platform === 'fb' ? binomBulk.fbAccount : binomBulk.nbAccount;
+  // The FB account field takes the picked "name (id)", the bare name, or a typed id (with or without act_).
+  const fbTyped = binomBulk.fbAccount.trim();
+  const fbTypedId = fbTyped.replace(/^act_/i, '');
+  const fbAccount = fbTyped
+    ? fbOptions.accounts.find((a) => itemLabel(a) === fbTyped || a.name === fbTyped || a.id === fbTypedId)
+    : undefined;
+  const launchAccount = platform === 'fb' ? fbAccount?.name || '' : binomBulk.nbAccount;
   useEffect(() => {
     if (step === 5 && !binomOptions[binomBulk.tracker]) loadBinomOptions(binomBulk.tracker);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -904,7 +910,7 @@ export function MegatoolAutozalivBuilderPage() {
   const nbDone = selectedList.filter((n) => nb[n]?.status === 'done').length;
 
   // ---- Step 6: FB ----
-  const fbAccountId = fbOptions.accounts.find((a) => a.name === binomBulk.fbAccount)?.id || '';
+  const fbAccountId = fbAccount?.id || '';
   const fbPageId = fbOptions.pages.find((p) => itemLabel(p) === fbBulk.page)?.id || '';
   const loadFbPixels = async (accountId: string) => {
     setFbPixels((s) => ({ ...s, [accountId]: { status: 'loading', pixels: [] } }));
@@ -975,7 +981,7 @@ export function MegatoolAutozalivBuilderPage() {
         setFb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: res.campaignId, adsetId: res.adsetId, adIds: res.adIds } }));
         const used: UsedRow = {
           article: g.name, used_at: new Date().toISOString(), nb_campaign_id: String(res.campaignId || ''),
-          buyer: launchFor(g.name).buyer, nb_account: binomBulk.fbAccount, source: 'fb',
+          buyer: launchFor(g.name).buyer, nb_account: fbAccount?.name || '', source: 'fb',
         };
         callLaunch({
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id, source: 'fb',
@@ -1507,11 +1513,13 @@ export function MegatoolAutozalivBuilderPage() {
                   <Combobox
                     value={binomBulk.fbAccount}
                     onChange={(v) => setBinomBulk((b) => ({ ...b, fbAccount: v }))}
-                    options={fbOptions.accounts.map((a) => a.name)}
-                    placeholder={fbOptions.status === 'loading' ? 'Loading…' : 'Search account…'}
-                    className="w-64"
+                    options={fbOptions.accounts.map(itemLabel)}
+                    placeholder={fbOptions.status === 'loading' ? 'Loading…' : 'Search name or id…'}
+                    className="w-80"
                     inputClassName="h-7 bg-white"
                   />
+                  {fbAccount && fbTyped !== itemLabel(fbAccount) && <span className="text-xs text-emerald-700">→ {itemLabel(fbAccount)}</span>}
+                  {fbOptions.status === 'ready' && fbTyped && !fbAccount && <span className="text-xs text-red-600">no account with this name / id</span>}
                   {fbOptions.status === 'error' && <span className="text-xs text-red-600">{fbOptions.error}</span>}
                   {fbOptions.status === 'ready' && fbOptions.accounts.length === 0 && (
                     <span className="text-xs text-slate-500">fb_accounts is empty — run "Sync FB" in n8n</span>
@@ -1781,7 +1789,7 @@ export function MegatoolAutozalivBuilderPage() {
             <div className="text-[10px] font-bold uppercase text-gray-500 mb-1.5">FB settings for all articles</div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-slate-700">
               <span className="text-slate-500">
-                Account: <b className="text-slate-700">{binomBulk.fbAccount || '— pick in step 5 —'}</b>
+                Account: <b className="text-slate-700">{fbAccount?.name || '— pick in step 5 —'}</b>
                 {fbAccountId && <span className="text-xs"> ({fbAccountId})</span>}
               </span>
               <label className="flex items-center gap-1.5">
