@@ -228,12 +228,9 @@ const FB_DEFAULTS: FbSettings = {
 };
 // API value → the name Facebook Ads Manager shows for it.
 const FB_EVENT_LABELS: Record<string, string> = { LEAD: 'Lead', PURCHASE: 'Purchase' };
-const FB_OBJECTIVE_LABELS: Record<string, string> = {
-  OUTCOME_LEADS: 'Leads', OUTCOME_SALES: 'Sales', OUTCOME_TRAFFIC: 'Traffic',
-};
+const FB_OBJECTIVE_LABELS: Record<string, string> = { OUTCOME_LEADS: 'Leads', OUTCOME_SALES: 'Sales' };
 const FB_GOAL_LABELS: Record<string, string> = {
-  OFFSITE_CONVERSIONS: 'Maximize number of conversions', LANDING_PAGE_VIEWS: 'Maximize number of landing page views',
-  LINK_CLICKS: 'Maximize number of link clicks', IMPRESSIONS: 'Maximize number of impressions', REACH: 'Maximize daily unique reach',
+  OFFSITE_CONVERSIONS: 'Maximize number of conversions', VALUE: 'Maximize value of conversions',
 };
 const FB_BID_LABELS: Record<string, string> = {
   LOWEST_COST_WITHOUT_CAP: 'Highest volume', LOWEST_COST_WITH_BID_CAP: 'Bid cap', COST_CAP: 'Cost per result goal',
@@ -253,20 +250,22 @@ const FB_BID_NEEDS_AMOUNT = ['LOWEST_COST_WITH_BID_CAP', 'COST_CAP'];
 // Website destination, as in Ads Manager: each choice only offers what fits the one before it.
 // Objective → performance goals; objective → conversion events; performance goal → bid strategies.
 const FB_GOALS_BY_OBJECTIVE: Record<string, string[]> = {
-  OUTCOME_LEADS: ['OFFSITE_CONVERSIONS'],
-  OUTCOME_SALES: ['OFFSITE_CONVERSIONS'],
-  OUTCOME_TRAFFIC: ['LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'IMPRESSIONS', 'REACH'],
+  OUTCOME_LEADS: ['OFFSITE_CONVERSIONS', 'VALUE'],
+  OUTCOME_SALES: ['OFFSITE_CONVERSIONS', 'VALUE'],
 };
+// Ads Manager calls the conversions goal "Maximize number of leads" under Leads.
+const fbGoalLabels = (objective: string): Record<string, string> =>
+  objective === 'OUTCOME_LEADS' ? { ...FB_GOAL_LABELS, OFFSITE_CONVERSIONS: 'Maximize number of leads' } : FB_GOAL_LABELS;
+// The value goal's only bid here is "Highest value" (same API value as Highest volume).
+const fbBidLabels = (goal: string): Record<string, string> =>
+  goal === 'VALUE' ? { ...FB_BID_LABELS, LOWEST_COST_WITHOUT_CAP: 'Highest value' } : FB_BID_LABELS;
 const FB_EVENTS_BY_OBJECTIVE: Record<string, string[]> = { OUTCOME_LEADS: ['LEAD'], OUTCOME_SALES: ['PURCHASE'] };
 const FB_BIDS_BY_GOAL: Record<string, string[]> = {
   OFFSITE_CONVERSIONS: ['LOWEST_COST_WITHOUT_CAP', 'COST_CAP', 'LOWEST_COST_WITH_BID_CAP'],
-  LANDING_PAGE_VIEWS: ['LOWEST_COST_WITHOUT_CAP', 'COST_CAP', 'LOWEST_COST_WITH_BID_CAP'],
-  LINK_CLICKS: ['LOWEST_COST_WITHOUT_CAP', 'COST_CAP', 'LOWEST_COST_WITH_BID_CAP'],
-  IMPRESSIONS: ['LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_BID_CAP'],
-  REACH: ['LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_BID_CAP'],
+  VALUE: ['LOWEST_COST_WITHOUT_CAP'],
 };
-// Only "Maximize number of conversions" optimizes for a pixel event.
-const FB_PIXEL_GOALS = ['OFFSITE_CONVERSIONS'];
+// Only the conversion goals (number / value) optimize for a pixel event.
+const FB_PIXEL_GOALS = ['OFFSITE_CONVERSIONS', 'VALUE'];
 // Snap a goal / event / bid that the new objective or goal doesn't allow to its first allowed value.
 function fitFbSettings(s: FbSettings): FbSettings {
   const goals = FB_GOALS_BY_OBJECTIVE[s.objective] || [];
@@ -980,10 +979,14 @@ export function MegatoolAutozalivBuilderPage() {
   const fbPixel = accountPixels?.pixels.find((p) => itemLabel(p) === fbBulk.pixel)
     || (accountPixels?.pixels.length === 1 ? accountPixels.pixels[0] : undefined);
   const fbNeedsPixel = FB_PIXEL_GOALS.includes(fbBulk.goal);
-  // Ad URL formula from the FB sheet: the Binom link with funnel=funnel → funnel=<pixel id>.
+  // Ad URL formula from the FB sheet: the Binom link with funnel=funnel → funnel=<pixel id>,
+  // and ts= follows the conversion event (the Binom link comes with ts=Lead; Sales needs ts=Purchase).
   const fbLinkFor = (name: string) => {
-    const url = binom[name]?.campaignUrl || '';
-    return fbPixel ? url.replace('funnel=funnel', 'funnel=' + fbPixel.id) : url;
+    let url = binom[name]?.campaignUrl || '';
+    if (fbPixel) url = url.replace('funnel=funnel', 'funnel=' + fbPixel.id);
+    const ts = FB_EVENT_LABELS[fbBulk.event];
+    if (ts) url = url.replace(/([?&])ts=[^&#]*/, `$1ts=${ts}`);
+    return url;
   };
   const fbTextError = (ads: ReturnType<typeof nbAdsFor>) => {
     for (const ad of ads) {
@@ -1873,7 +1876,7 @@ export function MegatoolAutozalivBuilderPage() {
               </label>
               <label className="flex items-center gap-1.5">
                 Performance goal
-                <Select value={fbBulk.goal} onChange={(v) => setFbBulk((b) => ({ ...b, goal: v }))} options={FB_GOALS_BY_OBJECTIVE[fbBulk.objective] || []} labels={FB_GOAL_LABELS} />
+                <Select value={fbBulk.goal} onChange={(v) => setFbBulk((b) => ({ ...b, goal: v }))} options={FB_GOALS_BY_OBJECTIVE[fbBulk.objective] || []} labels={fbGoalLabels(fbBulk.objective)} />
               </label>
               <label className="flex items-center gap-1.5">
                 Conversion event
@@ -1888,7 +1891,7 @@ export function MegatoolAutozalivBuilderPage() {
               </label>
               <label className="flex items-center gap-1.5">
                 Bid strategy
-                <Select value={fbBulk.bidStrategy} onChange={(v) => setFbBulk((b) => ({ ...b, bidStrategy: v }))} options={FB_BIDS_BY_GOAL[fbBulk.goal] || []} labels={FB_BID_LABELS} />
+                <Select value={fbBulk.bidStrategy} onChange={(v) => setFbBulk((b) => ({ ...b, bidStrategy: v }))} options={FB_BIDS_BY_GOAL[fbBulk.goal] || []} labels={fbBidLabels(fbBulk.goal)} />
                 {FB_BID_NEEDS_AMOUNT.includes(fbBulk.bidStrategy) && (
                   <>
                     <Input type="number" min={0} step="0.01" value={fbBulk.bidAmount} onChange={(e) => setFbBulk((b) => ({ ...b, bidAmount: Number(e.target.value) || 0 }))} className="h-7 w-20 bg-white" />
