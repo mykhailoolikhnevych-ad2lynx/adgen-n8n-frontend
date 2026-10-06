@@ -6,6 +6,8 @@ import { Combobox } from '@/components/ui/Combobox';
 import { useAppStore, parseNbEventsResponse, type NbEvent } from '@/store/useAppStore';
 import { BINOM_TRACKERS } from '@/lib/binomGroups';
 import { START_DATE_OPTIONS, TIMEZONE_OPTIONS } from './MegatoolCreateNbCampaignPage';
+import { DateTimePicker24h } from '@/components/ui/DateTimePicker24h';
+import { customStartError, customStartToUnix, defaultCustomStart, formatInZone, toLocalInputValue } from '@/lib/nbStartTime';
 
 // Autozaliv Builder — web replacement for the "articles (domains)" →
 // "Filter for AUTOZALYV" → "Filtered Results" part of the Apps Script tool.
@@ -218,20 +220,65 @@ type NbState = { status: 'running' | 'done' | 'error'; campaignId?: string; adse
 // Defaults = the sheet's usual row: LEAD / OUTCOME_LEADS / MULTIPLIER / LOWEST_COST_WITHOUT_CAP / no cap / NONE / OFFSITE_CONVERSIONS.
 type FbSettings = {
   page: string; pixel: string; event: string; objective: string; goal: string; bidStrategy: string; bidAmount: number;
-  budgetMode: string; budget: number; special: string; startDate: string; status: string;
+  budgetMode: string; budget: number; special: string; startDate: string; customStart: string; status: string;
 };
 const FB_DEFAULTS: FbSettings = {
   page: '', pixel: '', event: 'LEAD', objective: 'OUTCOME_LEADS', goal: 'OFFSITE_CONVERSIONS', bidStrategy: 'LOWEST_COST_WITHOUT_CAP',
-  bidAmount: 0, budgetMode: 'MULTIPLIER', budget: 10, special: 'NONE', startDate: 'tomorrow', status: 'ACTIVE',
+  bidAmount: 0, budgetMode: 'MULTIPLIER', budget: 10, special: 'NONE', startDate: 'tomorrow', customStart: '', status: 'ACTIVE',
 };
-const FB_EVENTS = ['LEAD', 'COMPLETE_REGISTRATION', 'PURCHASE', 'CONTACT', 'SUBMIT_APPLICATION', 'SEARCH', 'VIEW_CONTENT', 'ADD_TO_CART', 'INITIATED_CHECKOUT', 'OTHER'];
-const FB_OBJECTIVES = ['OUTCOME_LEADS', 'OUTCOME_SALES', 'OUTCOME_TRAFFIC', 'OUTCOME_ENGAGEMENT'];
-const FB_GOALS = ['OFFSITE_CONVERSIONS', 'LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'IMPRESSIONS', 'REACH'];
-const FB_BID_STRATEGIES = ['LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_BID_CAP', 'COST_CAP'];
+// API value → the name Facebook Ads Manager shows for it.
+const FB_EVENT_LABELS: Record<string, string> = { LEAD: 'Lead', PURCHASE: 'Purchase' };
+const FB_OBJECTIVE_LABELS: Record<string, string> = {
+  OUTCOME_LEADS: 'Leads', OUTCOME_SALES: 'Sales', OUTCOME_TRAFFIC: 'Traffic',
+};
+const FB_GOAL_LABELS: Record<string, string> = {
+  OFFSITE_CONVERSIONS: 'Maximize number of conversions', LANDING_PAGE_VIEWS: 'Maximize number of landing page views',
+  LINK_CLICKS: 'Maximize number of link clicks', IMPRESSIONS: 'Maximize number of impressions', REACH: 'Maximize daily unique reach',
+};
+const FB_BID_LABELS: Record<string, string> = {
+  LOWEST_COST_WITHOUT_CAP: 'Highest volume', LOWEST_COST_WITH_BID_CAP: 'Bid cap', COST_CAP: 'Cost per result goal',
+};
+const FB_BUDGET_LABELS: Record<string, string> = { MULTIPLIER: 'Ad set budget', ABSOLUTE: 'Campaign budget' };
+const FB_SPECIAL_LABELS: Record<string, string> = {
+  NONE: 'None', FINANCIAL_PRODUCTS_SERVICES: 'Financial products and services', EMPLOYMENT: 'Employment',
+  HOUSING: 'Housing', ISSUES_ELECTIONS_POLITICS: 'Social issues, elections or politics',
+};
+const FB_STATUS_LABELS: Record<string, string> = { ACTIVE: 'Active (on)', PAUSED: 'Paused (off)' };
+// Presets start at 01:00 in the ad account's time zone (like the sheet); "custom" = a picked moment.
+const FB_START_LABELS: Record<string, string> = {
+  now: 'Now', tomorrow: 'Tomorrow', 'tomorrow+1': 'Day after tomorrow', 'tomorrow+2': 'In 3 days', custom: 'Custom (date & time)',
+};
+const FB_OBJECTIVES = Object.keys(FB_OBJECTIVE_LABELS);
 const FB_BID_NEEDS_AMOUNT = ['LOWEST_COST_WITH_BID_CAP', 'COST_CAP'];
-const FB_PIXEL_GOALS = ['OFFSITE_CONVERSIONS', 'LANDING_PAGE_VIEWS'];
-const FB_SPECIAL = ['NONE', 'FINANCIAL_PRODUCTS_SERVICES', 'EMPLOYMENT', 'HOUSING', 'ISSUES_ELECTIONS_POLITICS'];
-const FB_START = ['now', 'tomorrow', 'tomorrow+1', 'tomorrow+2'];
+// Website destination, as in Ads Manager: each choice only offers what fits the one before it.
+// Objective → performance goals; objective → conversion events; performance goal → bid strategies.
+const FB_GOALS_BY_OBJECTIVE: Record<string, string[]> = {
+  OUTCOME_LEADS: ['OFFSITE_CONVERSIONS'],
+  OUTCOME_SALES: ['OFFSITE_CONVERSIONS'],
+  OUTCOME_TRAFFIC: ['LANDING_PAGE_VIEWS', 'LINK_CLICKS', 'IMPRESSIONS', 'REACH'],
+};
+const FB_EVENTS_BY_OBJECTIVE: Record<string, string[]> = { OUTCOME_LEADS: ['LEAD'], OUTCOME_SALES: ['PURCHASE'] };
+const FB_BIDS_BY_GOAL: Record<string, string[]> = {
+  OFFSITE_CONVERSIONS: ['LOWEST_COST_WITHOUT_CAP', 'COST_CAP', 'LOWEST_COST_WITH_BID_CAP'],
+  LANDING_PAGE_VIEWS: ['LOWEST_COST_WITHOUT_CAP', 'COST_CAP', 'LOWEST_COST_WITH_BID_CAP'],
+  LINK_CLICKS: ['LOWEST_COST_WITHOUT_CAP', 'COST_CAP', 'LOWEST_COST_WITH_BID_CAP'],
+  IMPRESSIONS: ['LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_BID_CAP'],
+  REACH: ['LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_BID_CAP'],
+};
+// Only "Maximize number of conversions" optimizes for a pixel event.
+const FB_PIXEL_GOALS = ['OFFSITE_CONVERSIONS'];
+// Snap a goal / event / bid that the new objective or goal doesn't allow to its first allowed value.
+function fitFbSettings(s: FbSettings): FbSettings {
+  const goals = FB_GOALS_BY_OBJECTIVE[s.objective] || [];
+  const goal = goals.includes(s.goal) ? s.goal : goals[0] || s.goal;
+  const events = FB_EVENTS_BY_OBJECTIVE[s.objective] || [];
+  const event = events.includes(s.event) ? s.event : events[0] || '';
+  const bids = FB_BIDS_BY_GOAL[goal] || [];
+  const bidStrategy = bids.includes(s.bidStrategy) ? s.bidStrategy : bids[0] || s.bidStrategy;
+  return goal === s.goal && event === s.event && bidStrategy === s.bidStrategy ? s : { ...s, goal, event, bidStrategy };
+}
+const FB_SPECIAL = Object.keys(FB_SPECIAL_LABELS);
+const FB_START = Object.keys(FB_START_LABELS);
 const FB_CTAS = ['LEARN_MORE', 'SHOP_NOW', 'SIGN_UP', 'APPLY_NOW', 'GET_OFFER', 'GET_QUOTE', 'CONTACT_US', 'DOWNLOAD', 'SUBSCRIBE', 'BOOK_TRAVEL', 'ORDER_NOW', 'SEE_MORE', 'WATCH_MORE', 'GET_STARTED'];
 // Same as formatCtaText() in the FB sheet: "Learn more" → LEARN_MORE; anything FB doesn't know → LEARN_MORE.
 const fbCta = (s: string) => {
@@ -244,7 +291,8 @@ type FbItem = { id: string; name: string };
 // "Page name (id)" keeps same-named pages apart in the pickers.
 const itemLabel = (i: FbItem) => `${i.name} (${i.id})`;
 type FbOptions = { status: 'idle' | 'loading' | 'ready' | 'error'; accounts: FbItem[]; pages: FbItem[]; error?: string };
-type FbPixels = { status: 'loading' | 'ready' | 'error'; pixels: FbItem[]; error?: string };
+// timezone = the ad account's time zone (start-time preview); it comes with the pixels.
+type FbPixels = { status: 'loading' | 'ready' | 'error'; pixels: FbItem[]; timezone?: string; error?: string };
 type FbPartial = { campaignId?: string; adsetId?: string; ads?: Record<string, string> };
 type FbState = { status: 'running' | 'done' | 'error'; campaignId?: string; adsetId?: string; adIds?: string[]; partial?: FbPartial; error?: string };
 type EventsState = { status: 'loading' | 'ready' | 'error'; events: NbEvent[]; error?: string };
@@ -352,7 +400,9 @@ export function MegatoolAutozalivBuilderPage() {
   // Step 6 — FB (campaign names and ad text edits are shared with the NB state above)
   const [fbOptions, setFbOptions] = useState<FbOptions>({ status: 'idle', accounts: [], pages: [] });
   const [fbPixels, setFbPixels] = useState<Record<string, FbPixels>>({});
-  const [fbBulk, setFbBulk] = useState<FbSettings>(FB_DEFAULTS);
+  const [fbBulk, setFbBulkRaw] = useState<FbSettings>(FB_DEFAULTS);
+  // Every change goes through fitFbSettings, so a choice the objective / goal doesn't allow never sticks.
+  const setFbBulk = (update: (b: FbSettings) => FbSettings) => setFbBulkRaw((b) => fitFbSettings(update(b)));
   const [fb, setFb] = useState<Record<string, FbState>>({});
   const [fbRunning, setFbRunning] = useState(false);
 
@@ -916,7 +966,7 @@ export function MegatoolAutozalivBuilderPage() {
     setFbPixels((s) => ({ ...s, [accountId]: { status: 'loading', pixels: [] } }));
     try {
       const res = await callFb({ action: 'pixels', accountId });
-      setFbPixels((s) => ({ ...s, [accountId]: { status: 'ready', pixels: res.pixels || [] } }));
+      setFbPixels((s) => ({ ...s, [accountId]: { status: 'ready', pixels: res.pixels || [], timezone: res.timezone || undefined } }));
     } catch (e: any) {
       setFbPixels((s) => ({ ...s, [accountId]: { status: 'error', pixels: [], error: e.message } }));
     }
@@ -959,6 +1009,7 @@ export function MegatoolAutozalivBuilderPage() {
         : fbNeedsPixel && !fbPixel ? `Pick a pixel — ${fbBulk.goal} needs one`
         : FB_BID_NEEDS_AMOUNT.includes(fbBulk.bidStrategy) && !(fbBulk.bidAmount > 0) ? `Set the bid amount for ${fbBulk.bidStrategy}`
         : !(fbBulk.budget > 0) ? 'Set the daily budget'
+        : fbBulk.startDate === 'custom' && customStartError(fbBulk.customStart) ? `Start: ${customStartError(fbBulk.customStart)}`
         : ads.length === 0 ? 'No ads left for this article'
         : fbTextError(ads) ? fbTextError(ads) + ' — fix it under "Edit ads"' : '';
       if (error) {
@@ -972,6 +1023,7 @@ export function MegatoolAutozalivBuilderPage() {
           event: fbBulk.event, objective: fbBulk.objective, optimizationGoal: fbBulk.goal, bidStrategy: fbBulk.bidStrategy,
           bidAmount: fbBulk.bidAmount, budgetMode: fbBulk.budgetMode, budget: fbBulk.budget, specialAdCategory: fbBulk.special,
           geo: binomFor(g).geo, startDate: fbBulk.startDate, status: fbBulk.status, campaignName: nbNameFor(g), link: fbLinkFor(g.name),
+          ...(fbBulk.startDate === 'custom' ? { startTime: customStartToUnix(fbBulk.customStart) } : {}),
           ads: ads.map((ad) => ({
             key: ad.key, adName: ad.adName, title: ad.headline.trim(), body: ad.body.trim(), cta: fbCta(ad.cta),
             imageUrl: ad.img || '', videoUrl: ad.isVideo ? ad.assetUrl : '',
@@ -1816,20 +1868,27 @@ export function MegatoolAutozalivBuilderPage() {
                 {accountPixels?.status === 'ready' && accountPixels.pixels.length === 0 && <span className="text-xs text-red-600">no pixels on this account</span>}
               </label>
               <label className="flex items-center gap-1.5">
-                Event
-                <Select value={fbBulk.event} onChange={(v) => setFbBulk((b) => ({ ...b, event: v }))} options={FB_EVENTS} disabled={!fbNeedsPixel} />
-              </label>
-              <label className="flex items-center gap-1.5">
-                Objective
-                <Select value={fbBulk.objective} onChange={(v) => setFbBulk((b) => ({ ...b, objective: v }))} options={FB_OBJECTIVES} />
+                Campaign objective
+                <Select value={fbBulk.objective} onChange={(v) => setFbBulk((b) => ({ ...b, objective: v }))} options={FB_OBJECTIVES} labels={FB_OBJECTIVE_LABELS} />
               </label>
               <label className="flex items-center gap-1.5">
                 Performance goal
-                <Select value={fbBulk.goal} onChange={(v) => setFbBulk((b) => ({ ...b, goal: v }))} options={FB_GOALS} />
+                <Select value={fbBulk.goal} onChange={(v) => setFbBulk((b) => ({ ...b, goal: v }))} options={FB_GOALS_BY_OBJECTIVE[fbBulk.objective] || []} labels={FB_GOAL_LABELS} />
+              </label>
+              <label className="flex items-center gap-1.5">
+                Conversion event
+                <Select
+                  value={fbBulk.event}
+                  onChange={(v) => setFbBulk((b) => ({ ...b, event: v }))}
+                  options={fbNeedsPixel ? FB_EVENTS_BY_OBJECTIVE[fbBulk.objective] || [] : []}
+                  labels={FB_EVENT_LABELS}
+                  placeholder="— not used —"
+                  disabled={!fbNeedsPixel}
+                />
               </label>
               <label className="flex items-center gap-1.5">
                 Bid strategy
-                <Select value={fbBulk.bidStrategy} onChange={(v) => setFbBulk((b) => ({ ...b, bidStrategy: v }))} options={FB_BID_STRATEGIES} />
+                <Select value={fbBulk.bidStrategy} onChange={(v) => setFbBulk((b) => ({ ...b, bidStrategy: v }))} options={FB_BIDS_BY_GOAL[fbBulk.goal] || []} labels={FB_BID_LABELS} />
                 {FB_BID_NEEDS_AMOUNT.includes(fbBulk.bidStrategy) && (
                   <>
                     <Input type="number" min={0} step="0.01" value={fbBulk.bidAmount} onChange={(e) => setFbBulk((b) => ({ ...b, bidAmount: Number(e.target.value) || 0 }))} className="h-7 w-20 bg-white" />
@@ -1839,24 +1898,51 @@ export function MegatoolAutozalivBuilderPage() {
               </label>
               <label className="flex items-center gap-1.5">
                 Budget
-                <Select value={fbBulk.budgetMode} onChange={(v) => setFbBulk((b) => ({ ...b, budgetMode: v }))} options={['MULTIPLIER', 'ABSOLUTE']} />
-                <span className="text-xs text-slate-500">{fbBulk.budgetMode === 'ABSOLUTE' ? 'on the campaign' : 'on the ad set'}</span>
+                <Select value={fbBulk.budgetMode} onChange={(v) => setFbBulk((b) => ({ ...b, budgetMode: v }))} options={Object.keys(FB_BUDGET_LABELS)} labels={FB_BUDGET_LABELS} />
                 <Input type="number" min={1} value={fbBulk.budget} onChange={(e) => setFbBulk((b) => ({ ...b, budget: Number(e.target.value) || 0 }))} className="h-7 w-20 bg-white" />
-                <span className="text-xs text-slate-500">$ / day</span>
+                <span className="text-xs text-slate-500">$ daily</span>
               </label>
               <label className="flex items-center gap-1.5">
-                Special ad category
-                <Select value={fbBulk.special} onChange={(v) => setFbBulk((b) => ({ ...b, special: v }))} options={FB_SPECIAL} />
+                Special ad categories
+                <Select value={fbBulk.special} onChange={(v) => setFbBulk((b) => ({ ...b, special: v }))} options={FB_SPECIAL} labels={FB_SPECIAL_LABELS} />
               </label>
               <label className="flex items-center gap-1.5">
-                Start
-                <Select value={fbBulk.startDate} onChange={(v) => setFbBulk((b) => ({ ...b, startDate: v }))} options={FB_START} />
-                <span className="text-xs text-slate-500">{fbBulk.startDate === 'now' ? '' : '01:00 account time'}</span>
+                Status
+                <Select value={fbBulk.status} onChange={(v) => setFbBulk((b) => ({ ...b, status: v }))} options={Object.keys(FB_STATUS_LABELS)} labels={FB_STATUS_LABELS} />
               </label>
-              <label className="flex items-center gap-1.5">
-                Create as
-                <Select value={fbBulk.status} onChange={(v) => setFbBulk((b) => ({ ...b, status: v }))} options={['ACTIVE', 'PAUSED']} />
-              </label>
+            </div>
+            {/* Start date: presets like Newsbreak Copier, plus a custom moment (not inside a <label> — the picker is a popover). */}
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700">
+              <span>Start date</span>
+              <Select
+                value={fbBulk.startDate}
+                onChange={(v) => setFbBulk((b) => ({ ...b, startDate: v, ...(v === 'custom' ? { customStart: defaultCustomStart() } : {}) }))}
+                options={FB_START}
+                labels={FB_START_LABELS}
+              />
+              {fbBulk.startDate === 'custom' ? (
+                <>
+                  <div className="w-56">
+                    <DateTimePicker24h
+                      value={fbBulk.customStart}
+                      minDate={toLocalInputValue(new Date()).slice(0, 10)}
+                      onChange={(v) => setFbBulk((b) => ({ ...b, customStart: v }))}
+                    />
+                  </div>
+                  <span className="text-xs text-slate-500">your time ({Intl.DateTimeFormat().resolvedOptions().timeZone})</span>
+                  {customStartError(fbBulk.customStart) ? (
+                    <span className="text-xs text-red-600">{customStartError(fbBulk.customStart)}</span>
+                  ) : accountPixels?.timezone && (
+                    <span className="text-xs text-slate-600">
+                      = <b>{formatInZone(new Date(fbBulk.customStart).getTime(), accountPixels.timezone)}</b> account time
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="text-xs text-slate-500">
+                  {fbBulk.startDate === 'now' ? 'starts right away' : `01:00 account time${accountPixels?.timezone ? ` (${accountPixels.timezone})` : ''}`}
+                </span>
+              )}
             </div>
           </div>
           <div className="flex-1 overflow-auto mx-4 mb-2 rounded border border-slate-200 bg-white">
@@ -2033,17 +2119,21 @@ function LandingLink({ url, full }: { url?: string; full?: boolean }) {
   );
 }
 
-function Select({ value, onChange, options, placeholder, disabled }: { value: string; onChange: (v: string) => void; options: string[]; placeholder?: string; disabled?: boolean }) {
+// labels: optional display text per value (the value is still what gets sent).
+function Select({ value, onChange, options, placeholder, disabled, labels }: {
+  value: string; onChange: (v: string) => void; options: string[]; placeholder?: string; disabled?: boolean; labels?: Record<string, string>;
+}) {
   return (
     <select
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className="h-7 max-w-[200px] rounded border border-slate-200 bg-white px-1 text-sm disabled:opacity-50"
+      title={labels ? value : undefined}
+      className={`h-7 rounded border border-slate-200 bg-white px-1 text-sm disabled:opacity-50 ${labels ? 'max-w-[280px]' : 'max-w-[200px]'}`}
     >
       {placeholder !== undefined && !options.includes(value) && <option value={value}>{placeholder}</option>}
       {options.map((o) => (
-        <option key={o} value={o}>{o}</option>
+        <option key={o} value={o}>{labels?.[o] ?? o}</option>
       ))}
     </select>
   );
