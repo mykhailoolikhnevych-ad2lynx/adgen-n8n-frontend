@@ -299,6 +299,8 @@ export interface CreateBinomOfferInput {
   newAmoChannel: string;
   newBinomGroup: string;
   tracker: string;
+  /** 'same' (or empty) keeps the source tracker; otherwise the tracker host to create the campaign on. */
+  newTracker?: string;
   isRoas?: boolean;
   /** Operator-provided override for the resulting Binom campaign name.
    *  When omitted or empty, the workflow synthesizes from template.name +
@@ -752,6 +754,7 @@ interface AppState {
   megatoolBinomForm: {
     tracker: string;
     trackerAutoSet: boolean;
+    newTracker: string;
     newAmoDomain: string;
     newAmoChannel: string;
     newBinomGroup: string;
@@ -816,6 +819,7 @@ interface AppState {
     roasPercent: number;
     tracker: string;
     trackerAutoSet: boolean;
+    newTracker: string;
     newAmoDomain: string;
     newAmoChannel: string;
     newBinomGroup: string;
@@ -1545,6 +1549,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // overwrites `tracker` from the source ad's URL when possible.
     tracker: 'ilab.nnctrack.com',
     trackerAutoSet: false,
+    newTracker: 'same',
     newAmoDomain: 'same',
     newAmoChannel: 'auto',
     newBinomGroup: 'same',
@@ -1583,6 +1588,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     roasPercent: 120,
     tracker: '',
     trackerAutoSet: true,
+    newTracker: 'same',
     newAmoDomain: 'same',
     newAmoChannel: 'auto',
     newBinomGroup: 'same',
@@ -2016,6 +2022,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     megatoolBinomForm: {
       tracker: 'ilab.nnctrack.com',
       trackerAutoSet: false,
+      newTracker: 'same',
       newAmoDomain: 'same',
       newAmoChannel: 'auto',
       newBinomGroup: 'same',
@@ -2066,6 +2073,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       newAmoChannel: input.newAmoChannel,
       newBinomGroup: input.newBinomGroup,
       tracker: input.tracker,
+      newTracker: input.newTracker || 'same',
       isRoas: input.isRoas ?? false,
     };
     if (!WEBHOOKS.binomOfferCreator) {
@@ -2095,6 +2103,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         newAmoChannel: input.newAmoChannel,
         newBinomGroup: input.newBinomGroup,
         tracker: input.tracker,
+        newTracker: input.newTracker || 'same',
         isRoas: input.isRoas ?? false,
         // Empty string means "no override" — the workflow keeps its
         // template-based default when this is missing/blank.
@@ -2274,6 +2283,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // initial empty-string tracker default to DEFAULT_BINOM_TRACKER.
           tracker: getTrackerFromTrackingUrl(result.trackingUrl) || state.nbCopierForm.tracker || DEFAULT_BINOM_TRACKER,
           trackerAutoSet: true,
+          newTracker: 'same',
         },
         // A fresh read starts a fresh copy run — drop any stale result/error
         // from a previous source campaign, and drop the cached Binom clone so
@@ -2334,6 +2344,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       campaignName: form.campaignName,
       budget: form.budget,
       bidType: form.bidType,
+      newTracker: form.newTracker || 'same',
     };
     if (!targetAccount) {
       const msg = 'Unknown target NB account — pick one from the list';
@@ -2353,7 +2364,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     const norm = (v: string) => (v ?? '').trim().toLowerCase();
     const allSame = ['same', ''].includes(norm(form.newAmoDomain))
       && ['same', ''].includes(norm(form.newAmoChannel))
-      && ['same', ''].includes(norm(form.newBinomGroup));
+      && ['same', ''].includes(norm(form.newBinomGroup))
+      && ['same', ''].includes(norm(form.newTracker));
 
     set({ nbCopierCopy: { status: 'loading', result: null, error: null, step: 'binom' } });
 
@@ -2366,6 +2378,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           newAmoChannel: form.newAmoChannel,
           newBinomGroup: form.newBinomGroup,
           tracker: form.tracker,
+          newTracker: form.newTracker || 'same',
           eventType,
           binomCampaignName,
           binomOfferNames,
@@ -2387,6 +2400,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             newAmoChannel: form.newAmoChannel.trim() || 'same',
             newBinomGroup: form.newBinomGroup,
             tracker: form.tracker,
+            newTracker: form.newTracker || 'same',
             isRoas,
             binomCampaignName,
             binomOfferNames,
