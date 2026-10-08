@@ -105,7 +105,12 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const setBinomForm = useAppStore((s) => s.setBinomForm);
   const resetBinomForm = useAppStore((s) => s.resetBinomForm);
   const { tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup, isRoas, binomCampaignName, destination, ttPixelCode } = form;
-  const setTracker = (v: string) => setBinomForm({ tracker: v });
+  const newTracker = form.newTracker || 'same';
+  const effectiveTracker = newTracker !== 'same' ? newTracker : tracker;
+  const crossTracker = effectiveTracker !== tracker;
+  const crossGroupMissing = crossTracker && ['same', ''].includes(newBinomGroup.trim().toLowerCase());
+  const setTracker = (v: string) => setBinomForm({ tracker: v, newTracker: 'same' });
+  const setNewTracker = (v: string) => setBinomForm({ newTracker: v, newBinomGroup: v === 'same' ? 'same' : '' });
   const setTrackerAutoSet = (v: boolean) => setBinomForm({ trackerAutoSet: v });
   const setNewAmoDomain = (v: string) => setBinomForm({ newAmoDomain: v });
   const setNewAmoChannel = (v: string) => setBinomForm({ newAmoChannel: v });
@@ -146,10 +151,10 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   useEffect(() => {
     if (binomGroupsStatus === 'idle') void fetchBinomGroups();
   }, [binomGroupsStatus, fetchBinomGroups]);
-  const binomGroupOptions = useMemo(
-    () => getGroupNamesForTracker(tracker, binomGroupsList),
-    [tracker, binomGroupsList],
-  );
+  const binomGroupOptions = useMemo(() => {
+    const names = getGroupNamesForTracker(effectiveTracker, binomGroupsList);
+    return crossTracker ? names.filter((n) => n !== 'same') : names;
+  }, [effectiveTracker, crossTracker, binomGroupsList]);
 
   // ── NB pre-Binom state (Account + Tracking Event + Bid Type + CPA + ROAS)
   // Lives in the shared store so the NB embedded section below reads the same
@@ -307,12 +312,14 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
   const handleSubmit = () => {
     if (!selectedFbAd.trackingUrl) return;
     if (destination === 'TT' && !(ttPixelCode ?? '').trim()) return;
+    if (crossGroupMissing) return;
     void createBinomOffer({
       trackingUrl: selectedFbAd.trackingUrl,
       newAmoDomain,
       newAmoChannel: newAmoChannel.trim() || 'same',
       newBinomGroup,
       tracker,
+      newTracker,
       // isRoas now derives from the bid-type picker in the pre-Binom section
       // above. TARGET_ROAS → true, everything else → false. The old checkbox
       // is gone; the workflow keeps its existing isRoas-driven URL logic.
@@ -331,7 +338,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
     resetBinomForm();
     // Preserve auto-detect on reset — trackers should re-derive from the ad.
     if (detectedTracker) {
-      setBinomForm({ tracker: detectedTracker, trackerAutoSet: true });
+      setBinomForm({ tracker: detectedTracker, trackerAutoSet: true, newTracker: 'same' });
     }
     setShowRaw(false);
   };
@@ -594,6 +601,32 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             )}
           </div>
 
+          <div>
+            <label className="text-xs font-medium uppercase text-slate-500">New Binom Tracker</label>
+            <select
+              value={newTracker}
+              onChange={(e) => setNewTracker(e.target.value)}
+              className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            >
+              <option value="same">same</option>
+              {BINOM_TRACKERS.filter((t) => t !== tracker).map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+            {crossTracker && (
+              <>
+                <p className="text-xs text-slate-600 mt-1">
+                  Кампанія буде створена на <code>{effectiveTracker}</code>. Оригінал не змінюється.
+                </p>
+                {crossGroupMissing && (
+                  <p className="text-xs text-amber-700 mt-1">
+                    Обери Binom Group на <code>{effectiveTracker}</code>.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="text-xs font-medium uppercase text-slate-500">New AMO Domain *</label>
@@ -629,7 +662,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
             <label className="text-xs font-medium uppercase text-slate-500 flex items-center justify-between gap-2">
               <span>New Binom Group *</span>
               <span className="text-xs normal-case text-slate-500">
-                {binomGroupOptions.length - 1} на <code>{tracker}</code>
+                {crossTracker ? binomGroupOptions.length : binomGroupOptions.length - 1} на <code>{effectiveTracker}</code>
               </span>
             </label>
             <Combobox
@@ -674,7 +707,7 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
           <div className="flex gap-2 pt-2">
             <Button
               onClick={handleSubmit}
-              disabled={isLoading || !selectedFbAd.trackingUrl || (destination === 'TT' && !(ttPixelCode ?? '').trim())}
+              disabled={isLoading || !selectedFbAd.trackingUrl || (destination === 'TT' && !(ttPixelCode ?? '').trim()) || crossGroupMissing}
               className="flex-1"
             >
               {isLoading ? 'Creating…' : 'Create Binom Offer'}

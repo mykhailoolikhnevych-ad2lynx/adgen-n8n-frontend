@@ -155,6 +155,10 @@ export const MegatoolNbCopierPage = () => {
     tracker, trackerAutoSet, newAmoDomain, newAmoChannel, newBinomGroup,
     binomCampaignName, binomOfferNames,
   } = form;
+  const newTracker = form.newTracker || 'same';
+  const effectiveTracker = newTracker !== 'same' ? newTracker : tracker;
+  const crossTracker = effectiveTracker !== tracker;
+  const crossGroupMissing = crossTracker && ['same', ''].includes(newBinomGroup.trim().toLowerCase());
 
   useEffect(() => {
     if (nbAccountsStatus === 'idle') void fetchNbAccounts();
@@ -243,10 +247,10 @@ export const MegatoolNbCopierPage = () => {
   useEffect(() => {
     if (binomGroupsStatus === 'idle') void fetchBinomGroups();
   }, [binomGroupsStatus, fetchBinomGroups]);
-  const binomGroupOptions = useMemo(
-    () => getGroupNamesForTracker(tracker, binomGroupsList),
-    [tracker, binomGroupsList],
-  );
+  const binomGroupOptions = useMemo(() => {
+    const names = getGroupNamesForTracker(effectiveTracker, binomGroupsList);
+    return crossTracker ? names.filter((n) => n !== 'same') : names;
+  }, [effectiveTracker, crossTracker, binomGroupsList]);
   const detectedTracker = useMemo(
     () => getTrackerFromTrackingUrl(read.result?.trackingUrl),
     [read.result?.trackingUrl],
@@ -255,7 +259,8 @@ export const MegatoolNbCopierPage = () => {
   const norm = (v: string) => (v ?? '').trim().toLowerCase();
   const allSame = ['same', ''].includes(norm(newAmoDomain))
     && ['same', ''].includes(norm(newAmoChannel))
-    && ['same', ''].includes(norm(newBinomGroup));
+    && ['same', ''].includes(norm(newBinomGroup))
+    && !crossTracker;
 
   // Prefills for the Binom name fields — same defaults the Binom workflow
   // would apply; an operator edit (stored in the form) takes precedence.
@@ -291,6 +296,7 @@ export const MegatoolNbCopierPage = () => {
     && !!targetAccount
     && !!pickedEvent
     && !startError
+    && !crossGroupMissing
     && budget > 0
     && (bidType !== 'TARGET_CPA' || targetCpaDollars > 0)
     && (bidType !== 'TARGET_ROAS' || roasPercent > 0);
@@ -650,11 +656,35 @@ export const MegatoolNbCopierPage = () => {
                 </label>
                 <select
                   value={tracker}
-                  onChange={(e) => setForm({ tracker: e.target.value, trackerAutoSet: false, newBinomGroup: 'same' })}
+                  onChange={(e) => setForm({ tracker: e.target.value, trackerAutoSet: false, newTracker: 'same', newBinomGroup: 'same' })}
                   className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
                 >
                   {BINOM_TRACKERS.map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium uppercase text-slate-500">New Binom Tracker</label>
+                <select
+                  value={newTracker}
+                  onChange={(e) => setForm({ newTracker: e.target.value, newBinomGroup: e.target.value === 'same' ? 'same' : '' })}
+                  className="mt-1 w-full rounded-md border border-input bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="same">same</option>
+                  {BINOM_TRACKERS.filter((t) => t !== tracker).map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                {crossTracker && (
+                  <>
+                    <p className="text-xs text-slate-600 mt-1">
+                      Кампанія буде створена на <code>{effectiveTracker}</code>. Оригінал не змінюється.
+                    </p>
+                    {crossGroupMissing && (
+                      <p className="text-xs text-amber-700 mt-1">
+                        Обери Binom Group на <code>{effectiveTracker}</code>.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
