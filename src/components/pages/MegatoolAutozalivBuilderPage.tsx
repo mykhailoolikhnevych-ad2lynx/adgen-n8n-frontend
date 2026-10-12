@@ -384,7 +384,7 @@ export function MegatoolAutozalivBuilderPage() {
   const fetchNbAccounts = useAppStore((s) => s.fetchNbAccounts);
 
   // Step 6 — NB
-  const [nbBulk, setNbBulk] = useState<NbSettings>({ budget: 10, startDate: 'now+3h', timezone: 'PDT', bidValue: 0, cta: '' });
+  const [nbBulk, setNbBulk] = useState<NbSettings>({ budget: 10, startDate: 'tomorrow', timezone: 'PDT', bidValue: 0, cta: '' });
   const [nbNames, setNbNames] = useState<Record<string, string>>({});
   const [nbAdvertisers, setNbAdvertisers] = useState<Record<string, string>>({});
   // Per-ad text edits, keyed by adKey(); unset = the source ad's text as it is.
