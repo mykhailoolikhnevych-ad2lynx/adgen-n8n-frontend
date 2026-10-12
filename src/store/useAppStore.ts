@@ -2390,7 +2390,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           if (!WEBHOOKS.binomOfferCreator) {
             throw new Error('PUBLIC_WEBHOOK_BINOM_OFFER_CREATOR_URL is not set in .env');
           }
-          const isRoas = form.bidType === 'TARGET_ROAS' || (form.bidType === 'SAME' && selection.isRoas);
+          // complete_payment always gets the ROAS offer URL (_roas), also for MAX_CONVERSION warm-ups.
+          const isRoas = form.bidType === 'TARGET_ROAS' || (form.bidType === 'SAME' && selection.isRoas) || eventType === 'complete_payment';
           const ident = await getAuthEmail();
           const email = ident?.email ?? 'unknown@unknown';
           const binomPayload = {

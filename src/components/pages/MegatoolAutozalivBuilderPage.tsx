@@ -176,7 +176,9 @@ function defaultName(article: string): string {
 const resolveEvent = (event: string, bidType: string) => (event !== 'auto' ? event : bidType === 'TARGET_ROAS' ? 'complete_payment' : 'click_button');
 // "URL for offer" formula from the sheet: article URL + NB macros (+ _roas) + ad_id + utm_term + empty channel.
 // The FB sheet uses fbclid and appends ad_id={t6} after the channel.
-function offerUrlFor(articleUrl: string, keywords: string, bidType: string, platform: Platform): string {
+// _roas follows the event, not the bid type: complete_payment + MAX_CONVERSION warm-ups must
+// already report value, or NB never reaches the 20 valued events needed for TARGET_ROAS.
+function offerUrlFor(articleUrl: string, keywords: string, event: string, platform: Platform): string {
   const base = articleUrl.split(/[?#]/)[0];
   const kw = keywords.split(',').map((k) => k.trim()).filter(Boolean).join(',');
   const term = kw ? '&utm_term=' + encodeURIComponent(kw) : '';
@@ -185,7 +187,7 @@ function offerUrlFor(articleUrl: string, keywords: string, bidType: string, plat
       + '&term2={campaign_domain}&utm_content={t12}' + term + '&channel=&ad_id={t6}';
   }
   return base + '?m=og&part=bol&utm_source=newsbreak&utm_medium=gs&newsbreak_cid={t10}&term1={clickid}_{campaign_id}'
-    + (bidType === 'TARGET_ROAS' ? '_roas' : '') + '&term2={campaign_domain}&utm_content={t12}&ad_id={t2}'
+    + (event === 'complete_payment' ? '_roas' : '') + '&term2={campaign_domain}&utm_content={t12}&ad_id={t2}'
     + term + '&channel=';
 }
 // ---- Step 6: NB — reuses the MEGATOOL Create NB Campaign webhook (campaign → 1 ad set → ads) ----
@@ -733,7 +735,7 @@ export function MegatoolAutozalivBuilderPage() {
     const suffix = binomBulk.suffix.trim() || competitorOf(articleByTrimmed[trimArticle(g.name)]?.examp_landing_page || '');
     const tail = [launchAccount, todayDdMm(), suffix].filter(Boolean).join(' ');
     const campaignName = `${name} | ${geo} | AMO | AUTOZALYV | ${buyer} | ${tail}`;
-    const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), binomBulk.bidType, platform) : '';
+    const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), resolveEvent(binomBulk.event, binomBulk.bidType), platform) : '';
     return { name, geo, lang, offerName, campaignName, offerUrl };
   };
   const setBinomRow = (name: string, patch: BinomRow) => setBinomRows((r) => ({ ...r, [name]: { ...r[name], ...patch } }));

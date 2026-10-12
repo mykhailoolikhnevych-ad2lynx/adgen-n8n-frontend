@@ -323,7 +323,9 @@ export const MegatoolCreateBinomOfferPage = ({ onClose, onOpenNbCampaign }: Mega
       // isRoas now derives from the bid-type picker in the pre-Binom section
       // above. TARGET_ROAS → true, everything else → false. The old checkbox
       // is gone; the workflow keeps its existing isRoas-driven URL logic.
-      isRoas: derivedIsRoas,
+      // complete_payment also gets the ROAS offer URL (_roas) so MAX_CONVERSION
+      // warm-ups count value toward NB's 20-event TARGET_ROAS threshold.
+      isRoas: derivedIsRoas || (destination !== 'TT' && pickedEvent?.eventType === 'complete_payment'),
       // Send the effective name (user override or auto-derived MEGATOOL prefix).
       // Empty string only if there's no FB context yet, which shouldn't happen.
       binomCampaignName: binomCampaignNameEffective,
