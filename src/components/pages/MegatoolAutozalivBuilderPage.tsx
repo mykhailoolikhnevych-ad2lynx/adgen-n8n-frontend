@@ -108,7 +108,20 @@ const COMPETITORS: Record<string, string[]> = {
   amo: ['financeply.com', 'contraspero.com', 'fortunevia.com', 'retrotreat.com', 'thetopselected.com', 'topfindtoday.com'],
   'Orbitpeek (Tonic)': ['orbitpeek.com'],
   theunexploredroad: ['theunexploredroad.com'],
+  moodboosted: ['moodboosted.com'],
 };
+// main_adheart_geo mixes ISO alpha-2 and alpha-3 (US / USA) — the geo filter groups them under alpha-2.
+const GEO_ALPHA3: Record<string, string> = {
+  AGO: 'AO', ARE: 'AE', ARM: 'AM', AUS: 'AU', AZE: 'AZ', BEL: 'BE', BGD: 'BD', BRA: 'BR', CAN: 'CA', CHL: 'CL',
+  DEU: 'DE', DNK: 'DK', DZA: 'DZ', ESP: 'ES', FIN: 'FI', FRA: 'FR', GBR: 'GB', GRC: 'GR', HUN: 'HU', IDN: 'ID',
+  IND: 'IN', IRL: 'IE', IRQ: 'IQ', ITA: 'IT', JPN: 'JP', KEN: 'KE', KHM: 'KH', KOR: 'KR', KWT: 'KW', LBN: 'LB',
+  LUX: 'LU', MAR: 'MA', MEX: 'MX', MYS: 'MY', NGA: 'NG', NLD: 'NL', NZL: 'NZ', PAK: 'PK', PAN: 'PA', PHL: 'PH',
+  POL: 'PL', PRT: 'PT', PRY: 'PY', QAT: 'QA', ROU: 'RO', SAU: 'SA', SVN: 'SI', SWE: 'SE', TUR: 'TR', TWN: 'TW',
+  USA: 'US', VNM: 'VN', ZAF: 'ZA', AUT: 'AT', ARG: 'AR', BGR: 'BG', CHE: 'CH', COL: 'CO', CZE: 'CZ', SVK: 'SK',
+  LVA: 'LV', MLT: 'MT', UKR: 'UA',
+};
+const geoOf = (g: string) => GEO_ALPHA3[g.trim().toUpperCase()] || g.trim().toUpperCase();
+
 const competitorOf = (url: string) =>
   Object.keys(COMPETITORS).find((c) => COMPETITORS[c].some((s) => url.toLowerCase().includes(s))) || '';
 
@@ -349,6 +362,7 @@ export function MegatoolAutozalivBuilderPage() {
   const [unusedOnly, setUnusedOnly] = useState(true);
   const [minAds, setMinAds] = useState(0);
   const [lang, setLang] = useState('');
+  const [geo, setGeo] = useState('');
   const [competitor, setCompetitor] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'cnt_ads_7d', dir: 'desc' });
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -458,6 +472,10 @@ export function MegatoolAutozalivBuilderPage() {
     () => [...new Set(articleRows.map((a) => a.cells.top_language_for_article).filter(Boolean))].sort(),
     [articleRows],
   );
+  const geos = useMemo(
+    () => [...new Set(articleRows.map((a) => geoOf(a.cells.main_adheart_geo || '')).filter(Boolean))].sort(),
+    [articleRows],
+  );
 
   const q = search.trim().toLowerCase();
   const visibleArticles = useMemo(() => {
@@ -467,6 +485,7 @@ export function MegatoolAutozalivBuilderPage() {
         (!unusedOnly || (!a.used && !a.launched)) &&
         (!minAds || (toNum(a.cells.cnt_ads || '0') || 0) >= minAds) &&
         (!lang || a.cells.top_language_for_article === lang) &&
+        (!geo || geoOf(a.cells.main_adheart_geo || '') === geo) &&
         (!competitor || COMPETITORS[competitor].some((s) => (a.cells.examp_landing_page || '').toLowerCase().includes(s))),
     );
     const key = sort.key;
@@ -474,7 +493,7 @@ export function MegatoolAutozalivBuilderPage() {
       const c = key === 'article' ? a.name.localeCompare(b.name) : compare(a.cells[key] || '', b.cells[key] || '');
       return sort.dir === 'asc' ? c : -c;
     });
-  }, [articleRows, q, unusedOnly, minAds, lang, competitor, sort]);
+  }, [articleRows, q, unusedOnly, minAds, lang, geo, competitor, sort]);
 
   const toggle = (name: string) =>
     setSelected((s) => {
@@ -1130,6 +1149,14 @@ export function MegatoolAutozalivBuilderPage() {
                 <option value="">All languages</option>
                 {langs.map((l) => (
                   <option key={l} value={l}>{l}</option>
+                ))}
+              </select>
+            )}
+            {geos.length > 0 && (
+              <select value={geo} onChange={(e) => setGeo(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
+                <option value="">All geos</option>
+                {geos.map((g) => (
+                  <option key={g} value={g}>{g}</option>
                 ))}
               </select>
             )}
