@@ -97,19 +97,10 @@ function pickAds(ads: Row[], s: Settings): Row[] {
   return out.slice(0, Math.max(1, s.top || 10));
 }
 
-// Step 1 competitor filter: competitor → texts one of which its landing URL contains.
-const COMPETITORS: Record<string, string[]> = {
-  organizertone: ['organizertone', 'balancebazar.com'],
-  sarb: ['sarb'],
-  ad2lynx: [
-    'perabianco.com', 'pancettafuns.com', 'walletilo.com', 'contranoche.com', 'contradia.com', 'healthquix.com',
-    'geeksstory.com', 'finomira.com', 'fintreat.com', 'healquix.com', 'moneytano.com',
-  ],
-  amo: ['financeply.com', 'contraspero.com', 'fortunevia.com', 'retrotreat.com', 'thetopselected.com', 'topfindtoday.com'],
-  'Orbitpeek (Tonic)': ['orbitpeek.com'],
-  theunexploredroad: ['theunexploredroad.com'],
-  moodboosted: ['moodboosted.com'],
-};
+// Step 1 competitor filter. Competitors live in the sheet's "Competitors" tab (name | domains);
+// the import writes the name into the article's "competitor" column. Rows imported before that
+// column existed fall back to matching examp_landing_page against the domains (subdomains too).
+type Competitor = { name: string; domains: string[] };
 // main_adheart_geo mixes ISO alpha-2 and alpha-3 (US / USA) — the geo filter groups them under alpha-2.
 const GEO_ALPHA3: Record<string, string> = {
   AGO: 'AO', ARE: 'AE', ARM: 'AM', AUS: 'AU', AZE: 'AZ', BEL: 'BE', BGD: 'BD', BRA: 'BR', CAN: 'CA', CHL: 'CL',
@@ -122,8 +113,11 @@ const GEO_ALPHA3: Record<string, string> = {
 };
 const geoOf = (g: string) => GEO_ALPHA3[g.trim().toUpperCase()] || g.trim().toUpperCase();
 
-const competitorOf = (url: string) =>
-  Object.keys(COMPETITORS).find((c) => COMPETITORS[c].some((s) => url.toLowerCase().includes(s))) || '';
+const competitorOf = (competitors: Competitor[], cells: Row | undefined) => {
+  if (cells?.competitor) return cells.competitor;
+  const host = (cells?.examp_landing_page || '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').split(/[/?#:]/)[0];
+  return (host && competitors.find((c) => c.domains.some((d) => host === d || host.endsWith('.' + d)))?.name) || '';
+};
 
 // Same as formatCtaText() in the Apps Script: LEARN_MORE → Learn More.
 const formatCta = (s: string) => s.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
@@ -364,6 +358,8 @@ export function MegatoolAutozalivBuilderPage() {
   const [lang, setLang] = useState('');
   const [geo, setGeo] = useState('');
   const [competitor, setCompetitor] = useState('');
+  const [source, setSource] = useState('');
+  const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'cnt_ads_7d', dir: 'desc' });
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -447,9 +443,24 @@ export function MegatoolAutozalivBuilderPage() {
       // not fatal: the sheet's own "used" column still shows
     }
   };
+  const loadCompetitors = async () => {
+    try {
+      const res = await callBuilder({ action: 'competitors' });
+      const col = (h: string) => res.headers.indexOf(h);
+      setCompetitors(
+        res.rows.map((r) => ({
+          name: (r[col('name')] || '').trim(),
+          domains: (r[col('domains')] || '').toLowerCase().split(/[\s,;]+/).map((d) => d.replace(/^www\./, '')).filter(Boolean),
+        })),
+      );
+    } catch {
+      // not fatal: the sheet's "competitor" column still filters
+    }
+  };
   useEffect(() => {
     loadArticles();
     loadUsed();
+    loadCompetitors();
   }, []);
 
   // Article name is column B, "used" formula is column D (see DataAutomations.js).
@@ -460,8 +471,8 @@ export function MegatoolAutozalivBuilderPage() {
       used: r[3] && r[3] !== NOT_USED ? r[3] : '',
       launched: usedMap[trimArticle(r[1])] as UsedRow | undefined,
       cells: Object.fromEntries(articles.headers.map((h, i) => [h, r[i] ?? ''])) as Row,
-    }));
-  }, [articles, usedMap]);
+    })).map((a) => ({ ...a, competitor: competitorOf(competitors, a.cells) }));
+  }, [articles, usedMap, competitors]);
   const cols = useMemo(() => ARTICLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
   const exampleCols = useMemo(() => EXAMPLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
   const articleByTrimmed = useMemo(
@@ -476,6 +487,14 @@ export function MegatoolAutozalivBuilderPage() {
     () => [...new Set(articleRows.map((a) => geoOf(a.cells.main_adheart_geo || '')).filter(Boolean))].sort(),
     [articleRows],
   );
+  const competitorNames = useMemo(
+    () => [...new Set([...competitors.map((c) => c.name), ...articleRows.map((a) => a.competitor)].filter(Boolean))].sort(),
+    [competitors, articleRows],
+  );
+  const sources = useMemo(
+    () => [...new Set(articleRows.map((a) => a.cells.example_source).filter(Boolean))].sort(),
+    [articleRows],
+  );
 
   const q = search.trim().toLowerCase();
   const visibleArticles = useMemo(() => {
@@ -486,14 +505,15 @@ export function MegatoolAutozalivBuilderPage() {
         (!minAds || (toNum(a.cells.cnt_ads || '0') || 0) >= minAds) &&
         (!lang || a.cells.top_language_for_article === lang) &&
         (!geo || geoOf(a.cells.main_adheart_geo || '') === geo) &&
-        (!competitor || COMPETITORS[competitor].some((s) => (a.cells.examp_landing_page || '').toLowerCase().includes(s))),
+        (!competitor || a.competitor === competitor) &&
+        (!source || a.cells.example_source === source),
     );
     const key = sort.key;
     return [...list].sort((a, b) => {
       const c = key === 'article' ? a.name.localeCompare(b.name) : compare(a.cells[key] || '', b.cells[key] || '');
       return sort.dir === 'asc' ? c : -c;
     });
-  }, [articleRows, q, unusedOnly, minAds, lang, geo, competitor, sort]);
+  }, [articleRows, q, unusedOnly, minAds, lang, geo, competitor, source, sort]);
 
   const toggle = (name: string) =>
     setSelected((s) => {
@@ -751,7 +771,7 @@ export function MegatoolAutozalivBuilderPage() {
     const amoLabel = (articleUrl.match(/https?:\/\/([^.]+)/) || [])[1] || '';
     const offerName = `${name} | ${geo} | ${lang} | AMO | AUTOZALYV${buyer ? ' | ' + buyer : ''} | ch=auto${amoLabel ? ' | ' + amoLabel : ''}`;
     // Empty suffix → the competitor the article's landing page belongs to.
-    const suffix = binomBulk.suffix.trim() || competitorOf(articleByTrimmed[trimArticle(g.name)]?.examp_landing_page || '');
+    const suffix = binomBulk.suffix.trim() || competitorOf(competitors, articleByTrimmed[trimArticle(g.name)]);
     const tail = [launchAccount, todayDdMm(), suffix].filter(Boolean).join(' ');
     const campaignName = `${name} | ${geo} | AMO | AUTOZALYV | ${buyer} | ${tail}`;
     const offerUrl = articleUrl ? offerUrlFor(articleUrl, keywordsFor(g), resolveEvent(binomBulk.event, binomBulk.bidType), platform) : '';
@@ -1162,10 +1182,18 @@ export function MegatoolAutozalivBuilderPage() {
             )}
             <select value={competitor} onChange={(e) => setCompetitor(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
               <option value="">All competitors</option>
-              {Object.keys(COMPETITORS).map((c) => (
+              {competitorNames.map((c) => (
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
+            {sources.length > 0 && (
+              <select value={source} onChange={(e) => setSource(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
+                <option value="">All sources</option>
+                {sources.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            )}
             <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
               {visibleArticles.length} of {articleRows.length} articles
               <Button size="sm" onClick={loadArticles} disabled={articlesLoading}>
