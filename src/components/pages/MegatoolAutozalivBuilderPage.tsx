@@ -113,10 +113,12 @@ const GEO_ALPHA3: Record<string, string> = {
 };
 const geoOf = (g: string) => GEO_ALPHA3[g.trim().toUpperCase()] || g.trim().toUpperCase();
 
+// A stored name no longer in the tab (competitor renamed after import) gives way to the domain match.
 const competitorOf = (competitors: Competitor[], cells: Row | undefined) => {
-  if (cells?.competitor) return cells.competitor;
+  const stored = cells?.competitor || '';
+  if (stored && (competitors.length === 0 || competitors.some((c) => c.name === stored))) return stored;
   const host = (cells?.examp_landing_page || '').trim().toLowerCase().replace(/^[a-z]+:\/\//, '').split(/[/?#:]/)[0];
-  return (host && competitors.find((c) => c.domains.some((d) => host === d || host.endsWith('.' + d)))?.name) || '';
+  return (host && competitors.find((c) => c.domains.some((d) => host === d || host.endsWith('.' + d)))?.name) || stored;
 };
 
 // Same as formatCtaText() in the Apps Script: LEARN_MORE → Learn More.
