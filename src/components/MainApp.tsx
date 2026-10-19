@@ -31,7 +31,7 @@ type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-cam
 const MEGATOOL_NAV: { value: MegatoolPage; label: string; adminOnly?: boolean }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
   { value: 'nb-copier', label: 'Newsbreak Copier' },
-  { value: 'autozaliv-builder', label: 'Autozaliv Builder', adminOnly: true },
+  { value: 'autozaliv-builder', label: 'Autozaliv Builder' },
 ];
 
 const BASE_NAV: { value: Page; label: string }[] = [
@@ -497,12 +497,10 @@ export default function MainApp() {
           <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'nb-copier'}>
             <MegatoolNbCopierPage />
           </KeepAlive>
-          {/* Autozaliv Builder — admin-only; pick articles → pick ads (replaces the Filter sheet). */}
-          {isAdmin && (
-            <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'autozaliv-builder'}>
-              <MegatoolAutozalivBuilderPage />
-            </KeepAlive>
-          )}
+          {/* Autozaliv Builder — open to everyone; pick articles → pick ads (replaces the Filter sheet). */}
+          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'autozaliv-builder'}>
+            <MegatoolAutozalivBuilderPage isAdmin={isAdmin} />
+          </KeepAlive>
           {/* Closing the Binom sub-tab (×) means "discard this offer draft", so it
               stays gated on binomOfferOpen — closing still resets the form. */}
           {binomOfferOpen && (

@@ -27,6 +27,9 @@ const LAUNCH_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL as st
 const RSOC_OPTIONS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_RSOC_OPTIONS_URL as string | undefined;
 // Step 6 on Facebook (megatool-autozaliv-fb): FB accounts / pages / pixels and the campaign → ad set → ads launch.
 const FB_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_FB_URL as string | undefined;
+// Step 1 "Parse Adheart" (megatool-adheart-parse): parses the Competitors rows with adheart_update ticked
+// in the background; results land in the sheet (new tab, adheart_tab, adheart_parsed).
+const ADHEART_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_ADHEART_PARSE_URL as string | undefined;
 
 type Sheet = { headers: string[]; rows: string[][] };
 type Row = Record<string, string>;
@@ -146,6 +149,7 @@ const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string }> =>
 const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL', body, 300_000);
 const callLaunch = (body: object) => post(LAUNCH_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL', body, 180_000);
 const callFb = (body: object, timeout = 60_000) => post(FB_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_FB_URL', body, timeout);
+const callAdheart = (body: object) => post(ADHEART_WEBHOOK, 'PUBLIC_WEBHOOK_ADHEART_PARSE_URL', body, 60_000);
 
 type Platform = 'nb' | 'fb';
 // RSOC traffic source slug per platform.
@@ -338,7 +342,7 @@ async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>)
   }));
 }
 
-export function MegatoolAutozalivBuilderPage() {
+export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: boolean }) {
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
   const [platform, setPlatform] = useState<Platform>('nb');
   const trafficSource = TRAFFIC_SOURCE[platform];
@@ -464,6 +468,20 @@ export function MegatoolAutozalivBuilderPage() {
     loadUsed();
     loadCompetitors();
   }, []);
+  const [adheartRun, setAdheartRun] = useState<{ busy?: boolean; msg?: string; error?: string }>({});
+  const parseAdheart = async () => {
+    setAdheartRun({ busy: true });
+    try {
+      const res = await callAdheart({ action: 'competitors' });
+      const names = (res.jobs || []).map((j: { name: string }) => j.name).join(', ');
+      const skipped = (res.skipped || []).length ? ` Skipped: ${res.skipped.join('; ')}.` : '';
+      setAdheartRun({
+        msg: `Adheart parse started: ${names}. Each result appears in adheart_parsed in the Competitors tab; then run "Import checked competitors" (Adheart) in the sheet.${skipped}`,
+      });
+    } catch (e: any) {
+      setAdheartRun({ error: e.message });
+    }
+  };
 
   // Article name is column B, "used" formula is column D (see DataAutomations.js).
   const articleRows = useMemo(() => {
@@ -1215,12 +1233,20 @@ export function MegatoolAutozalivBuilderPage() {
             )}
             <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
               {visibleArticles.length} of {articleRows.length} articles
+              {/* Admin-only: writes tabs into the source spreadsheet and the Competitors tab. */}
+              {isAdmin && (
+                <Button size="sm" variant="outline" onClick={parseAdheart} disabled={adheartRun.busy} title="Parse every Competitors row with adheart_update ticked">
+                  {adheartRun.busy ? 'Starting…' : 'Parse Adheart'}
+                </Button>
+              )}
               <Button size="sm" onClick={loadArticles} disabled={articlesLoading}>
                 {articlesLoading ? 'Loading…' : 'Refresh'}
               </Button>
             </div>
           </div>
           {articlesError && <ErrorBox msg={articlesError} />}
+          {adheartRun.error && <ErrorBox msg={`Parse Adheart: ${adheartRun.error}`} />}
+          {adheartRun.msg && <div className="mx-4 mb-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{adheartRun.msg}</div>}
           <div className="flex-1 overflow-auto mx-4 rounded border border-slate-200 bg-white">
             {!articles && articlesLoading ? (
               <div className="p-6 text-sm text-slate-500">Loading articles…</div>
