@@ -499,7 +499,7 @@ export default function MainApp() {
           </KeepAlive>
           {/* Autozaliv Builder — open to everyone; pick articles → pick ads (replaces the Filter sheet). */}
           <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'autozaliv-builder'}>
-            <MegatoolAutozalivBuilderPage />
+            <MegatoolAutozalivBuilderPage isAdmin={isAdmin} />
           </KeepAlive>
           {/* Closing the Binom sub-tab (×) means "discard this offer draft", so it
               stays gated on binomOfferOpen — closing still resets the form. */}
