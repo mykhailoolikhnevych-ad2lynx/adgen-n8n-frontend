@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -520,8 +520,8 @@ export function MegatoolAutozalivBuilderPage() {
         (!q || a.name.toLowerCase().includes(q)) &&
         (!unusedOnly || (!a.used && !a.launched)) &&
         (!minAds || (toNum(a.cells.cnt_ads || '0') || 0) >= minAds) &&
-        (!lang || a.cells.top_language_for_article === lang) &&
-        (!geo || geoOf(a.cells.main_adheart_geo || '') === geo) &&
+        (!lang || (a.cells.top_language_for_article || '').toLowerCase().startsWith(lang.trim().toLowerCase())) &&
+        (!geo || geoOf(a.cells.main_adheart_geo || '').startsWith(geo.trim().toUpperCase())) &&
         (!competitor || a.competitor === competitor) &&
         (!source || a.cells.example_source === source),
     );
@@ -1181,21 +1181,18 @@ export function MegatoolAutozalivBuilderPage() {
               Min ads
               <Input type="number" min={0} value={minAds} onChange={(e) => setMinAds(Number(e.target.value) || 0)} className="h-8 w-20 bg-white" />
             </label>
+            {/* Typed text filters by the first letters ("d" → da, de); × clears it (the box shows empty while focused). */}
             {langs.length > 0 && (
-              <select value={lang} onChange={(e) => setLang(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
-                <option value="">All languages</option>
-                {langs.map((l) => (
-                  <option key={l} value={l}>{l}</option>
-                ))}
-              </select>
+              <div className="flex items-center">
+                <FilterCombobox value={lang} onChange={setLang} options={langs} prefixMatch placeholder="All languages" className="w-36" inputClassName="h-8 bg-white text-sm" />
+                {lang && <button type="button" title="All languages" onClick={() => setLang('')} className="px-1 text-slate-400 hover:text-slate-700">×</button>}
+              </div>
             )}
             {geos.length > 0 && (
-              <select value={geo} onChange={(e) => setGeo(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
-                <option value="">All geos</option>
-                {geos.map((g) => (
-                  <option key={g} value={g}>{g}</option>
-                ))}
-              </select>
+              <div className="flex items-center">
+                <FilterCombobox value={geo} onChange={setGeo} options={geos} prefixMatch placeholder="All geos" className="w-28" inputClassName="h-8 bg-white text-sm" />
+                {geo && <button type="button" title="All geos" onClick={() => setGeo('')} className="px-1 text-slate-400 hover:text-slate-700">×</button>}
+              </div>
             )}
             <select value={competitor} onChange={(e) => setCompetitor(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
               <option value="">All competitors</option>
@@ -2116,6 +2113,19 @@ export function MegatoolAutozalivBuilderPage() {
       )}
     </div>
   );
+}
+
+// Step 1 language / geo filter box: keeps the typed text locally so letters show at once, and
+// passes it up only after typing pauses — re-filtering ~5k table rows per keystroke made typing lag.
+function FilterCombobox({ value, onChange, ...rest }: ComponentProps<typeof Combobox>) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  useEffect(() => {
+    if (text === value) return;
+    const t = setTimeout(() => onChange(text), 300);
+    return () => clearTimeout(t);
+  }, [text, value, onChange]);
+  return <Combobox value={text} onChange={setText} {...rest} />;
 }
 
 function StepPill({ n, label, active, disabled, onClick }: { n: number; label: string; active: boolean; disabled?: boolean; onClick?: () => void }) {

@@ -18,6 +18,8 @@ interface ComboboxProps {
   // Chrome. Showing "Type at least N character(s) to search" hint instead.
   // Defaults to 0 (current behavior — show everything on open).
   minSearchChars?: number;
+  // Match the query against the start of each option instead of anywhere in it (short codes: "d" → da, de).
+  prefixMatch?: boolean;
 }
 
 export const Combobox: React.FC<ComboboxProps> = ({
@@ -29,6 +31,7 @@ export const Combobox: React.FC<ComboboxProps> = ({
   inputClassName,
   error,
   minSearchChars = 0,
+  prefixMatch = false,
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -54,7 +57,9 @@ export const Combobox: React.FC<ComboboxProps> = ({
   const filteredAll = !querySatisfied
     ? []
     : query
-      ? options.filter((o) => o.toLowerCase().includes(query.toLowerCase()))
+      ? options.filter((o) =>
+          prefixMatch ? o.toLowerCase().startsWith(query.toLowerCase()) : o.toLowerCase().includes(query.toLowerCase()),
+        )
       : options;
   // 20 is a deliberately tight cap — the dropdown is searchable, so the user
   // narrows further by typing. Bigger renders thrash low-end machines under
