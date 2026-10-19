@@ -497,6 +497,21 @@ export function MegatoolAutozalivBuilderPage() {
     () => [...new Set(articleRows.map((a) => a.cells.example_source).filter(Boolean))].sort(),
     [articleRows],
   );
+  // Latest import (the article name's ___YYYY-MM-DD suffix) per source for the picked competitor / source.
+  const lastParsed = useMemo(() => {
+    if (!competitor && !source) return [];
+    const latest: Record<string, string> = {};
+    for (const a of articleRows) {
+      const src = a.cells.example_source || '';
+      if ((competitor && a.competitor !== competitor) || (source && src !== source)) continue;
+      const d = a.name.match(/___(\d{4})-(\d{2})-(\d{2})$/);
+      const iso = d ? `${d[1]}-${d[2]}-${d[3]}` : '';
+      if (iso && (!latest[src] || iso > latest[src])) latest[src] = iso;
+    }
+    return Object.entries(latest)
+      .sort()
+      .map(([src, iso]) => `${src || 'no source'} ${iso.split('-').reverse().join('.')}`);
+  }, [articleRows, competitor, source]);
 
   const q = search.trim().toLowerCase();
   const visibleArticles = useMemo(() => {
@@ -1195,6 +1210,11 @@ export function MegatoolAutozalivBuilderPage() {
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
+            )}
+            {(competitor || source) && (
+              <span className="text-xs text-slate-500">
+                Last parse: {lastParsed.length > 0 ? lastParsed.join(' · ') : '—'}
+              </span>
             )}
             <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
               {visibleArticles.length} of {articleRows.length} articles
