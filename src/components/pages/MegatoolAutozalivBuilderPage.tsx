@@ -103,7 +103,8 @@ function pickAds(ads: Row[], s: Settings): Row[] {
 // Step 1 competitor filter. Competitors live in the sheet's "Competitors" tab (name | domains);
 // the import writes the name into the article's "competitor" column. Rows imported before that
 // column existed fall back to matching examp_landing_page against the domains (subdomains too).
-type Competitor = { name: string; domains: string[] };
+// adheartSearch / adheartParsed feed the Parse Adheart panel (filters to search, last result).
+type Competitor = { name: string; domains: string[]; adheartSearch: string; adheartParsed: string };
 // main_adheart_geo mixes ISO alpha-2 and alpha-3 (US / USA) — the geo filter groups them under alpha-2.
 const GEO_ALPHA3: Record<string, string> = {
   AGO: 'AO', ARE: 'AE', ARM: 'AM', AUS: 'AU', AZE: 'AZ', BEL: 'BE', BGD: 'BD', BRA: 'BR', CAN: 'CA', CHL: 'CL',
@@ -457,7 +458,9 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         res.rows.map((r) => ({
           name: (r[col('name')] || '').trim(),
           domains: (r[col('domains')] || '').toLowerCase().split(/[\s,;]+/).map((d) => d.replace(/^www\./, '')).filter(Boolean),
-        })),
+          adheartSearch: (r[col('adheart_search')] || '').trim(),
+          adheartParsed: (r[col('adheart_parsed')] || '').trim(),
+        })).filter((c) => c.name),
       );
     } catch {
       // not fatal: the sheet's "competitor" column still filters
@@ -469,14 +472,31 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
     loadCompetitors();
   }, []);
   const [adheartRun, setAdheartRun] = useState<{ busy?: boolean; msg?: string; error?: string }>({});
+  // Same knobs as adheart_* in ads_archive/main.py. Empty min reach = any; empty geo = any.
+  const [adheartOpen, setAdheartOpen] = useState(false);
+  const [adheartOpts, setAdheartOpts] = useState({ start: '7 days ago', date: '', minReach: '20', geo: '', maxPages: '150' });
+  // Competitors picked in the panel, and filters edited there (this run only; unset = the sheet's
+  // adheart_search, or the domains joined with " | " — the same fallback the workflow applies).
+  const [adheartPicked, setAdheartPicked] = useState<Set<string>>(new Set());
+  const [adheartSearchEdits, setAdheartSearchEdits] = useState<Record<string, string>>({});
+  const adheartSearchFor = (c: Competitor) => adheartSearchEdits[c.name] ?? (c.adheartSearch || c.domains.join(' | '));
   const parseAdheart = async () => {
+    const o = adheartOpts;
     setAdheartRun({ busy: true });
     try {
-      const res = await callAdheart({ action: 'competitors' });
+      const res = await callAdheart({
+        action: 'competitors',
+        competitors: competitors.filter((c) => adheartPicked.has(c.name)).map((c) => ({ name: c.name, search: adheartSearchFor(c) })),
+        startDate: o.start === 'date' ? o.date : o.start,
+        minReach: Number(o.minReach) || 0,
+        geo: o.geo,
+        maxPages: Number(o.maxPages) || 150,
+      });
       const names = (res.jobs || []).map((j: { name: string }) => j.name).join(', ');
       const skipped = (res.skipped || []).length ? ` Skipped: ${res.skipped.join('; ')}.` : '';
+      setAdheartPicked(new Set());
       setAdheartRun({
-        msg: `Adheart parse started: ${names}. Each result appears in adheart_parsed in the Competitors tab; then run "Import checked competitors" (Adheart) in the sheet.${skipped}`,
+        msg: `Adheart parse started: ${names}. Press ↻ Status in a few minutes to see each result; a finished one is ticked for "Import checked competitors" (Adheart) in the sheet.${skipped}`,
       });
     } catch (e: any) {
       setAdheartRun({ error: e.message });
@@ -1235,8 +1255,8 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
               {visibleArticles.length} of {articleRows.length} articles
               {/* Admin-only: writes tabs into the source spreadsheet and the Competitors tab. */}
               {isAdmin && (
-                <Button size="sm" variant="outline" onClick={parseAdheart} disabled={adheartRun.busy} title="Parse every Competitors row with adheart_update ticked">
-                  {adheartRun.busy ? 'Starting…' : 'Parse Adheart'}
+                <Button size="sm" variant="outline" onClick={() => setAdheartOpen((v) => !v)} title="Pick competitors and parse their Adheart ads">
+                  Parse Adheart
                 </Button>
               )}
               <Button size="sm" onClick={loadArticles} disabled={articlesLoading}>
@@ -1245,6 +1265,101 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
             </div>
           </div>
           {articlesError && <ErrorBox msg={articlesError} />}
+          {isAdmin && adheartOpen && (
+            <div className="mx-4 mb-2 flex flex-wrap items-end gap-3 rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+              {/* Competitors (from the sheet's Competitors tab): pick, check / edit filters, see the last result. */}
+              <div className="basis-full">
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="font-semibold text-slate-800">Parse Adheart</span>
+                  <span>— pick competitors. Filters: one per line, "|" = or, a space inside = and.</span>
+                  <Button size="sm" variant="outline" className="ml-auto h-7" onClick={loadCompetitors}>↻ Status</Button>
+                </div>
+                <div className="max-h-64 overflow-auto rounded border border-slate-200">
+                  <table className="w-full border-collapse">
+                    <thead className="sticky top-0 bg-slate-100 text-left text-[10px] font-bold uppercase text-gray-500">
+                      <tr>
+                        <th className="w-8 px-2 py-1">
+                          <input
+                            type="checkbox"
+                            checked={competitors.length > 0 && adheartPicked.size === competitors.length}
+                            onChange={(e) => setAdheartPicked(e.target.checked ? new Set(competitors.map((c) => c.name)) : new Set())}
+                          />
+                        </th>
+                        <th className="px-2 py-1">competitor</th>
+                        <th className="px-2 py-1">filters</th>
+                        <th className="px-2 py-1">last result</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {competitors.map((c) => (
+                        <tr key={c.name} className="border-t border-slate-100 align-top">
+                          <td className="px-2 py-1">
+                            <input
+                              type="checkbox"
+                              checked={adheartPicked.has(c.name)}
+                              onChange={(e) =>
+                                setAdheartPicked((s) => {
+                                  const n = new Set(s);
+                                  if (e.target.checked) n.add(c.name);
+                                  else n.delete(c.name);
+                                  return n;
+                                })
+                              }
+                            />
+                          </td>
+                          <td className="whitespace-nowrap px-2 py-1 font-medium text-slate-800">{c.name}</td>
+                          <td className="w-1/2 px-2 py-1">
+                            <textarea
+                              value={adheartSearchFor(c)}
+                              onChange={(e) => setAdheartSearchEdits((s) => ({ ...s, [c.name]: e.target.value }))}
+                              rows={1}
+                              className="w-full resize-y rounded border border-slate-200 px-1.5 py-1 font-mono text-[11px]"
+                            />
+                          </td>
+                          <td className="px-2 py-1 text-[11px]">{c.adheartParsed || '—'}</td>
+                        </tr>
+                      ))}
+                      {competitors.length === 0 && (
+                        <tr><td colSpan={4} className="px-2 py-2 text-slate-400">No competitors loaded — press ↻ Status.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <label className="flex flex-col gap-1">
+                Ads placed since
+                <div className="flex gap-1">
+                  <select value={adheartOpts.start} onChange={(e) => setAdheartOpts((o) => ({ ...o, start: e.target.value }))} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
+                    {['1 day ago', '3 days ago', '7 days ago', '14 days ago', '1 month ago', '3 months ago'].map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                    <option value="date">Pick a date…</option>
+                  </select>
+                  {adheartOpts.start === 'date' && (
+                    <Input type="date" value={adheartOpts.date} onChange={(e) => setAdheartOpts((o) => ({ ...o, date: e.target.value }))} className="h-8 w-36 bg-white" />
+                  )}
+                </div>
+              </label>
+              <label className="flex flex-col gap-1" title="Only ads that reached at least this many people. Empty = any.">
+                Min reach
+                <Input type="number" min={0} value={adheartOpts.minReach} onChange={(e) => setAdheartOpts((o) => ({ ...o, minReach: e.target.value }))} placeholder="any" className="h-8 w-24 bg-white" />
+              </label>
+              <label className="flex flex-col gap-1" title="Country codes, comma-separated (US, GB = either). Empty = any.">
+                Geo
+                <Input value={adheartOpts.geo} onChange={(e) => setAdheartOpts((o) => ({ ...o, geo: e.target.value.toUpperCase() }))} placeholder="any, e.g. US, GB" className="h-8 w-32 bg-white" />
+              </label>
+              <label className="flex flex-col gap-1" title="40 ads per page, up to 1000 pages per search.">
+                Max pages
+                <Input type="number" min={1} max={1000} value={adheartOpts.maxPages} onChange={(e) => setAdheartOpts((o) => ({ ...o, maxPages: e.target.value }))} className="h-8 w-24 bg-white" />
+              </label>
+              <div className="ml-auto flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => setAdheartOpen(false)}>Cancel</Button>
+                <Button size="sm" onClick={parseAdheart} disabled={adheartRun.busy || adheartPicked.size === 0 || (adheartOpts.start === 'date' && !adheartOpts.date)}>
+                  {adheartRun.busy ? 'Starting…' : `Start${adheartPicked.size ? ` (${adheartPicked.size})` : ''}`}
+                </Button>
+              </div>
+            </div>
+          )}
           {adheartRun.error && <ErrorBox msg={`Parse Adheart: ${adheartRun.error}`} />}
           {adheartRun.msg && <div className="mx-4 mb-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{adheartRun.msg}</div>}
           <div className="flex-1 overflow-auto mx-4 rounded border border-slate-200 bg-white">
