@@ -645,10 +645,13 @@ export const CreativeEditPage = () => {
       accent: accent.trim(),
       cta: cta.trim(),
     };
+    // All three empty = image was never analysed, not "image has no text".
+    // Treat every slot as present so the banner still gets the idea's copy.
+    const notAnalysed = !original.hook && !original.accent && !original.cta;
     const presentSlots = {
-      hook: original.hook.length > 0,
-      accent: original.accent.length > 0,
-      cta: original.cta.length > 0,
+      hook: notAnalysed || original.hook.length > 0,
+      accent: notAnalysed || original.accent.length > 0,
+      cta: notAnalysed || original.cta.length > 0,
     };
 
     const meta = {
