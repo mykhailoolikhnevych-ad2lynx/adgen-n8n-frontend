@@ -7,6 +7,8 @@ import { useAppStore, parseNbEventsResponse, type NbEvent } from '@/store/useApp
 import { BINOM_TRACKERS } from '@/lib/binomGroups';
 import { START_DATE_OPTIONS, TIMEZONE_OPTIONS } from './MegatoolCreateNbCampaignPage';
 import { DateTimePicker24h } from '@/components/ui/DateTimePicker24h';
+import { logEvent } from '@/lib/usage';
+import { getAuthEmail } from '@/lib/identity';
 import { customStartError, customStartToUnix, defaultCustomStart, formatInZone, toLocalInputValue } from '@/lib/nbStartTime';
 
 // Autozaliv Builder — web replacement for the "articles (domains)" →
@@ -30,6 +32,9 @@ const FB_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_FB_URL as string | u
 // Step 1 "Parse Adheart" (megatool-adheart-parse): parses the Competitors rows with adheart_update ticked
 // in the background; results land in the sheet (new tab, adheart_tab, adheart_parsed).
 const ADHEART_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_ADHEART_PARSE_URL as string | undefined;
+// Compliance (megatool-autozaliv-compliance): step 2 checks each kept ad + image (short prompt),
+// step 3 optionally checks an article together with its ads' images (full prompt). Info only.
+const COMPLIANCE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_COMPLIANCE_URL as string | undefined;
 
 type Sheet = { headers: string[]; rows: string[][] };
 type Row = Record<string, string>;
@@ -151,6 +156,7 @@ const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTO
 const callLaunch = (body: object) => post(LAUNCH_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL', body, 180_000);
 const callFb = (body: object, timeout = 60_000) => post(FB_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_FB_URL', body, timeout);
 const callAdheart = (body: object) => post(ADHEART_WEBHOOK, 'PUBLIC_WEBHOOK_ADHEART_PARSE_URL', body, 60_000);
+const callCompliance = (body: object) => post(COMPLIANCE_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_COMPLIANCE_URL', body, 300_000);
 
 type Platform = 'nb' | 'fb';
 // RSOC traffic source slug per platform.
@@ -176,7 +182,7 @@ const TRACKER_DOMAIN: Record<string, string> = {
 type BinomSettings = { tracker: string; group: string; geo: string; nbAccount: string; fbAccount: string; bidType: string; event: string; suffix: string };
 type BinomRow = { name?: string; geo?: string; language?: string };
 type BinomOptions = { status: 'loading' | 'ready' | 'error'; groups: string[]; domains: { id: string; host: string }[]; error?: string };
-type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignUrl?: string; error?: string };
+type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignName?: string; campaignUrl?: string; error?: string };
 
 // "sarb-dating-sites-for-widows-dab" -> "Dating Sites For Widows": drop the source prefix and
 // the short tracking codes at the end (vev, dab, p2c…). Only a default — the Name stays editable.
@@ -336,6 +342,25 @@ function amoCheck(c: Row) {
 
 type ContentState = { status: 'reading' | 'ready' | 'rewriting' | 'error'; url: string; content?: Row; error?: string; note?: string };
 
+type ComplianceResult = {
+  compliant: boolean;
+  issues: { type: string; description: string; policy_reference: string }[];
+  summary: string;
+  category: string;
+  main_topic: string;
+  recommendations: string;
+  translated_content: Record<string, string>;
+  optimized_content: Record<string, string>;
+  image_error: string;
+};
+type ComplianceState = { status: 'running' | 'done' | 'error'; result?: ComplianceResult; error?: string };
+// Which check opened the details: 'ads' = step 2 (ad + image), 'article' = step 3 (article + images).
+type ComplianceDetail = { ad: Row; kind: 'ads' | 'article'; state: ComplianceState };
+// What the Compliance webhook gets for one ad; id ties the answer back to the ad.
+const compliancePayload = (ad: Row, id: number) => ({
+  id, title: ad.ad_title || '', description: ad.ad_text || '', cta: ad.cta ? formatCta(ad.cta) : '', imageUrl: ad.img_url || '',
+});
+
 async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>) {
   const queue = [...items];
   await Promise.all(Array.from({ length: Math.min(size, queue.length) }, async () => {
@@ -382,6 +407,11 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   // Step 3 — content, keyed by article name
   const [contents, setContents] = useState<Record<string, ContentState>>({});
   const [openArticle, setOpenArticle] = useState<string | null>(null);
+
+  // Compliance, keyed by adKey: step 2 = ad + image check, step 3 = article + images check
+  const [adCompliance, setAdCompliance] = useState<Record<string, ComplianceState>>({});
+  const [articleCompliance, setArticleCompliance] = useState<Record<string, ComplianceState>>({});
+  const [complianceDetail, setComplianceDetail] = useState<ComplianceDetail | null>(null);
 
   // Step 4 — launch
   const [buyers, setBuyers] = useState<{ status: 'idle' | 'loading' | 'ready' | 'error'; list: Buyer[]; error?: string }>({ status: 'idle', list: [] });
@@ -622,7 +652,58 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
     return { name, settings, total: all.length, picked, landing, defaultKeywords };
   });
   const adKey = (article: string, ad: Row) => `${article}|${ad.ad_key || ad.img_url}`;
-  const keptCount = groups.reduce((n, g) => n + g.picked.filter((ad) => !excluded.has(adKey(g.name, ad))).length, 0);
+  const keptAds = (g: (typeof groups)[number]) => g.picked.filter((ad) => !excluded.has(adKey(g.name, ad)));
+  const keptCount = groups.reduce((n, g) => n + keptAds(g).length, 0);
+
+  // Step 2 "Check compliance": every kept ad that has no result yet (all of them again once all are done).
+  const allKept = groups.flatMap((g) => keptAds(g).map((ad) => ({ k: adKey(g.name, ad), ad })));
+  const adComplianceRunning = allKept.some(({ k }) => adCompliance[k]?.status === 'running');
+  const checkAdsCompliance = async () => {
+    const pending = allKept.filter(({ k }) => adCompliance[k]?.status !== 'done');
+    const todo = pending.length ? pending : allKept;
+    setAdCompliance((s) => ({ ...s, ...Object.fromEntries(todo.map(({ k }) => [k, { status: 'running' } as ComplianceState])) }));
+    let flagged = 0;
+    let failed = 0;
+    await pool(todo, 3, async ({ k, ad }) => {
+      try {
+        const res = await callCompliance({ action: 'ads', ad: compliancePayload(ad, 1) });
+        const result: ComplianceResult | undefined = res.results?.[0];
+        if (!result) throw new Error('No answer for this ad');
+        if ((result as any).error) throw new Error((result as any).error);
+        if (!result.compliant) flagged++;
+        setAdCompliance((s) => ({ ...s, [k]: { status: 'done', result } }));
+      } catch (e: any) {
+        failed++;
+        setAdCompliance((s) => ({ ...s, [k]: { status: 'error', error: e.message } }));
+      }
+    });
+    logEvent({ tab: 'megatool-autozaliv', action: 'checkAdsCompliance', meta: { ads: todo.length }, metaOut: { flagged, failed } });
+  };
+
+  // Step 3 "Analyze compliance": one article + all its kept ads (with images) in one call, full prompt.
+  const checkArticleCompliance = async (g: (typeof groups)[number]) => {
+    const content = contents[g.name]?.content;
+    const list = keptAds(g);
+    if (!content || list.length === 0) return;
+    const keys = list.map((ad) => adKey(g.name, ad));
+    setArticleCompliance((s) => ({ ...s, ...Object.fromEntries(keys.map((k) => [k, { status: 'running' } as ComplianceState])) }));
+    const logMeta = { article: g.name, ads: list.length };
+    try {
+      const res = await callCompliance({ action: 'article', article: content, ads: list.map((ad, i) => compliancePayload(ad, i + 1)) });
+      const results: ComplianceResult[] = res.results || [];
+      setArticleCompliance((s) => ({
+        ...s,
+        ...Object.fromEntries(keys.map((k, i): [string, ComplianceState] => [k, results[i] && !(results[i] as any).error
+          ? { status: 'done', result: results[i] }
+          : { status: 'error', error: (results[i] as any)?.error || 'No answer for this ad' }])),
+      }));
+      logEvent({ tab: 'megatool-autozaliv', action: 'checkArticleCompliance', meta: logMeta, metaOut: { flagged: results.filter((r) => r && !r.compliant).length } });
+    } catch (e: any) {
+      setArticleCompliance((s) => ({ ...s, ...Object.fromEntries(keys.map((k) => [k, { status: 'error', error: e.message } as ComplianceState])) }));
+      logEvent({ tab: 'megatool-autozaliv', action: 'checkArticleCompliance', meta: logMeta, metaOut: e.data, errorMessage: e.message });
+    }
+  };
+  const articleComplianceRunning = (g: (typeof groups)[number]) => keptAds(g).some((ad) => articleCompliance[adKey(g.name, ad)]?.status === 'running');
 
   const patchContent = (name: string, patch: Partial<ContentState>) =>
     setContents((s) => ({ ...s, [name]: { ...s[name], ...patch } as ContentState }));
@@ -756,13 +837,16 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         continue;
       }
       setAmo((s) => ({ ...s, [g.name]: { status: 'running' } }));
+      const logMeta = { platform, article: g.name, buyer: l.buyer, domain: l.domain };
       try {
         const res = await callLaunch({
           action: 'amo-article', email: l.email, domain: l.domain, trafficSource, keywords: keywordsFor(g), content: c,
         });
         setAmo((s) => ({ ...s, [g.name]: { status: 'done', offerUrl: res.offerUrl, articleUrl: res.articleUrl } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createAmoArticle', meta: logMeta, metaOut: { articleUrl: res.articleUrl } });
       } catch (e: any) {
         setAmo((s) => ({ ...s, [g.name]: { status: 'error', error: e.message } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createAmoArticle', meta: logMeta, metaOut: e.data, errorMessage: e.message });
       }
       if (n < todo.length - 1) await sleep(3000);
     }
@@ -869,17 +953,20 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
       }
       const prev = binom[g.name];
       setBinom((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'running', error: undefined } }));
+      const logMeta = { platform, article: g.name, tracker: binomBulk.tracker, campaignName: b.campaignName };
       try {
         const res = await callLaunch({
           action: 'binom', tracker: binomBulk.tracker, group: bulkGroup, domainId: bulkDomain?.id, geo: b.geo, trafficSource,
           event: resolveEvent(binomBulk.event, binomBulk.bidType), offerName: b.offerName, offerUrl: b.offerUrl,
           campaignName: b.campaignName, offerId: prev?.offerId,
         });
-        setBinom((s) => ({ ...s, [g.name]: { status: 'done', offerId: res.offerId, campaignId: res.campaignId, campaignUrl: res.campaignUrl } }));
+        setBinom((s) => ({ ...s, [g.name]: { status: 'done', offerId: res.offerId, campaignId: res.campaignId, campaignName: b.campaignName, campaignUrl: res.campaignUrl } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createBinomCampaign', meta: logMeta, metaOut: { offerId: res.offerId, campaignId: res.campaignId } });
       } catch (e: any) {
         // keep an offer id from a half-finished run so Retry doesn't create a second offer
         const offerId = e.data?.offerId || prev?.offerId;
         setBinom((s) => ({ ...s, [g.name]: { status: 'error', error: e.message, offerId } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createBinomCampaign', meta: logMeta, metaOut: e.data, errorMessage: e.message });
       }
       if (n < todo.length - 1) await sleep(1000);
     }
@@ -1006,6 +1093,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         continue;
       }
       setNb((s) => ({ ...s, [g.name]: { status: 'running' } }));
+      const logMeta = { article: g.name, nbAccount: binomBulk.nbAccount, campaignName: nbNameFor(g), ads: ads.length };
       try {
         if (!NB_CAMPAIGN_WEBHOOK) throw new Error('PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL is not set');
         const { data } = await axios.post(NB_CAMPAIGN_WEBHOOK, {
@@ -1031,15 +1119,18 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
           throw new Error((outer?.error || 'NB campaign failed') + partial);
         }
         setNb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: outer.campaignId, adsetId: outer.adsetId, adIds: outer.adIds } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createNbCampaign', meta: logMeta, metaOut: { campaignId: outer.campaignId, adsetId: outer.adsetId } });
         // Pin the article as used (with the date) so step 1 shows it next time.
         const used: UsedRow = {
           article: g.name, used_at: new Date().toISOString(), nb_campaign_id: String(outer.campaignId || ''),
           buyer: launchFor(g.name).buyer, nb_account: binomBulk.nbAccount,
         };
-        callLaunch({
+        // email / campaignName / binomCampaignName go to the autozaliv_campaigns log only.
+        getAuthEmail().then((ident) => callLaunch({
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id,
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
-        })
+          email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
+        }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setNb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
       } catch (e: any) {
@@ -1047,6 +1138,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         const outer = Array.isArray(body) ? body[0] : body;
         const partial = outer?.partial?.campaignId ? ` (NB campaign ${outer.partial.campaignId} was created — delete it before retrying)` : '';
         setNb((s) => ({ ...s, [g.name]: { status: 'error', error: outer?.error ? outer.error + partial : e.message } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createNbCampaign', meta: logMeta, metaOut: outer, errorMessage: outer?.error ? outer.error + partial : e.message });
       }
       if (n < todo.length - 1) await sleep(1000);
     }
@@ -1116,6 +1208,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         continue;
       }
       setFb((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'running', error: undefined } }));
+      const logMeta = { article: g.name, fbAccount: fbAccount?.name || fbAccountId, campaignName: nbNameFor(g), ads: ads.length };
       try {
         const res = await callFb({
           action: 'launch', accountId: fbAccountId, pageId: fbPageId, pixelId: fbNeedsPixel ? fbPixel?.id : '',
@@ -1130,19 +1223,22 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
           resume: prev?.partial,
         }, 600_000);
         setFb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: res.campaignId, adsetId: res.adsetId, adIds: res.adIds } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createFbCampaign', meta: logMeta, metaOut: { campaignId: res.campaignId, adsetId: res.adsetId } });
         const used: UsedRow = {
           article: g.name, used_at: new Date().toISOString(), nb_campaign_id: String(res.campaignId || ''),
           buyer: launchFor(g.name).buyer, nb_account: fbAccount?.name || '', source: 'fb',
         };
-        callLaunch({
+        getAuthEmail().then((ident) => callLaunch({
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id, source: 'fb',
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
-        })
+          email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
+        }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setFb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
       } catch (e: any) {
         const partial: FbPartial | undefined = e.data?.partial || prev?.partial;
         setFb((s) => ({ ...s, [g.name]: { status: 'error', error: e.message, partial } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createFbCampaign', meta: logMeta, metaOut: e.data, errorMessage: e.message });
       }
       if (n < todo.length - 1) await sleep(1000);
     }
@@ -1450,29 +1546,32 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
               Next: choose ads →
             </Button>
           </div>
-          {previewImage && (
-            <div
-              className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
-              onClick={() => setPreviewImage(null)}
-            >
-              <button
-                type="button"
-                onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
-                className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
-                aria-label="Close"
-              >
-                ×
-              </button>
-              <img
-                src={previewImage}
-                alt=""
-                className="max-w-[92vw] max-h-[92vh] object-contain rounded-md"
-                onClick={(e) => e.stopPropagation()}
-              />
-            </div>
-          )}
         </>
       )}
+
+      {/* Full-screen image preview (step 1 thumbnails, step 3 ad thumbnails) */}
+      {previewImage && (
+        <div
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+          onClick={() => setPreviewImage(null)}
+        >
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+            className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
+            aria-label="Close"
+          >
+            ×
+          </button>
+          <img
+            src={previewImage}
+            alt=""
+            className="max-w-[92vw] max-h-[92vh] object-contain rounded-md"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
+      {complianceDetail && <ComplianceDetailModal detail={complianceDetail} onClose={() => setComplianceDetail(null)} />}
 
       {step === 2 && (
         <>
@@ -1530,7 +1629,11 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                         {g.picked.map((ad) => {
                           const k = adKey(g.name, ad);
                           return (
-                            <AdCard key={k} ad={ad} metric={g.settings.sortField} off={excluded.has(k)} onToggle={() => toggleAd(k)} />
+                            <AdCard
+                              key={k} ad={ad} metric={g.settings.sortField} off={excluded.has(k)} onToggle={() => toggleAd(k)}
+                              compliance={excluded.has(k) ? undefined : adCompliance[k]}
+                              onCompliance={() => adCompliance[k] && setComplianceDetail({ ad, kind: 'ads', state: adCompliance[k] })}
+                            />
                           );
                         })}
                       </div>
@@ -1545,7 +1648,15 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
             <span className="text-sm text-slate-700">
               {selectedList.length} articles · {keptCount} ads selected
             </span>
-            <Button className="ml-auto" disabled={adsLoading || !ads} onClick={goToContent}>
+            <ComplianceSummary states={allKept.map(({ k }) => adCompliance[k])} />
+            <Button
+              variant="outline" className="ml-auto" disabled={adsLoading || keptCount === 0 || adComplianceRunning}
+              onClick={checkAdsCompliance}
+              title="Checks the selected ads (text + image) against the compliance rules. Info only — nothing is blocked."
+            >
+              {adComplianceRunning ? 'Checking compliance…' : `Check compliance (${keptCount})`}
+            </Button>
+            <Button disabled={adsLoading || !ads} onClick={goToContent}>
               Next: content →
             </Button>
           </div>
@@ -1561,6 +1672,14 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
             <div className="ml-auto flex gap-2">
               <Button size="sm" variant="outline" onClick={goToContent}>Read missing</Button>
               <Button size="sm" onClick={rewriteFailing}>Rewrite all failing</Button>
+              <Button
+                size="sm" variant="outline"
+                disabled={groups.every((g) => !contents[g.name]?.content || keptAds(g).length === 0 || articleComplianceRunning(g))}
+                onClick={() => pool(groups.filter((g) => contents[g.name]?.content && keptAds(g).length > 0 && !articleComplianceRunning(g)), 2, checkArticleCompliance)}
+                title="Optional: checks every article together with its ads' images (full compliance prompt). Info only."
+              >
+                Analyze all compliance
+              </Button>
             </div>
           </div>
           <div className="flex-1 overflow-auto px-4 pb-2 space-y-2">
@@ -1592,8 +1711,39 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                       <LandingLink url={g.landing} />
                       <Button size="sm" variant="outline" disabled={busy} onClick={() => readArticle(g.name, g.landing)}>Re-read</Button>
                       <Button size="sm" disabled={busy || !c} onClick={() => rewriteArticle(g.name)}>Rewrite</Button>
+                      <Button
+                        size="sm" variant="outline" disabled={!c || keptAds(g).length === 0 || articleComplianceRunning(g)}
+                        onClick={() => checkArticleCompliance(g)}
+                        title="Optional: checks this article together with its ads' images (full compliance prompt). Info only."
+                      >
+                        {articleComplianceRunning(g) ? 'Analyzing…' : 'Analyze compliance'}
+                      </Button>
                     </div>
                   </div>
+                  {keptAds(g).length > 0 && (
+                    <div className="flex flex-wrap gap-2 px-3 pb-2">
+                      {keptAds(g).map((ad) => {
+                        const k = adKey(g.name, ad);
+                        const cs = articleCompliance[k];
+                        return (
+                          <div key={k} className="relative h-16 w-16 rounded border border-slate-200 bg-slate-100 overflow-hidden" title={ad.ad_title}>
+                            {ad.img_url ? (
+                              <button type="button" onClick={() => setPreviewImage(ad.img_url)} className="h-full w-full">
+                                <img src={ad.img_url} loading="lazy" alt="" className="h-full w-full object-cover" />
+                              </button>
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-[10px] uppercase text-slate-400">{ad.ad_type || 'no img'}</div>
+                            )}
+                            {cs && (
+                              <span className="absolute bottom-0.5 left-0.5">
+                                <ComplianceBadge state={cs} onOpen={() => setComplianceDetail({ ad, kind: 'article', state: cs })} />
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {(st?.error || st?.note) && (
                     <div className={`px-3 pb-2 text-xs ${st.error ? 'text-red-600' : 'text-emerald-700'}`}>{st.error || st.note}</div>
                   )}
@@ -2305,7 +2455,114 @@ function SettingsControls({ value, onChange }: { value: Settings; onChange: (s: 
   );
 }
 
-function AdCard({ ad, metric, off, onToggle }: { ad: Row; metric: string; off: boolean; onToggle: () => void }) {
+// Compliance verdict chip. It sits inside clickable cards, so it is a span (no nested button)
+// and stops the click from toggling the card.
+function ComplianceBadge({ state, onOpen }: { state: ComplianceState; onOpen: () => void }) {
+  const r = state.result;
+  const [cls, label, tip] = state.status === 'running' ? ['bg-slate-500', '…', 'Checking compliance…']
+    : state.status === 'error' ? ['bg-red-600', '!', `Compliance check failed: ${state.error}`]
+    : r?.compliant ? ['bg-emerald-600', '✓ OK', 'Compliant — click for details']
+    : ['bg-amber-500', `! ${r?.issues.length || ''}`.trim(), `${r?.issues.map((i) => i.description).join('; ') || r?.summary || 'Not compliant'} — click for details`];
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      title={tip}
+      onClick={(e) => { e.stopPropagation(); if (state.status !== 'running') onOpen(); }}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); if (state.status !== 'running') onOpen(); } }}
+      className={`inline-block rounded px-1.5 text-[10px] font-medium text-white shadow ${cls} ${state.status === 'running' ? '' : 'cursor-pointer'}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function ComplianceSummary({ states }: { states: (ComplianceState | undefined)[] }) {
+  const done = states.filter((s) => s?.status === 'done');
+  if (done.length === 0) return null;
+  const flagged = done.filter((s) => !s!.result?.compliant).length;
+  const failed = states.filter((s) => s?.status === 'error').length;
+  return (
+    <span className="flex items-center gap-1.5 text-xs text-slate-600">
+      <span className={`h-2 w-2 rounded-full ${flagged ? 'bg-yellow-500' : 'bg-green-500'}`} />
+      {flagged ? `${flagged} of ${done.length} checked ads flagged` : `All ${done.length} checked ads compliant`}
+      {failed > 0 && <span className="text-red-600">· {failed} failed</span>}
+    </span>
+  );
+}
+
+function ComplianceDetailModal({ detail, onClose }: { detail: ComplianceDetail; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const { ad, kind, state } = detail;
+  const r = state.result;
+  const block = (title: string, rec: Record<string, string>) => {
+    const entries = Object.entries(rec).filter(([, v]) => v);
+    if (entries.length === 0) return null;
+    return (
+      <div>
+        <div className="text-[10px] font-bold uppercase text-slate-500 mb-1">{title}</div>
+        <div className="space-y-1 text-xs">
+          {entries.map(([k, v]) => (
+            <div key={k}><span className="text-slate-500">{k}:</span> <span className="text-slate-800 whitespace-pre-wrap">{v}</span></div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-auto rounded-lg bg-white p-4 shadow-xl space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3">
+          {ad.img_url && <img src={ad.img_url} alt="" className="h-20 w-20 rounded object-cover border border-slate-200" />}
+          <div className="min-w-0 flex-1">
+            <div className="text-[10px] font-bold uppercase text-slate-500">
+              {kind === 'ads' ? 'Compliance · ad + image' : 'Compliance · article + images'}
+            </div>
+            <div className="text-sm font-medium text-slate-800 line-clamp-2">{ad.ad_title || ad.ad_text || '—'}</div>
+            {state.status === 'error' ? (
+              <div className="text-sm text-red-600">Check failed: {state.error}</div>
+            ) : r && (
+              <div className="flex items-center gap-1.5 text-sm">
+                <span className={`h-2 w-2 rounded-full ${r.compliant ? 'bg-green-500' : 'bg-yellow-500'}`} />
+                {r.compliant ? 'Compliant' : `Not compliant · ${r.issues.length} issue${r.issues.length === 1 ? '' : 's'}`}
+                {r.category && <span className="text-xs text-slate-500">· {r.category}{r.main_topic ? ` — ${r.main_topic}` : ''}</span>}
+              </div>
+            )}
+          </div>
+          <button type="button" onClick={onClose} className="text-2xl leading-none text-slate-400 hover:text-slate-700" aria-label="Close">×</button>
+        </div>
+        {r && (
+          <>
+            {r.image_error && <div className="text-xs text-amber-700">Image not checked: {r.image_error}</div>}
+            {r.issues.length > 0 && (
+              <div className="space-y-1.5">
+                {r.issues.map((i, n) => (
+                  <div key={n} className="rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs">
+                    <span className="font-medium text-amber-800">{i.type}</span>
+                    {i.policy_reference && <span className="text-amber-700"> · policy {i.policy_reference}</span>}
+                    <div className="text-slate-700">{i.description}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {r.summary && <div className="text-xs text-slate-700"><span className="font-bold uppercase text-[10px] text-slate-500">Summary </span>{r.summary}</div>}
+            {r.recommendations && <div className="text-xs text-slate-700"><span className="font-bold uppercase text-[10px] text-slate-500">Recommendations </span>{r.recommendations}</div>}
+            {!r.compliant && block('Optimized content', r.optimized_content)}
+            {block('Translated (UA)', r.translated_content)}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AdCard({ ad, metric, off, onToggle, compliance, onCompliance }: {
+  ad: Row; metric: string; off: boolean; onToggle: () => void; compliance?: ComplianceState; onCompliance: () => void;
+}) {
   return (
     <button
       type="button"
@@ -2315,8 +2572,13 @@ function AdCard({ ad, metric, off, onToggle }: { ad: Row; metric: string; off: b
         off ? 'border-slate-200 opacity-35 grayscale' : 'border-slate-300 hover:border-amber-400'
       }`}
     >
-      <div className="aspect-square bg-slate-100">
+      <div className="relative aspect-square bg-slate-100">
         {ad.img_url && <img src={ad.img_url} loading="lazy" alt="" className="h-full w-full object-cover" />}
+        {compliance && (
+          <span className="absolute bottom-1 left-1">
+            <ComplianceBadge state={compliance} onOpen={onCompliance} />
+          </span>
+        )}
       </div>
       <span className="absolute top-1 left-1 rounded bg-black/70 px-1.5 text-[10px] uppercase text-white">{ad.ad_type || '?'}</span>
       <span className={`absolute top-1 right-1 rounded px-1.5 text-[10px] text-white ${off ? 'bg-slate-500' : 'bg-emerald-600'}`}>
