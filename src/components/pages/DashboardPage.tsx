@@ -40,7 +40,7 @@ interface UsageRow {
   meta_size: number;
 }
 
-type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph' | 'costs' | 'feedback';
+type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph' | 'costs' | 'feedback' | 'autozaliv';
 
 const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'events',   label: 'Events' },
@@ -50,6 +50,7 @@ const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'graph',    label: 'Graph' },
   { value: 'costs',    label: 'Costs' },
   { value: 'feedback', label: 'Feedback' },
+  { value: 'autozaliv', label: 'Autozaliv Campaigns' },
 ];
 
 const LIST_URL  = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
@@ -754,7 +755,8 @@ const ACTION_PALETTE = [
 // unreachable by the filter (they still show while no pill is selected, which
 // is what makes an omission easy to miss). The current set is: creatives,
 // creative_gen, creative-edit, keywords, angles, article, video_gen,
-// megatool-fb, megatool-binom, megatool-nb, megatool-tt, megatool-nb-copier.
+// megatool-fb, megatool-binom, megatool-nb, megatool-tt, megatool-nb-copier,
+// megatool-autozaliv.
 const TAB_OPTIONS: { label: string; tabs: string[] }[] = [
   { label: 'creatives',     tabs: ['creatives'] },
   { label: 'creative_gen',  tabs: ['creative_gen'] },
@@ -766,6 +768,7 @@ const TAB_OPTIONS: { label: string; tabs: string[] }[] = [
   { label: 'FB-NB',         tabs: ['megatool-fb', 'megatool-binom', 'megatool-nb'] },
   { label: 'FB-TT',         tabs: ['megatool-fb', 'megatool-tt'] },
   { label: 'NB Copier',     tabs: ['megatool-nb-copier'] },
+  { label: 'Autozaliv',     tabs: ['megatool-autozaliv'] },
 ];
 
 const GraphView = ({ rows }: { rows: UsageRow[] }) => {
@@ -1502,6 +1505,146 @@ const FeedbackView = ({ since, until }: { since: string; until: string }) => {
 };
 
 // ---------------------------------------------------------------------------
+// Autozaliv Campaigns tab — one row per NB/FB campaign the Autozaliv Builder
+// created (autozaliv_campaigns datatable, served by the Launch webhook's
+// 'campaigns-list' action). Date range is applied client-side.
+// ---------------------------------------------------------------------------
+
+interface AutozalivCampaignRow {
+  created_at: string;
+  email: string;
+  source: string;
+  campaign_id: string;
+  campaign_name: string;
+  binom_campaign_id: string;
+  binom_campaign_name: string;
+  buyer: string;
+  account: string;
+  article: string;
+}
+
+const AUTOZALIV_LAUNCH_URL = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL as string | undefined;
+
+const AutozalivCampaignsView = ({ since, until }: { since: string; until: string }) => {
+  const [rows, setRows] = useState<AutozalivCampaignRow[]>([]);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'nb' | 'fb'>('all');
+  const [emailFilter, setEmailFilter] = useState('');
+
+  const load = useCallback(async () => {
+    if (!AUTOZALIV_LAUNCH_URL) {
+      setStatus('error');
+      setError('PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL is not set');
+      return;
+    }
+    setStatus('loading');
+    try {
+      const { data } = await axios.post(AUTOZALIV_LAUNCH_URL, { action: 'campaigns-list' }, { timeout: REQUEST_TIMEOUT_MS });
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer?.ok) throw new Error(outer?.error || 'campaigns-list failed');
+      const list: AutozalivCampaignRow[] = outer.campaigns || [];
+      list.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+      setRows(list);
+      setStatus('success');
+      setError(null);
+    } catch (e: any) {
+      console.error('[Dashboard] autozaliv campaigns fetch error:', e);
+      setStatus('error');
+      setError(e?.response?.data?.error ?? e?.message ?? String(e));
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const filtered = useMemo(() => {
+    const emailQ = emailFilter.trim().toLowerCase();
+    return rows.filter((r) =>
+      (!since || r.created_at >= since) &&
+      (!until || r.created_at <= until) &&
+      (sourceFilter === 'all' || r.source === sourceFilter) &&
+      (!emailQ || r.email.toLowerCase().includes(emailQ)),
+    );
+  }, [rows, since, until, sourceFilter, emailFilter]);
+
+  const users = useMemo(() => new Set(filtered.map((r) => r.email).filter(Boolean)).size, [filtered]);
+
+  if (status === 'error') {
+    return <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Failed to load Autozaliv campaigns'}</div>;
+  }
+  if (status !== 'success' && rows.length === 0) {
+    return <div className="p-6 text-gray-400 italic">Loading Autozaliv campaigns…</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border bg-slate-50 px-4 py-3 text-sm">
+        <span><span className="font-bold">{filtered.length}</span> campaigns</span>
+        <span className="text-slate-600">NB {filtered.filter((r) => r.source === 'nb').length}</span>
+        <span className="text-slate-600">FB {filtered.filter((r) => r.source === 'fb').length}</span>
+        <span className="text-slate-600"><span className="font-bold">{users}</span> users</span>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Traffic source</label>
+          <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value as any)} className="text-sm border rounded-md px-2 py-1 bg-white">
+            <option value="all">All</option>
+            <option value="nb">NewsBreak</option>
+            <option value="fb">Facebook</option>
+          </select>
+        </div>
+        <div className="flex-1 min-w-[160px]">
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Email</label>
+          <Input value={emailFilter} onChange={(e) => setEmailFilter(e.target.value)} placeholder="contains…" />
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => { setSourceFilter('all'); setEmailFilter(''); }}>Clear</Button>
+        <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
+          {status === 'loading' ? 'Loading…' : 'Refresh'}
+        </Button>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="p-6 text-gray-400 italic">No Autozaliv campaigns in the selected range.</div>
+      ) : (
+        <table className="w-full text-sm border-collapse">
+          <thead className="sticky top-0 bg-slate-100 z-10">
+            <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+              <th className="py-2 px-3">When</th>
+              <th className="py-2 px-3">Email</th>
+              <th className="py-2 px-3">Source</th>
+              <th className="py-2 px-3">Campaign ID</th>
+              <th className="py-2 px-3">Binom campaign</th>
+              <th className="py-2 px-3">Buyer</th>
+              <th className="py-2 px-3">Account</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((r, i) => (
+              <tr key={`${r.campaign_id}-${i}`} className="border-b border-slate-100 align-top">
+                <td className="py-1.5 px-3 font-mono text-[11px] whitespace-nowrap">{r.created_at ? new Date(r.created_at).toLocaleString() : ''}</td>
+                <td className="py-1.5 px-3 text-xs">{r.email}</td>
+                <td className="py-1.5 px-3 text-xs uppercase">{r.source}</td>
+                <td className="py-1.5 px-3 text-xs">
+                  <div className="font-mono">{r.campaign_id}</div>
+                  <div className="text-slate-400 max-w-[260px] truncate" title={r.campaign_name}>{r.campaign_name}</div>
+                </td>
+                <td className="py-1.5 px-3 text-xs">
+                  <div className="font-mono">{r.binom_campaign_id}</div>
+                  <div className="text-slate-600 max-w-[360px] truncate" title={r.binom_campaign_name}>{r.binom_campaign_name}</div>
+                </td>
+                <td className="py-1.5 px-3 text-xs">{r.buyer}</td>
+                <td className="py-1.5 px-3 text-xs">{r.account}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Top-level page.
 // ---------------------------------------------------------------------------
 
@@ -1772,6 +1915,8 @@ export const DashboardPage = ({ active = true }: { active?: boolean }) => {
           <CostsView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
         ) : activeTab === 'feedback' ? (
           <FeedbackView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
+        ) : activeTab === 'autozaliv' ? (
+          <AutozalivCampaignsView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
         ) : (
           <>
             {status === 'error' && (

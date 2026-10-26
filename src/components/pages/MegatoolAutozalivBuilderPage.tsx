@@ -7,6 +7,8 @@ import { useAppStore, parseNbEventsResponse, type NbEvent } from '@/store/useApp
 import { BINOM_TRACKERS } from '@/lib/binomGroups';
 import { START_DATE_OPTIONS, TIMEZONE_OPTIONS } from './MegatoolCreateNbCampaignPage';
 import { DateTimePicker24h } from '@/components/ui/DateTimePicker24h';
+import { logEvent } from '@/lib/usage';
+import { getAuthEmail } from '@/lib/identity';
 import { customStartError, customStartToUnix, defaultCustomStart, formatInZone, toLocalInputValue } from '@/lib/nbStartTime';
 
 // Autozaliv Builder — web replacement for the "articles (domains)" →
@@ -176,7 +178,7 @@ const TRACKER_DOMAIN: Record<string, string> = {
 type BinomSettings = { tracker: string; group: string; geo: string; nbAccount: string; fbAccount: string; bidType: string; event: string; suffix: string };
 type BinomRow = { name?: string; geo?: string; language?: string };
 type BinomOptions = { status: 'loading' | 'ready' | 'error'; groups: string[]; domains: { id: string; host: string }[]; error?: string };
-type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignUrl?: string; error?: string };
+type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignName?: string; campaignUrl?: string; error?: string };
 
 // "sarb-dating-sites-for-widows-dab" -> "Dating Sites For Widows": drop the source prefix and
 // the short tracking codes at the end (vev, dab, p2c…). Only a default — the Name stays editable.
@@ -756,13 +758,16 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         continue;
       }
       setAmo((s) => ({ ...s, [g.name]: { status: 'running' } }));
+      const logMeta = { platform, article: g.name, buyer: l.buyer, domain: l.domain };
       try {
         const res = await callLaunch({
           action: 'amo-article', email: l.email, domain: l.domain, trafficSource, keywords: keywordsFor(g), content: c,
         });
         setAmo((s) => ({ ...s, [g.name]: { status: 'done', offerUrl: res.offerUrl, articleUrl: res.articleUrl } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createAmoArticle', meta: logMeta, metaOut: { articleUrl: res.articleUrl } });
       } catch (e: any) {
         setAmo((s) => ({ ...s, [g.name]: { status: 'error', error: e.message } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createAmoArticle', meta: logMeta, metaOut: e.data, errorMessage: e.message });
       }
       if (n < todo.length - 1) await sleep(3000);
     }
@@ -869,17 +874,20 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
       }
       const prev = binom[g.name];
       setBinom((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'running', error: undefined } }));
+      const logMeta = { platform, article: g.name, tracker: binomBulk.tracker, campaignName: b.campaignName };
       try {
         const res = await callLaunch({
           action: 'binom', tracker: binomBulk.tracker, group: bulkGroup, domainId: bulkDomain?.id, geo: b.geo, trafficSource,
           event: resolveEvent(binomBulk.event, binomBulk.bidType), offerName: b.offerName, offerUrl: b.offerUrl,
           campaignName: b.campaignName, offerId: prev?.offerId,
         });
-        setBinom((s) => ({ ...s, [g.name]: { status: 'done', offerId: res.offerId, campaignId: res.campaignId, campaignUrl: res.campaignUrl } }));
+        setBinom((s) => ({ ...s, [g.name]: { status: 'done', offerId: res.offerId, campaignId: res.campaignId, campaignName: b.campaignName, campaignUrl: res.campaignUrl } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createBinomCampaign', meta: logMeta, metaOut: { offerId: res.offerId, campaignId: res.campaignId } });
       } catch (e: any) {
         // keep an offer id from a half-finished run so Retry doesn't create a second offer
         const offerId = e.data?.offerId || prev?.offerId;
         setBinom((s) => ({ ...s, [g.name]: { status: 'error', error: e.message, offerId } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createBinomCampaign', meta: logMeta, metaOut: e.data, errorMessage: e.message });
       }
       if (n < todo.length - 1) await sleep(1000);
     }
@@ -1006,6 +1014,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         continue;
       }
       setNb((s) => ({ ...s, [g.name]: { status: 'running' } }));
+      const logMeta = { article: g.name, nbAccount: binomBulk.nbAccount, campaignName: nbNameFor(g), ads: ads.length };
       try {
         if (!NB_CAMPAIGN_WEBHOOK) throw new Error('PUBLIC_WEBHOOK_NB_CAMPAIGN_CREATOR_URL is not set');
         const { data } = await axios.post(NB_CAMPAIGN_WEBHOOK, {
@@ -1031,15 +1040,18 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
           throw new Error((outer?.error || 'NB campaign failed') + partial);
         }
         setNb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: outer.campaignId, adsetId: outer.adsetId, adIds: outer.adIds } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createNbCampaign', meta: logMeta, metaOut: { campaignId: outer.campaignId, adsetId: outer.adsetId } });
         // Pin the article as used (with the date) so step 1 shows it next time.
         const used: UsedRow = {
           article: g.name, used_at: new Date().toISOString(), nb_campaign_id: String(outer.campaignId || ''),
           buyer: launchFor(g.name).buyer, nb_account: binomBulk.nbAccount,
         };
-        callLaunch({
+        // email / campaignName / binomCampaignName go to the autozaliv_campaigns log only.
+        getAuthEmail().then((ident) => callLaunch({
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id,
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
-        })
+          email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
+        }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setNb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
       } catch (e: any) {
@@ -1047,6 +1059,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         const outer = Array.isArray(body) ? body[0] : body;
         const partial = outer?.partial?.campaignId ? ` (NB campaign ${outer.partial.campaignId} was created — delete it before retrying)` : '';
         setNb((s) => ({ ...s, [g.name]: { status: 'error', error: outer?.error ? outer.error + partial : e.message } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createNbCampaign', meta: logMeta, metaOut: outer, errorMessage: outer?.error ? outer.error + partial : e.message });
       }
       if (n < todo.length - 1) await sleep(1000);
     }
@@ -1116,6 +1129,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         continue;
       }
       setFb((s) => ({ ...s, [g.name]: { ...s[g.name], status: 'running', error: undefined } }));
+      const logMeta = { article: g.name, fbAccount: fbAccount?.name || fbAccountId, campaignName: nbNameFor(g), ads: ads.length };
       try {
         const res = await callFb({
           action: 'launch', accountId: fbAccountId, pageId: fbPageId, pixelId: fbNeedsPixel ? fbPixel?.id : '',
@@ -1130,19 +1144,22 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
           resume: prev?.partial,
         }, 600_000);
         setFb((s) => ({ ...s, [g.name]: { status: 'done', campaignId: res.campaignId, adsetId: res.adsetId, adIds: res.adIds } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createFbCampaign', meta: logMeta, metaOut: { campaignId: res.campaignId, adsetId: res.adsetId } });
         const used: UsedRow = {
           article: g.name, used_at: new Date().toISOString(), nb_campaign_id: String(res.campaignId || ''),
           buyer: launchFor(g.name).buyer, nb_account: fbAccount?.name || '', source: 'fb',
         };
-        callLaunch({
+        getAuthEmail().then((ident) => callLaunch({
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id, source: 'fb',
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
-        })
+          email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
+        }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setFb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
       } catch (e: any) {
         const partial: FbPartial | undefined = e.data?.partial || prev?.partial;
         setFb((s) => ({ ...s, [g.name]: { status: 'error', error: e.message, partial } }));
+        logEvent({ tab: 'megatool-autozaliv', action: 'createFbCampaign', meta: logMeta, metaOut: e.data, errorMessage: e.message });
       }
       if (n < todo.length - 1) await sleep(1000);
     }
