@@ -426,7 +426,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   const [publishing, setPublishing] = useState(false);
 
   // Step 5 — Binom
-  const [binomBulk, setBinomBulk] = useState<BinomSettings>({ tracker: BINOM_TRACKERS[0], group: '', geo: 'US', nbAccount: '', fbAccount: '', bidType: 'MAX_CONVERSION', event: 'auto', suffix: '' });
+  const [binomBulk, setBinomBulk] = useState<BinomSettings>({ tracker: BINOM_TRACKERS[0], group: '', geo: '', nbAccount: '', fbAccount: '', bidType: 'MAX_CONVERSION', event: 'auto', suffix: '' });
   const [binomRows, setBinomRows] = useState<Record<string, BinomRow>>({});
   const [binomOptions, setBinomOptions] = useState<Record<string, BinomOptions>>({});
   const [binom, setBinom] = useState<Record<string, BinomState>>({});
@@ -905,7 +905,8 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   const binomFor = (g: (typeof groups)[number]) => {
     const row = binomRows[g.name] || {};
     const name = row.name ?? defaultName(g.name);
-    const geo = (row.geo ?? binomBulk.geo).trim().toUpperCase();
+    // Empty bulk Geo → each article's own geo (like lang), US if the sheet has none.
+    const geo = (row.geo ?? (binomBulk.geo.trim() || geoOf(articleByTrimmed[trimArticle(g.name)]?.main_adheart_geo || '') || 'US')).trim().toUpperCase();
     const lang = (row.language ?? (articleByTrimmed[trimArticle(g.name)]?.top_language_for_article || 'en')).trim().toUpperCase();
     // Buyers are stored as "First Last" — names only carry the first name.
     const buyer = launchFor(g.name).buyer.trim().split(/\s+/)[0];
@@ -1932,7 +1933,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
               </label>
               <label className="flex items-center gap-1.5">
                 Geo
-                <Input value={binomBulk.geo} onChange={(e) => setBinomBulk((b) => ({ ...b, geo: e.target.value.toUpperCase() }))} className="h-7 w-16 bg-white" />
+                <Input value={binomBulk.geo} onChange={(e) => setBinomBulk((b) => ({ ...b, geo: e.target.value.toUpperCase() }))} placeholder="auto" title="Empty = each article's geo from the sheet" className="h-7 w-16 bg-white" />
               </label>
               {platform === 'nb' ? (
                 <>
