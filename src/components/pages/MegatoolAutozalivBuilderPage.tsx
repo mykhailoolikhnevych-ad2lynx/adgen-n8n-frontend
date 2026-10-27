@@ -308,7 +308,8 @@ const fbCta = (s: string) => {
 };
 // FB has no hard 90-char cut like NB; these only catch empty or absurd texts.
 const FB_TEXT = { headline: { min: 0, max: 255 }, body: { min: 1, max: 2200 } };
-type FbItem = { id: string; name: string };
+// token / tokens = fb_tokens NAMES: an account has one token, a page every token that sees it.
+type FbItem = { id: string; name: string; token?: string; tokens?: string[] };
 // "Page name (id)" keeps same-named pages apart in the pickers.
 const itemLabel = (i: FbItem) => `${i.name} (${i.id})`;
 type FbOptions = { status: 'idle' | 'loading' | 'ready' | 'error'; accounts: FbItem[]; pages: FbItem[]; error?: string };
@@ -1148,7 +1149,9 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
 
   // ---- Step 6: FB ----
   const fbAccountId = fbAccount?.id || '';
-  const fbPageId = fbOptions.pages.find((p) => itemLabel(p) === fbBulk.page)?.id || '';
+  // Only pages on the account's token: another token's page fails with "no Advertiser role".
+  const fbPages = fbAccount ? fbOptions.pages.filter((p) => p.tokens?.includes(fbAccount.token || '')) : [];
+  const fbPageId = fbPages.find((p) => itemLabel(p) === fbBulk.page)?.id || '';
   const loadFbPixels = async (accountId: string) => {
     setFbPixels((s) => ({ ...s, [accountId]: { status: 'loading', pixels: [] } }));
     try {
@@ -2219,8 +2222,8 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                 <Combobox
                   value={fbBulk.page}
                   onChange={(v) => setFbBulk((b) => ({ ...b, page: v }))}
-                  options={fbOptions.pages.map(itemLabel)}
-                  placeholder={fbOptions.status === 'loading' ? 'Loading…' : 'Search page…'}
+                  options={fbPages.map(itemLabel)}
+                  placeholder={fbOptions.status === 'loading' ? 'Loading…' : !fbAccount ? 'Pick account first' : fbPages.length ? 'Search page…' : 'No pages on this account\'s token'}
                   className="w-72"
                   inputClassName="h-7 bg-white"
                 />
