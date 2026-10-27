@@ -378,13 +378,15 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   const [articlesLoading, setArticlesLoading] = useState(false);
   const [articlesError, setArticlesError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [preview, setPreview] = useState<{ src: string; video?: boolean } | null>(null);
   useEffect(() => {
-    if (!previewImage) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreviewImage(null); };
+    if (!preview) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreview(null); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [previewImage]);
+  }, [preview]);
+  // Video ads open the video itself, everything else the image.
+  const previewAd = (ad: Row) => setPreview(ad.video_url ? { src: ad.video_url, video: true } : { src: ad.img_url });
   const [unusedOnly, setUnusedOnly] = useState(true);
   const [minAds, setMinAds] = useState(0);
   const [lang, setLang] = useState('');
@@ -1491,15 +1493,27 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                         <input type="checkbox" checked={selected.has(a.name)} onChange={() => toggle(a.name)} onClick={(e) => e.stopPropagation()} />
                       </td>
                       <td className="px-2 py-1 min-w-[52px]">
-                        {a.cells.examp_image_url && (
-                          <img
-                            src={a.cells.examp_image_url}
-                            loading="lazy"
-                            alt=""
-                            onClick={(e) => { e.stopPropagation(); setPreviewImage(a.cells.examp_image_url); }}
-                            className="h-9 w-9 max-w-none rounded object-cover bg-slate-100 cursor-zoom-in"
-                          />
-                        )}
+                        {a.cells.examp_image_url ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPreview(a.cells.examp_video_url ? { src: a.cells.examp_video_url, video: true } : { src: a.cells.examp_image_url });
+                            }}
+                            className="relative block h-9 w-9 cursor-zoom-in"
+                          >
+                            <img src={a.cells.examp_image_url} loading="lazy" alt="" className="h-9 w-9 max-w-none rounded object-cover bg-slate-100" />
+                            {a.cells.examp_video_url && <PlayMark />}
+                          </button>
+                        ) : a.cells.examp_video_url ? (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setPreview({ src: a.cells.examp_video_url, video: true }); }}
+                            className="relative block h-9 w-9 rounded bg-slate-800 cursor-zoom-in"
+                          >
+                            <PlayMark />
+                          </button>
+                        ) : null}
                       </td>
                       <td className="px-2 py-1 max-w-[420px] truncate text-slate-800" title={a.name}>
                         {trimArticle(a.name)}
@@ -1549,26 +1563,36 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
         </>
       )}
 
-      {/* Full-screen image preview (step 1 thumbnails, step 3 ad thumbnails) */}
-      {previewImage && (
+      {/* Full-screen image / video preview (step 1 thumbnails, step 2 ad cards, step 3 ad thumbnails) */}
+      {preview && (
         <div
           className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
-          onClick={() => setPreviewImage(null)}
+          onClick={() => setPreview(null)}
         >
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+            onClick={(e) => { e.stopPropagation(); setPreview(null); }}
             className="absolute top-4 right-4 text-white text-3xl leading-none w-10 h-10 flex items-center justify-center hover:bg-white/10 rounded-full"
             aria-label="Close"
           >
             ×
           </button>
-          <img
-            src={previewImage}
-            alt=""
-            className="max-w-[92vw] max-h-[92vh] object-contain rounded-md"
-            onClick={(e) => e.stopPropagation()}
-          />
+          {preview.video ? (
+            <video
+              src={preview.src}
+              controls
+              autoPlay
+              className="max-w-[92vw] max-h-[92vh] rounded-md bg-black"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <img
+              src={preview.src}
+              alt=""
+              className="max-w-[92vw] max-h-[92vh] object-contain rounded-md"
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
         </div>
       )}
       {complianceDetail && <ComplianceDetailModal detail={complianceDetail} onClose={() => setComplianceDetail(null)} />}
@@ -1630,7 +1654,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                           const k = adKey(g.name, ad);
                           return (
                             <AdCard
-                              key={k} ad={ad} metric={g.settings.sortField} off={excluded.has(k)} onToggle={() => toggleAd(k)}
+                              key={k} ad={ad} metric={g.settings.sortField} off={excluded.has(k)} onToggle={() => toggleAd(k)} onPreview={() => previewAd(ad)}
                               compliance={excluded.has(k) ? undefined : adCompliance[k]}
                               onCompliance={() => adCompliance[k] && setComplianceDetail({ ad, kind: 'ads', state: adCompliance[k] })}
                             />
@@ -1727,9 +1751,10 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                         const cs = articleCompliance[k];
                         return (
                           <div key={k} className="relative h-16 w-16 rounded border border-slate-200 bg-slate-100 overflow-hidden" title={ad.ad_title}>
-                            {ad.img_url ? (
-                              <button type="button" onClick={() => setPreviewImage(ad.img_url)} className="h-full w-full">
-                                <img src={ad.img_url} loading="lazy" alt="" className="h-full w-full object-cover" />
+                            {ad.img_url || ad.video_url ? (
+                              <button type="button" onClick={() => previewAd(ad)} className="relative h-full w-full bg-slate-800">
+                                {ad.img_url && <img src={ad.img_url} loading="lazy" alt="" className="h-full w-full object-cover" />}
+                                {ad.video_url && <PlayMark />}
                               </button>
                             ) : (
                               <div className="flex h-full w-full items-center justify-center text-[10px] uppercase text-slate-400">{ad.ad_type || 'no img'}</div>
@@ -2560,8 +2585,17 @@ function ComplianceDetailModal({ detail, onClose }: { detail: ComplianceDetail; 
   );
 }
 
-function AdCard({ ad, metric, off, onToggle, compliance, onCompliance }: {
-  ad: Row; metric: string; off: boolean; onToggle: () => void; compliance?: ComplianceState; onCompliance: () => void;
+// Play triangle over a video thumbnail.
+function PlayMark() {
+  return (
+    <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-[9px] text-white">▶</span>
+    </span>
+  );
+}
+
+function AdCard({ ad, metric, off, onToggle, onPreview, compliance, onCompliance }: {
+  ad: Row; metric: string; off: boolean; onToggle: () => void; onPreview: () => void; compliance?: ComplianceState; onCompliance: () => void;
 }) {
   return (
     <button
@@ -2574,9 +2608,21 @@ function AdCard({ ad, metric, off, onToggle, compliance, onCompliance }: {
     >
       <div className="relative aspect-square bg-slate-100">
         {ad.img_url && <img src={ad.img_url} loading="lazy" alt="" className="h-full w-full object-cover" />}
+        {ad.video_url && <PlayMark />}
         {compliance && (
           <span className="absolute bottom-1 left-1">
             <ComplianceBadge state={compliance} onOpen={onCompliance} />
+          </span>
+        )}
+        {(ad.img_url || ad.video_url) && (
+          // span, not button: the card itself is a button (toggle).
+          <span
+            role="button"
+            title={ad.video_url ? 'Play video full size' : 'Open image full size'}
+            onClick={(e) => { e.stopPropagation(); onPreview(); }}
+            className="absolute bottom-1 right-1 rounded bg-black/70 px-1.5 py-0.5 text-[11px] text-white hover:bg-black"
+          >
+            {ad.video_url ? '▶ full' : '⤢ full'}
           </span>
         )}
       </div>
