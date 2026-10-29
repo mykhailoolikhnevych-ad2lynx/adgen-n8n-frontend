@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentProps, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode, type UIEvent } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -19,6 +19,9 @@ import { customStartError, customStartToUnix, defaultCustomStart, formatInZone, 
 // Step 3 reads each landing through Jina and applies the AMO text rules
 // (megatool-autozaliv-content), replacing the local Python scripts.
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL as string | undefined;
+// Same actions read from Postgres (megatool-autozaliv-builder-pg, schema autozaliv) — used instead of the
+// sheet when set. Always the latest parse of each competitor; adds the 'runs' action.
+const PG_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_PG_URL as string | undefined;
 const CONTENT_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL as string | undefined;
 // Step 4 publishes AMO articles (megatool-autozaliv-launch). Buyer → email lives in
 // the autozaliv_buyers datatable; the email picks the RSOC account, and the
@@ -150,8 +153,11 @@ async function post(url: string | undefined, envName: string, body: object, time
     throw Object.assign(new Error(data?.error || e?.message || 'Request failed'), { data });
   }
 }
-const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string }> =>
-  post(WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL', body, 180_000);
+// total: Postgres paged 'articles' — how many articles match the filters over all pages
+const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string; total?: number }> =>
+  PG_WEBHOOK
+    ? post(PG_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_PG_URL', body, 180_000)
+    : post(WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL', body, 180_000);
 const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL', body, 300_000);
 const callLaunch = (body: object) => post(LAUNCH_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL', body, 180_000);
 const callFb = (body: object, timeout = 60_000) => post(FB_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_FB_URL', body, timeout);
@@ -457,7 +463,23 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   const [fb, setFb] = useState<Record<string, FbState>>({});
   const [fbRunning, setFbRunning] = useState(false);
 
+  // Postgres only: the latest parse per competitor + source, and the filter dropdown options (kind / value).
+  const [runs, setRuns] = useState<Row[]>([]);
+  const [facets, setFacets] = useState<Row[]>([]);
+  const loadMeta = async () => {
+    try {
+      const [r, f] = await Promise.all([callBuilder({ action: 'runs' }), callBuilder({ action: 'facets' })]);
+      setRuns(toRows(r));
+      setFacets(toRows(f));
+    } catch {
+      // not fatal: only the "Last parse" label and the dropdown options are missing
+    }
+  };
   const loadArticles = async () => {
+    if (PG_WEBHOOK) {
+      loadMeta();
+      return loadPage(0);
+    }
     setArticlesLoading(true);
     setArticlesError(null);
     try {
@@ -470,6 +492,8 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   };
   // Articles the Builder already launched (autozaliv_used datatable), latest per article.
   const [usedMap, setUsedMap] = useState<Record<string, UsedRow>>({});
+  // Postgres paging waits for it: "Unused only" is sent to the server, an early page would load twice
+  const [usedLoaded, setUsedLoaded] = useState(false);
   const loadUsed = async () => {
     try {
       const res = await callLaunch({ action: 'used-list' });
@@ -481,6 +505,8 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
       setUsedMap(map);
     } catch {
       // not fatal: the sheet's own "used" column still shows
+    } finally {
+      setUsedLoaded(true);
     }
   };
   const loadCompetitors = async () => {
@@ -500,7 +526,9 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
     }
   };
   useEffect(() => {
-    loadArticles();
+    // on Postgres the first page comes from the filter effect below
+    if (PG_WEBHOOK) loadMeta();
+    else loadArticles();
     loadUsed();
     loadCompetitors();
   }, []);
@@ -513,13 +541,32 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   const [adheartPicked, setAdheartPicked] = useState<Set<string>>(new Set());
   const [adheartSearchEdits, setAdheartSearchEdits] = useState<Record<string, string>>({});
   const adheartSearchFor = (c: Competitor) => adheartSearchEdits[c.name] ?? (c.adheartSearch || c.domains.join(' | '));
+  // Postgres only: a new competitor (name + domains) added from the Parse Adheart panel, then picked for parsing.
+  const [newComp, setNewComp] = useState<{ name: string; domains: string; busy?: boolean; error?: string }>({ name: '', domains: '' });
+  const addCompetitor = async () => {
+    setNewComp((s) => ({ ...s, busy: true, error: undefined }));
+    try {
+      const res = await callBuilder({ action: 'add-competitor', name: newComp.name, domains: newComp.domains });
+      const added = res.rows.find((r) => r[0] === 'added');
+      if (!added) {
+        const clashes = res.rows.filter((r) => r[0] === 'clash').map((r) => r[1]);
+        throw new Error(clashes.length ? `Already taken — ${clashes.join('; ')}` : 'Not added: this name already exists');
+      }
+      await loadCompetitors();
+      setAdheartPicked((s) => new Set(s).add(added[1]));
+      setNewComp({ name: '', domains: '' });
+    } catch (e: any) {
+      setNewComp((s) => ({ ...s, busy: false, error: e.message }));
+    }
+  };
   const parseAdheart = async () => {
     const o = adheartOpts;
     setAdheartRun({ busy: true });
     try {
       const res = await callAdheart({
         action: 'competitors',
-        competitors: competitors.filter((c) => adheartPicked.has(c.name)).map((c) => ({ name: c.name, search: adheartSearchFor(c) })),
+        // domains let the workflow parse a competitor added here that isn't in the sheet's Competitors tab
+        competitors: competitors.filter((c) => adheartPicked.has(c.name)).map((c) => ({ name: c.name, search: adheartSearchFor(c), domains: c.domains })),
         startDate: o.start === 'date' ? o.date : o.start,
         minReach: Number(o.minReach) || 0,
         geo: o.geo,
@@ -529,7 +576,9 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
       const skipped = (res.skipped || []).length ? ` Skipped: ${res.skipped.join('; ')}.` : '';
       setAdheartPicked(new Set());
       setAdheartRun({
-        msg: `Adheart parse started: ${names}. Press ↻ Status in a few minutes to see each result; a finished one is ticked for "Import checked competitors" (Adheart) in the sheet.${skipped}`,
+        msg: PG_WEBHOOK
+          ? `Adheart parse started: ${names}. Press ↻ Status in a few minutes to see each result; when it's done, Refresh the article list to see the new ads.${skipped}`
+          : `Adheart parse started: ${names}. Press ↻ Status in a few minutes to see each result; a finished one is ticked for "Import checked competitors" (Adheart) in the sheet.${skipped}`,
       });
     } catch (e: any) {
       setAdheartRun({ error: e.message });
@@ -548,29 +597,45 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   }, [articles, usedMap, competitors]);
   const cols = useMemo(() => ARTICLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
   const exampleCols = useMemo(() => EXAMPLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
+  // On Postgres only a page of articles is loaded: every row seen stays here, so selected articles keep their
+  // data (geo, language, landing…) for steps 2–6 after a filter change reloads the list.
+  const [cellsSeen, setCellsSeen] = useState<Record<string, Row>>({});
   const articleByTrimmed = useMemo(
-    () => Object.fromEntries(articleRows.map((a) => [trimArticle(a.name), a.cells])) as Record<string, Row>,
-    [articleRows],
+    () => (PG_WEBHOOK ? cellsSeen : Object.fromEntries(articleRows.map((a) => [trimArticle(a.name), a.cells]))) as Record<string, Row>,
+    [articleRows, cellsSeen],
   );
+  // Dropdown options: on Postgres from the 'facets' action (the loaded page is not all articles).
+  const facetValues = (kind: string) => facets.filter((f) => f.kind === kind).map((f) => f.value);
   const langs = useMemo(
-    () => [...new Set(articleRows.map((a) => a.cells.top_language_for_article).filter(Boolean))].sort(),
-    [articleRows],
+    () => (PG_WEBHOOK ? facetValues('lang') : [...new Set(articleRows.map((a) => a.cells.top_language_for_article).filter(Boolean))].sort()),
+    [articleRows, facets],
   );
-  const geos = useMemo(
-    () => [...new Set(articleRows.map((a) => geoOf(a.cells.main_adheart_geo || '')).filter(Boolean))].sort(),
-    [articleRows],
+  const rawGeos = useMemo(
+    () => (PG_WEBHOOK ? facetValues('geo') : articleRows.map((a) => a.cells.main_adheart_geo || '')),
+    [articleRows, facets],
   );
+  const geos = useMemo(() => [...new Set(rawGeos.map(geoOf).filter(Boolean))].sort(), [rawGeos]);
   const competitorNames = useMemo(
-    () => [...new Set([...competitors.map((c) => c.name), ...articleRows.map((a) => a.competitor)].filter(Boolean))].sort(),
-    [competitors, articleRows],
+    () => [...new Set([...competitors.map((c) => c.name), ...(PG_WEBHOOK ? facetValues('competitor') : articleRows.map((a) => a.competitor))].filter(Boolean))].sort(),
+    [competitors, articleRows, facets],
   );
   const sources = useMemo(
-    () => [...new Set(articleRows.map((a) => a.cells.example_source).filter(Boolean))].sort(),
-    [articleRows],
+    () => (PG_WEBHOOK ? facetValues('source') : [...new Set(articleRows.map((a) => a.cells.example_source).filter(Boolean))].sort()),
+    [articleRows, facets],
   );
   // Latest import (the article name's ___YYYY-MM-DD suffix) per source for the picked competitor / source.
+  // On Postgres names have no suffix: the latest parse comes from the 'runs' action instead.
   const lastParsed = useMemo(() => {
     if (!competitor && !source) return [];
+    if (PG_WEBHOOK) {
+      return runs
+        .filter((r) => (!competitor || r.competitor === competitor) && (!source || r.source === source))
+        .map((r) => {
+          const d = new Date(r.run_end.replace(/([+-]\d{2})$/, '$1:00')); // Postgres may send '+02', Date wants '+02:00'
+          const when = isNaN(d.getTime()) ? '' : `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`;
+          return `${competitor ? '' : r.competitor + ' '}${r.source} ${when} (${r.ads_in_run} ads, ${r.new_ads} new)`;
+        });
+    }
     const latest: Record<string, string> = {};
     for (const a of articleRows) {
       const src = a.cells.example_source || '';
@@ -582,10 +647,60 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
     return Object.entries(latest)
       .sort()
       .map(([src, iso]) => `${src || 'no source'} ${iso.split('-').reverse().join('.')}`);
-  }, [articleRows, competitor, source]);
+  }, [articleRows, competitor, source, runs]);
+
+  // Postgres: filters and sort run on the server, 200 articles per page, the next page loads on scroll.
+  const PAGE_SIZE = 200;
+  const [total, setTotal] = useState<number | null>(null);
+  const pageReq = useRef(0); // only the newest request may update the list
+  const listRef = useRef<HTMLDivElement>(null);
+  const pgFilters = {
+    search: search.trim(),
+    competitor,
+    source,
+    lang: lang.trim(),
+    // geo is typed as alpha-2 ("US"); the data mixes US / USA, so send every raw value that maps to it
+    geos: geo.trim() ? rawGeos.filter((g) => geoOf(g).startsWith(geo.trim().toUpperCase())) : undefined,
+    minAds,
+    exclude: unusedOnly ? Object.keys(usedMap) : [],
+    sort,
+  };
+  const pgKey = JSON.stringify(pgFilters);
+  const loadPage = async (offset: number) => {
+    const req = ++pageReq.current;
+    setArticlesLoading(true);
+    setArticlesError(null);
+    try {
+      const res = await callBuilder({ action: 'articles', limit: PAGE_SIZE, offset, ...pgFilters });
+      if (req !== pageReq.current) return;
+      setArticles((prev) => (offset && prev ? { ...res, rows: [...prev.rows, ...res.rows] } : res));
+      setTotal(res.total ?? null);
+      setCellsSeen((m) => {
+        const next = { ...m };
+        res.rows.forEach((r) => (next[r[1]] = Object.fromEntries(res.headers.map((h, i) => [h, r[i] ?? ''])) as Row));
+        return next;
+      });
+      if (!offset && listRef.current) listRef.current.scrollTop = 0;
+    } catch (e: any) {
+      if (req === pageReq.current) setArticlesError(e.message);
+    } finally {
+      if (req === pageReq.current) setArticlesLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (!PG_WEBHOOK || !usedLoaded) return;
+    const t = setTimeout(() => loadPage(0), 300); // typing in search / language / geo waits for a pause
+    return () => clearTimeout(t);
+  }, [pgKey, usedLoaded]);
+  const hasMore = !!PG_WEBHOOK && !!articles && total != null && articles.rows.length < total;
+  const onListScroll = (e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (hasMore && !articlesLoading && el.scrollTop + el.clientHeight > el.scrollHeight - 400) loadPage(articles!.rows.length);
+  };
 
   const q = search.trim().toLowerCase();
   const visibleArticles = useMemo(() => {
+    if (PG_WEBHOOK) return articleRows; // already filtered + sorted by the server
     const list = articleRows.filter(
       (a) =>
         (!q || a.name.toLowerCase().includes(q)) &&
@@ -1354,14 +1469,16 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
               </span>
             )}
             <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
-              {visibleArticles.length} of {articleRows.length} articles
+              {PG_WEBHOOK
+                ? `${total ?? '…'} articles${hasMore ? ` · ${articleRows.length} loaded` : ''}`
+                : `${visibleArticles.length} of ${articleRows.length} articles`}
               {/* Admin-only: writes tabs into the source spreadsheet and the Competitors tab. */}
               {isAdmin && (
                 <Button size="sm" variant="outline" onClick={() => setAdheartOpen((v) => !v)} title="Pick competitors and parse their Adheart ads">
                   Parse Adheart
                 </Button>
               )}
-              <Button size="sm" onClick={loadArticles} disabled={articlesLoading}>
+              <Button size="sm" onClick={() => loadArticles()} disabled={articlesLoading}>
                 {articlesLoading ? 'Loading…' : 'Refresh'}
               </Button>
             </div>
@@ -1427,6 +1544,27 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                     </tbody>
                   </table>
                 </div>
+                {PG_WEBHOOK && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className="font-semibold text-slate-800">Add competitor</span>
+                    <Input
+                      value={newComp.name}
+                      onChange={(e) => setNewComp((s) => ({ ...s, name: e.target.value }))}
+                      placeholder="Name"
+                      className="h-8 w-40 bg-white"
+                    />
+                    <Input
+                      value={newComp.domains}
+                      onChange={(e) => setNewComp((s) => ({ ...s, domains: e.target.value }))}
+                      placeholder="Domains, comma-separated: site.com, other.com"
+                      className="h-8 min-w-[18rem] flex-1 bg-white"
+                    />
+                    <Button size="sm" variant="outline" className="h-8" onClick={addCompetitor} disabled={newComp.busy || !newComp.name.trim() || !newComp.domains.trim()}>
+                      {newComp.busy ? 'Adding…' : '+ Add'}
+                    </Button>
+                    {newComp.error && <span className="text-red-600">{newComp.error}</span>}
+                  </div>
+                )}
               </div>
               <label className="flex flex-col gap-1">
                 Ads placed since
@@ -1464,7 +1602,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
           )}
           {adheartRun.error && <ErrorBox msg={`Parse Adheart: ${adheartRun.error}`} />}
           {adheartRun.msg && <div className="mx-4 mb-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{adheartRun.msg}</div>}
-          <div className="flex-1 overflow-auto mx-4 rounded border border-slate-200 bg-white">
+          <div ref={listRef} onScroll={onListScroll} className="flex-1 overflow-auto mx-4 rounded border border-slate-200 bg-white">
             {!articles && articlesLoading ? (
               <div className="p-6 text-sm text-slate-500">Loading articles…</div>
             ) : (
@@ -1472,7 +1610,12 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                 <thead className="sticky top-0 bg-slate-100 z-10">
                   <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
                     <th className="px-2 py-2 w-8">
-                      <input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={toggleAllVisible}
+                        title={hasMore ? 'Selects the loaded articles only — scroll to load the rest' : undefined}
+                      />
                     </th>
                     <th className="px-2 py-2 w-12" />
                     <SortTh label="article" k="article" sort={sort} onSort={sortBy} />
@@ -1551,6 +1694,11 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                   ))}
                 </tbody>
               </table>
+            )}
+            {PG_WEBHOOK && articles && (hasMore || (articlesLoading && articles.rows.length > 0)) && (
+              <div className="p-3 text-center text-xs text-slate-500">
+                {articlesLoading ? 'Loading more…' : `Scroll for more · ${articleRows.length} of ${total}`}
+              </div>
             )}
           </div>
           <div className="flex items-center gap-3 px-4 py-3 border-t border-slate-200 bg-white">
