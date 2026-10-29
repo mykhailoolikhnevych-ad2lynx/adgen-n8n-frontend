@@ -559,6 +559,27 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
       setNewComp((s) => ({ ...s, busy: false, error: e.message }));
     }
   };
+  // Postgres only: removes a competitor. Its parsed ads stay in Postgres; its articles leave the list at the next
+  // 5-minute refresh. Adding it again with the same domains brings them back.
+  const [deleting, setDeleting] = useState<{ name?: string; error?: string }>({});
+  const deleteCompetitor = async (name: string) => {
+    if (!window.confirm(`Delete competitor "${name}"?\n\nIts articles disappear from the list within ~5 minutes. Parsed ads stay in Postgres — adding it again with the same domains brings them back.`)) return;
+    setDeleting({ name });
+    try {
+      const res = await callBuilder({ action: 'delete-competitor', name });
+      if (!res.rows.some((r) => r[0] === 'deleted')) throw new Error(`"${name}" was not found`);
+      setAdheartPicked((s) => {
+        const n = new Set(s);
+        n.delete(name);
+        return n;
+      });
+      if (competitor === name) setCompetitor('');
+      await loadCompetitors();
+      setDeleting({});
+    } catch (e: any) {
+      setDeleting({ error: `Delete ${name}: ${e.message}` });
+    }
+  };
   const parseAdheart = async () => {
     const o = adheartOpts;
     setAdheartRun({ busy: true });
@@ -1507,6 +1528,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                         <th className="px-2 py-1">competitor</th>
                         <th className="px-2 py-1">filters</th>
                         <th className="px-2 py-1">last result</th>
+                        {PG_WEBHOOK && <th className="w-8 px-2 py-1" />}
                       </tr>
                     </thead>
                     <tbody>
@@ -1536,10 +1558,23 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                             />
                           </td>
                           <td className="px-2 py-1 text-[11px]">{c.adheartParsed || '—'}</td>
+                          {PG_WEBHOOK && (
+                            <td className="px-2 py-1">
+                              <button
+                                type="button"
+                                title={`Delete ${c.name}`}
+                                disabled={!!deleting.name}
+                                onClick={() => deleteCompetitor(c.name)}
+                                className="rounded px-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                              >
+                                {deleting.name === c.name ? '…' : '🗑'}
+                              </button>
+                            </td>
+                          )}
                         </tr>
                       ))}
                       {competitors.length === 0 && (
-                        <tr><td colSpan={4} className="px-2 py-2 text-slate-400">No competitors loaded — press ↻ Status.</td></tr>
+                        <tr><td colSpan={5} className="px-2 py-2 text-slate-400">No competitors loaded — press ↻ Status.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1563,6 +1598,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
                       {newComp.busy ? 'Adding…' : '+ Add'}
                     </Button>
                     {newComp.error && <span className="text-red-600">{newComp.error}</span>}
+                    {deleting.error && <span className="text-red-600">{deleting.error}</span>}
                   </div>
                 )}
               </div>
