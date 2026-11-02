@@ -1525,12 +1525,21 @@ interface AutozalivCampaignRow {
 
 const AUTOZALIV_LAUNCH_URL = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL as string | undefined;
 
+// Binom names end in "| <account> DD/MM <competitor>" — the competitor is
+// whatever follows the date in the last segment.
+const competitorOfBinomName = (name: string) => {
+  const last = name.split('|').pop() || '';
+  return (last.match(/\d{2}\/\d{2}\s+(.+)$/) || [])[1]?.trim() || '';
+};
+
 const AutozalivCampaignsView = ({ since, until }: { since: string; until: string }) => {
   const [rows, setRows] = useState<AutozalivCampaignRow[]>([]);
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'nb' | 'fb'>('all');
   const [emailFilter, setEmailFilter] = useState('');
+  const [competitorFilter, setCompetitorFilter] = useState('');
+  const [view, setView] = useState<'campaigns' | 'competitors'>('campaigns');
 
   const load = useCallback(async () => {
     if (!AUTOZALIV_LAUNCH_URL) {
@@ -1559,15 +1568,26 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
 
   const filtered = useMemo(() => {
     const emailQ = emailFilter.trim().toLowerCase();
+    const competitorQ = competitorFilter.trim().toLowerCase();
     return rows.filter((r) =>
       (!since || r.created_at >= since) &&
       (!until || r.created_at <= until) &&
       (sourceFilter === 'all' || r.source === sourceFilter) &&
-      (!emailQ || r.email.toLowerCase().includes(emailQ)),
+      (!emailQ || r.email.toLowerCase().includes(emailQ)) &&
+      (!competitorQ || competitorOfBinomName(r.binom_campaign_name).toLowerCase().includes(competitorQ)),
     );
-  }, [rows, since, until, sourceFilter, emailFilter]);
+  }, [rows, since, until, sourceFilter, emailFilter, competitorFilter]);
 
   const users = useMemo(() => new Set(filtered.map((r) => r.email).filter(Boolean)).size, [filtered]);
+
+  const byCompetitor = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of filtered) {
+      const c = competitorOfBinomName(r.binom_campaign_name);
+      counts.set(c, (counts.get(c) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [filtered]);
 
   if (status === 'error') {
     return <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Failed to load Autozaliv campaigns'}</div>;
@@ -1598,14 +1618,54 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
           <label className="text-[10px] font-bold uppercase text-slate-500 block">Email</label>
           <Input value={emailFilter} onChange={(e) => setEmailFilter(e.target.value)} placeholder="contains…" />
         </div>
-        <Button variant="ghost" size="sm" onClick={() => { setSourceFilter('all'); setEmailFilter(''); }}>Clear</Button>
+        <div className="flex-1 min-w-[160px]">
+          <label className="text-[10px] font-bold uppercase text-slate-500 block">Competitor</label>
+          <Input value={competitorFilter} onChange={(e) => setCompetitorFilter(e.target.value)} placeholder="contains…" />
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => { setSourceFilter('all'); setEmailFilter(''); setCompetitorFilter(''); }}>Clear</Button>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
           {status === 'loading' ? 'Loading…' : 'Refresh'}
         </Button>
       </div>
 
+      <div className="flex gap-1">
+        {(['campaigns', 'competitors'] as const).map((v) => (
+          <button
+            key={v}
+            type="button"
+            onClick={() => setView(v)}
+            className={`rounded px-3 py-1.5 text-sm capitalize transition-colors ${
+              view === v ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            {v}
+          </button>
+        ))}
+      </div>
+
       {filtered.length === 0 ? (
         <div className="p-6 text-gray-400 italic">No Autozaliv campaigns in the selected range.</div>
+      ) : view === 'competitors' ? (
+        <table className="w-full max-w-md text-sm border-collapse">
+          <thead className="bg-slate-100">
+            <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+              <th className="py-2 px-3">Competitor</th>
+              <th className="py-2 px-3 text-right">Campaigns</th>
+            </tr>
+          </thead>
+          <tbody>
+            {byCompetitor.map(([c, n]) => (
+              <tr key={c} className="border-b border-slate-100">
+                <td className="py-1.5 px-3 text-xs">
+                  {c ? (
+                    <button type="button" className="hover:underline" onClick={() => { setCompetitorFilter(c); setView('campaigns'); }}>{c}</button>
+                  ) : <span className="text-slate-400 italic">blank</span>}
+                </td>
+                <td className="py-1.5 px-3 text-xs text-right font-mono">{n}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       ) : (
         <table className="w-full text-sm border-collapse">
           <thead className="sticky top-0 bg-slate-100 z-10">
@@ -1615,6 +1675,7 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
               <th className="py-2 px-3">Source</th>
               <th className="py-2 px-3">Campaign ID</th>
               <th className="py-2 px-3">Binom campaign</th>
+              <th className="py-2 px-3">Competitor</th>
               <th className="py-2 px-3">Buyer</th>
               <th className="py-2 px-3">Account</th>
             </tr>
@@ -1633,6 +1694,7 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
                   <div className="font-mono">{r.binom_campaign_id}</div>
                   <div className="text-slate-600 max-w-[360px] truncate" title={r.binom_campaign_name}>{r.binom_campaign_name}</div>
                 </td>
+                <td className="py-1.5 px-3 text-xs">{competitorOfBinomName(r.binom_campaign_name)}</td>
                 <td className="py-1.5 px-3 text-xs">{r.buyer}</td>
                 <td className="py-1.5 px-3 text-xs">{r.account}</td>
               </tr>
