@@ -21,7 +21,7 @@ import { customStartError, customStartToUnix, defaultCustomStart, formatInZone, 
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL as string | undefined;
 // Same actions read from Postgres (megatool-autozaliv-builder-pg, schema autozaliv) — used instead of the
 // sheet when set. Always the latest parse of each competitor; adds the 'runs' action.
-const PG_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_PG_URL as string | undefined;
+export const PG_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_PG_URL as string | undefined;
 const CONTENT_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL as string | undefined;
 // Step 4 publishes AMO articles (megatool-autozaliv-launch). Buyer → email lives in
 // the autozaliv_buyers datatable; the email picks the RSOC account, and the
@@ -32,9 +32,6 @@ const LAUNCH_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL as st
 const RSOC_OPTIONS_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_RSOC_OPTIONS_URL as string | undefined;
 // Step 6 on Facebook (megatool-autozaliv-fb): FB accounts / pages / pixels and the campaign → ad set → ads launch.
 const FB_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_FB_URL as string | undefined;
-// Step 1 "Parse Adheart" (megatool-adheart-parse): parses the Competitors rows with adheart_update ticked
-// in the background; results land in the sheet (new tab, adheart_tab, adheart_parsed).
-const ADHEART_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_ADHEART_PARSE_URL as string | undefined;
 // Compliance (megatool-autozaliv-compliance): step 2 checks each kept ad + image (short prompt),
 // step 3 optionally checks an article together with its ads' images (full prompt). Info only.
 const COMPLIANCE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_COMPLIANCE_URL as string | undefined;
@@ -111,8 +108,8 @@ function pickAds(ads: Row[], s: Settings): Row[] {
 // Step 1 competitor filter. Competitors live in the sheet's "Competitors" tab (name | domains);
 // the import writes the name into the article's "competitor" column. Rows imported before that
 // column existed fall back to matching examp_landing_page against the domains (subdomains too).
-// adheartSearch / adheartParsed feed the Parse Adheart panel (filters to search, last result).
-type Competitor = { name: string; domains: string[]; adheartSearch: string; adheartParsed: string };
+// adheartSearch / adheartParsed feed the Parse Adheart tab (filters to search, last result).
+export type Competitor = { name: string; domains: string[]; adheartSearch: string; adheartParsed: string };
 // main_adheart_geo mixes ISO alpha-2 and alpha-3 (US / USA) — the geo filter groups them under alpha-2.
 const GEO_ALPHA3: Record<string, string> = {
   AGO: 'AO', ARE: 'AE', ARM: 'AM', AUS: 'AU', AZE: 'AZ', BEL: 'BE', BGD: 'BD', BRA: 'BR', CAN: 'CA', CHL: 'CL',
@@ -139,7 +136,7 @@ const formatCta = (s: string) => s.replace(/_/g, ' ').toLowerCase().replace(/\b\
 const toRows = (sheet: Sheet): Row[] =>
   sheet.rows.map((r) => Object.fromEntries(sheet.headers.map((h, i) => [h, r[i] ?? ''])));
 
-async function post(url: string | undefined, envName: string, body: object, timeout: number): Promise<any> {
+export async function post(url: string | undefined, envName: string, body: object, timeout: number): Promise<any> {
   if (!url) throw new Error(`${envName} is not set`);
   try {
     const { data } = await axios.post(url, body, { timeout });
@@ -154,14 +151,23 @@ async function post(url: string | undefined, envName: string, body: object, time
   }
 }
 // total: Postgres paged 'articles' — how many articles match the filters over all pages
-const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string; total?: number }> =>
+export const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string; total?: number }> =>
   PG_WEBHOOK
     ? post(PG_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_PG_URL', body, 180_000)
     : post(WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL', body, 180_000);
+export async function fetchCompetitors(): Promise<Competitor[]> {
+  const res = await callBuilder({ action: 'competitors' });
+  const col = (h: string) => res.headers.indexOf(h);
+  return res.rows.map((r) => ({
+    name: (r[col('name')] || '').trim(),
+    domains: (r[col('domains')] || '').toLowerCase().split(/[\s,;]+/).map((d) => d.replace(/^www\./, '')).filter(Boolean),
+    adheartSearch: (r[col('adheart_search')] || '').trim(),
+    adheartParsed: (r[col('adheart_parsed')] || '').trim(),
+  })).filter((c) => c.name);
+}
 const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL', body, 300_000);
 const callLaunch = (body: object) => post(LAUNCH_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL', body, 180_000);
 const callFb = (body: object, timeout = 60_000) => post(FB_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_FB_URL', body, timeout);
-const callAdheart = (body: object) => post(ADHEART_WEBHOOK, 'PUBLIC_WEBHOOK_ADHEART_PARSE_URL', body, 60_000);
 const callCompliance = (body: object) => post(COMPLIANCE_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_COMPLIANCE_URL', body, 300_000);
 
 type Platform = 'nb' | 'fb';
@@ -374,7 +380,7 @@ async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>)
   }));
 }
 
-export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: boolean }) {
+export function MegatoolAutozalivBuilderPage() {
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
   const [platform, setPlatform] = useState<Platform>('nb');
   const trafficSource = TRAFFIC_SOURCE[platform];
@@ -510,16 +516,7 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
   };
   const loadCompetitors = async () => {
     try {
-      const res = await callBuilder({ action: 'competitors' });
-      const col = (h: string) => res.headers.indexOf(h);
-      setCompetitors(
-        res.rows.map((r) => ({
-          name: (r[col('name')] || '').trim(),
-          domains: (r[col('domains')] || '').toLowerCase().split(/[\s,;]+/).map((d) => d.replace(/^www\./, '')).filter(Boolean),
-          adheartSearch: (r[col('adheart_search')] || '').trim(),
-          adheartParsed: (r[col('adheart_parsed')] || '').trim(),
-        })).filter((c) => c.name),
-      );
+      setCompetitors(await fetchCompetitors());
     } catch {
       // not fatal: the sheet's "competitor" column still filters
     }
@@ -531,79 +528,6 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
     loadUsed();
     loadCompetitors();
   }, []);
-  const [adheartRun, setAdheartRun] = useState<{ busy?: boolean; msg?: string; error?: string }>({});
-  // Same knobs as adheart_* in ads_archive/main.py. Empty min reach = any; empty geo = any.
-  const [adheartOpen, setAdheartOpen] = useState(false);
-  const [adheartOpts, setAdheartOpts] = useState({ start: '7 days ago', date: '', minReach: '20', geo: '', maxPages: '150' });
-  // Competitors picked in the panel, and filters edited there (this run only; unset = the sheet's
-  // adheart_search, or the domains joined with " | " — the same fallback the workflow applies).
-  const [adheartPicked, setAdheartPicked] = useState<Set<string>>(new Set());
-  const [adheartSearchEdits, setAdheartSearchEdits] = useState<Record<string, string>>({});
-  const adheartSearchFor = (c: Competitor) => adheartSearchEdits[c.name] ?? (c.adheartSearch || c.domains.join(' | '));
-  // Postgres only: a new competitor (name + domains) added from the Parse Adheart panel, then picked for parsing.
-  const [newComp, setNewComp] = useState<{ name: string; domains: string; busy?: boolean; error?: string }>({ name: '', domains: '' });
-  const addCompetitor = async () => {
-    setNewComp((s) => ({ ...s, busy: true, error: undefined }));
-    try {
-      const res = await callBuilder({ action: 'add-competitor', name: newComp.name, domains: newComp.domains });
-      const added = res.rows.find((r) => r[0] === 'added');
-      if (!added) {
-        const clashes = res.rows.filter((r) => r[0] === 'clash').map((r) => r[1]);
-        throw new Error(clashes.length ? `Already taken — ${clashes.join('; ')}` : 'Not added: this name already exists');
-      }
-      await loadCompetitors();
-      setAdheartPicked((s) => new Set(s).add(added[1]));
-      setNewComp({ name: '', domains: '' });
-    } catch (e: any) {
-      setNewComp((s) => ({ ...s, busy: false, error: e.message }));
-    }
-  };
-  // Postgres only: removes a competitor. Its parsed ads stay in Postgres; its articles leave the list at the next
-  // 5-minute refresh. Adding it again with the same domains brings them back.
-  const [deleting, setDeleting] = useState<{ name?: string; error?: string }>({});
-  const deleteCompetitor = async (name: string) => {
-    if (!window.confirm(`Delete competitor "${name}"?\n\nIts articles disappear from the list within ~5 minutes. Parsed ads stay in Postgres — adding it again with the same domains brings them back.`)) return;
-    setDeleting({ name });
-    try {
-      const res = await callBuilder({ action: 'delete-competitor', name });
-      if (!res.rows.some((r) => r[0] === 'deleted')) throw new Error(`"${name}" was not found`);
-      setAdheartPicked((s) => {
-        const n = new Set(s);
-        n.delete(name);
-        return n;
-      });
-      if (competitor === name) setCompetitor('');
-      await loadCompetitors();
-      setDeleting({});
-    } catch (e: any) {
-      setDeleting({ error: `Delete ${name}: ${e.message}` });
-    }
-  };
-  const parseAdheart = async () => {
-    const o = adheartOpts;
-    setAdheartRun({ busy: true });
-    try {
-      const res = await callAdheart({
-        action: 'competitors',
-        // domains let the workflow parse a competitor added here that isn't in the sheet's Competitors tab
-        competitors: competitors.filter((c) => adheartPicked.has(c.name)).map((c) => ({ name: c.name, search: adheartSearchFor(c), domains: c.domains })),
-        startDate: o.start === 'date' ? o.date : o.start,
-        minReach: Number(o.minReach) || 0,
-        geo: o.geo,
-        maxPages: Number(o.maxPages) || 150,
-      });
-      const names = (res.jobs || []).map((j: { name: string }) => j.name).join(', ');
-      const skipped = (res.skipped || []).length ? ` Skipped: ${res.skipped.join('; ')}.` : '';
-      setAdheartPicked(new Set());
-      setAdheartRun({
-        msg: PG_WEBHOOK
-          ? `Adheart parse started: ${names}. Press ↻ Status in a few minutes to see each result; when it's done, Refresh the article list to see the new ads.${skipped}`
-          : `Adheart parse started: ${names}. Press ↻ Status in a few minutes to see each result; a finished one is ticked for "Import checked competitors" (Adheart) in the sheet.${skipped}`,
-      });
-    } catch (e: any) {
-      setAdheartRun({ error: e.message });
-    }
-  };
 
   // Article name is column B, "used" formula is column D (see DataAutomations.js).
   const articleRows = useMemo(() => {
@@ -1490,151 +1414,13 @@ export function MegatoolAutozalivBuilderPage({ isAdmin = false }: { isAdmin?: bo
               {PG_WEBHOOK
                 ? `${total ?? '…'} articles${hasMore ? ` · ${articleRows.length} loaded` : ''}`
                 : `${visibleArticles.length} of ${articleRows.length} articles`}
-              {/* Admin-only: writes tabs into the source spreadsheet and the Competitors tab. */}
-              {isAdmin && (
-                <Button size="sm" variant="outline" onClick={() => setAdheartOpen((v) => !v)} title="Pick competitors and parse their Adheart ads">
-                  Parse Adheart
-                </Button>
-              )}
-              <Button size="sm" onClick={() => loadArticles()} disabled={articlesLoading}>
+              {/* competitors too: they can be added / deleted on the Parse Adheart tab */}
+              <Button size="sm" onClick={() => { loadArticles(); loadCompetitors(); }} disabled={articlesLoading}>
                 {articlesLoading ? 'Loading…' : 'Refresh'}
               </Button>
             </div>
           </div>
           {articlesError && <ErrorBox msg={articlesError} />}
-          {isAdmin && adheartOpen && (
-            <div className="mx-4 mb-2 flex flex-wrap items-end gap-3 rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-              {/* Competitors (from the sheet's Competitors tab): pick, check / edit filters, see the last result. */}
-              <div className="basis-full">
-                <div className="mb-1 flex items-center gap-2">
-                  <span className="font-semibold text-slate-800">Parse Adheart</span>
-                  <span>— pick competitors. Filters: one per line, "|" = or, a space inside = and.</span>
-                  <Button size="sm" variant="outline" className="ml-auto h-7" onClick={loadCompetitors}>↻ Status</Button>
-                </div>
-                <div className="max-h-64 overflow-auto rounded border border-slate-200">
-                  <table className="w-full border-collapse">
-                    <thead className="sticky top-0 bg-slate-100 text-left text-[10px] font-bold uppercase text-gray-500">
-                      <tr>
-                        <th className="w-8 px-2 py-1">
-                          <input
-                            type="checkbox"
-                            checked={competitors.length > 0 && adheartPicked.size === competitors.length}
-                            onChange={(e) => setAdheartPicked(e.target.checked ? new Set(competitors.map((c) => c.name)) : new Set())}
-                          />
-                        </th>
-                        <th className="px-2 py-1">competitor</th>
-                        <th className="px-2 py-1">filters</th>
-                        <th className="px-2 py-1">last result</th>
-                        {PG_WEBHOOK && <th className="w-8 px-2 py-1" />}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {competitors.map((c) => (
-                        <tr key={c.name} className="border-t border-slate-100 align-top">
-                          <td className="px-2 py-1">
-                            <input
-                              type="checkbox"
-                              checked={adheartPicked.has(c.name)}
-                              onChange={(e) =>
-                                setAdheartPicked((s) => {
-                                  const n = new Set(s);
-                                  if (e.target.checked) n.add(c.name);
-                                  else n.delete(c.name);
-                                  return n;
-                                })
-                              }
-                            />
-                          </td>
-                          <td className="whitespace-nowrap px-2 py-1 font-medium text-slate-800">{c.name}</td>
-                          <td className="w-1/2 px-2 py-1">
-                            <textarea
-                              value={adheartSearchFor(c)}
-                              onChange={(e) => setAdheartSearchEdits((s) => ({ ...s, [c.name]: e.target.value }))}
-                              rows={1}
-                              className="w-full resize-y rounded border border-slate-200 px-1.5 py-1 font-mono text-[11px]"
-                            />
-                          </td>
-                          <td className="px-2 py-1 text-[11px]">{c.adheartParsed || '—'}</td>
-                          {PG_WEBHOOK && (
-                            <td className="px-2 py-1">
-                              <button
-                                type="button"
-                                title={`Delete ${c.name}`}
-                                disabled={!!deleting.name}
-                                onClick={() => deleteCompetitor(c.name)}
-                                className="rounded px-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
-                              >
-                                {deleting.name === c.name ? '…' : '🗑'}
-                              </button>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                      {competitors.length === 0 && (
-                        <tr><td colSpan={5} className="px-2 py-2 text-slate-400">No competitors loaded — press ↻ Status.</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                {PG_WEBHOOK && (
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-slate-800">Add competitor</span>
-                    <Input
-                      value={newComp.name}
-                      onChange={(e) => setNewComp((s) => ({ ...s, name: e.target.value }))}
-                      placeholder="Name"
-                      className="h-8 w-40 bg-white"
-                    />
-                    <Input
-                      value={newComp.domains}
-                      onChange={(e) => setNewComp((s) => ({ ...s, domains: e.target.value }))}
-                      placeholder="Domains, comma-separated: site.com, other.com"
-                      className="h-8 min-w-[18rem] flex-1 bg-white"
-                    />
-                    <Button size="sm" variant="outline" className="h-8" onClick={addCompetitor} disabled={newComp.busy || !newComp.name.trim() || !newComp.domains.trim()}>
-                      {newComp.busy ? 'Adding…' : '+ Add'}
-                    </Button>
-                    {newComp.error && <span className="text-red-600">{newComp.error}</span>}
-                    {deleting.error && <span className="text-red-600">{deleting.error}</span>}
-                  </div>
-                )}
-              </div>
-              <label className="flex flex-col gap-1">
-                Ads placed since
-                <div className="flex gap-1">
-                  <select value={adheartOpts.start} onChange={(e) => setAdheartOpts((o) => ({ ...o, start: e.target.value }))} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
-                    {['1 day ago', '3 days ago', '7 days ago', '14 days ago', '1 month ago', '3 months ago'].map((s) => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                    <option value="date">Pick a date…</option>
-                  </select>
-                  {adheartOpts.start === 'date' && (
-                    <Input type="date" value={adheartOpts.date} onChange={(e) => setAdheartOpts((o) => ({ ...o, date: e.target.value }))} className="h-8 w-36 bg-white" />
-                  )}
-                </div>
-              </label>
-              <label className="flex flex-col gap-1" title="Only ads that reached at least this many people. Empty = any.">
-                Min reach
-                <Input type="number" min={0} value={adheartOpts.minReach} onChange={(e) => setAdheartOpts((o) => ({ ...o, minReach: e.target.value }))} placeholder="any" className="h-8 w-24 bg-white" />
-              </label>
-              <label className="flex flex-col gap-1" title="Country codes, comma-separated (US, GB = either). Empty = any.">
-                Geo
-                <Input value={adheartOpts.geo} onChange={(e) => setAdheartOpts((o) => ({ ...o, geo: e.target.value.toUpperCase() }))} placeholder="any, e.g. US, GB" className="h-8 w-32 bg-white" />
-              </label>
-              <label className="flex flex-col gap-1" title="40 ads per page, up to 1000 pages per search.">
-                Max pages
-                <Input type="number" min={1} max={1000} value={adheartOpts.maxPages} onChange={(e) => setAdheartOpts((o) => ({ ...o, maxPages: e.target.value }))} className="h-8 w-24 bg-white" />
-              </label>
-              <div className="ml-auto flex gap-2">
-                <Button size="sm" variant="outline" onClick={() => setAdheartOpen(false)}>Cancel</Button>
-                <Button size="sm" onClick={parseAdheart} disabled={adheartRun.busy || adheartPicked.size === 0 || (adheartOpts.start === 'date' && !adheartOpts.date)}>
-                  {adheartRun.busy ? 'Starting…' : `Start${adheartPicked.size ? ` (${adheartPicked.size})` : ''}`}
-                </Button>
-              </div>
-            </div>
-          )}
-          {adheartRun.error && <ErrorBox msg={`Parse Adheart: ${adheartRun.error}`} />}
-          {adheartRun.msg && <div className="mx-4 mb-2 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">{adheartRun.msg}</div>}
           <div ref={listRef} onScroll={onListScroll} className="flex-1 overflow-auto mx-4 rounded border border-slate-200 bg-white">
             {!articles && articlesLoading ? (
               <div className="p-6 text-sm text-slate-500">Loading articles…</div>
@@ -2916,6 +2702,6 @@ function TextArea({ value, onChange }: { value?: string; onChange: (v: string) =
   );
 }
 
-function ErrorBox({ msg }: { msg: string }) {
+export function ErrorBox({ msg }: { msg: string }) {
   return <div className="mx-4 mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{msg}</div>;
 }
