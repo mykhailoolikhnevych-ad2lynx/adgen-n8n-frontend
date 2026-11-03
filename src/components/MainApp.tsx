@@ -19,6 +19,7 @@ import { MegatoolCreateBinomOfferPage } from './pages/MegatoolCreateBinomOfferPa
 import { MegatoolCreateNbCampaignPage } from './pages/MegatoolCreateNbCampaignPage';
 import { MegatoolNbCopierPage } from './pages/MegatoolNbCopierPage';
 import { MegatoolAutozalivBuilderPage } from './pages/MegatoolAutozalivBuilderPage';
+import { MegatoolParseAdheartPage } from './pages/MegatoolParseAdheartPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getAuthEmail, isAdminEmail } from '@/lib/identity';
 
@@ -27,11 +28,13 @@ type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article'
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
 // active megatool here. Adding a second tool = append to this list.
-type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier' | 'autozaliv-builder';
+type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier' | 'autozaliv-builder' | 'parse-adheart';
 const MEGATOOL_NAV: { value: MegatoolPage; label: string; adminOnly?: boolean }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
   { value: 'nb-copier', label: 'Newsbreak Copier' },
   { value: 'autozaliv-builder', label: 'Autozaliv Builder' },
+  // admin-only: writes competitors and the parsed ads (Postgres / source spreadsheet)
+  { value: 'parse-adheart', label: 'Parse Adheart', adminOnly: true },
 ];
 
 const BASE_NAV: { value: Page; label: string }[] = [
@@ -499,7 +502,10 @@ export default function MainApp() {
           </KeepAlive>
           {/* Autozaliv Builder — open to everyone; pick articles → pick ads (replaces the Filter sheet). */}
           <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'autozaliv-builder'}>
-            <MegatoolAutozalivBuilderPage isAdmin={isAdmin} />
+            <MegatoolAutozalivBuilderPage />
+          </KeepAlive>
+          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'parse-adheart'}>
+            <MegatoolParseAdheartPage />
           </KeepAlive>
           {/* Closing the Binom sub-tab (×) means "discard this offer draft", so it
               stays gated on binomOfferOpen — closing still resets the form. */}
