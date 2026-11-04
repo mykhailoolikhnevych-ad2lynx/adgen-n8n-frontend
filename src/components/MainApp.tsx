@@ -11,6 +11,7 @@ import { OfferArticlePage } from './pages/OfferArticlePage';
 import { AnglesPage } from './pages/AnglesPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DocsPage } from './pages/DocsPage';
+import { ProfilePage } from './pages/ProfilePage';
 import { CreativeGenPage } from './pages/CreativeGenPage';
 import { CreativeEditPage } from './pages/CreativeEditPage';
 import { VideoGenPage } from './pages/VideoGenPage';
@@ -21,9 +22,9 @@ import { MegatoolNbCopierPage } from './pages/MegatoolNbCopierPage';
 import { MegatoolAutozalivBuilderPage } from './pages/MegatoolAutozalivBuilderPage';
 import { MegatoolParseAdheartPage } from './pages/MegatoolParseAdheartPage';
 import { TooltipProvider } from './ui/tooltip';
-import { getAuthEmail, isAdminEmail } from '@/lib/identity';
+import { getRole, hasRole, type Role } from '@/lib/roles';
 
-type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'offer-article' | 'creatives' | 'video-gen' | 'dashboard' | 'docs';
+type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article' | 'offer-article' | 'creatives' | 'video-gen' | 'dashboard' | 'docs' | 'profile';
 
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
@@ -124,12 +125,15 @@ export default function MainApp() {
   const [megatool, setMegatool] = useState(false);
   const [megatoolPage, setMegatoolPage] = useState<MegatoolPage>('fb-campaign-reader');
 
-  // Selecting a megatool tab must also clear a lingering `page === 'docs'`,
-  // otherwise the Docs override in the main render keeps showing after the
-  // operator navigates away from Docs via the megatool nav.
+  // Docs and Profile (header icons) override both modes.
+  const overlayPage = page === 'docs' || page === 'profile';
+
+  // Selecting a megatool tab must also clear a lingering Docs/Profile page,
+  // otherwise the override in the main render keeps showing after the
+  // operator navigates away via the megatool nav.
   const selectMegatoolPage = (mp: MegatoolPage) => {
     setMegatoolPage(mp);
-    if (page === 'docs') setPage('keywords');
+    if (overlayPage) setPage('keywords');
   };
 
   // If the operator closes the Offer Article tab while it's the active page,
@@ -193,16 +197,14 @@ export default function MainApp() {
     }
   }, [binomOfferOpen, selectedFbAd, megatoolPage, closeBinomOffer, closeNbCampaign]);
 
-  // Resolve the signed-in email once (Cloudflare Access in prod, PUBLIC_DEV_AUTH_EMAIL locally).
-  // Used only to decide whether to render the admin Dashboard tab. Identity lookup is async,
-  // so the tab appears once it resolves; non-admins never see it.
-  const [isAdmin, setIsAdmin] = useState(false);
+  // Resolve the signed-in user's role once (owner from PUBLIC_ADMIN_EMAILS, admin/subadmin
+  // from n8n). The lookup is async, so admin tabs appear once it resolves; others never see
+  // them. For a future partial-access tab, gate it with hasRole(role, 'subadmin').
+  const [role, setRole] = useState<Role | null>(null);
   useEffect(() => {
-    (async () => {
-      const ident = await getAuthEmail();
-      if (isAdminEmail(ident?.email)) setIsAdmin(true);
-    })();
+    void getRole().then(setRole);
   }, []);
+  const isAdmin = hasRole(role, 'admin');
 
   const NAV_ITEMS = isAdmin ? [...BASE_NAV, ...ADMIN_NAV] : BASE_NAV;
 
@@ -462,7 +464,13 @@ export default function MainApp() {
             <button
               type="button"
               aria-label="Profile"
-              className="rounded p-1.5 text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+              aria-current={page === 'profile' ? 'page' : undefined}
+              onClick={() => setPage('profile')}
+              className={`rounded p-1.5 transition-colors ${
+                page === 'profile'
+                  ? 'bg-white text-black'
+                  : 'text-white/80 hover:bg-white/10 hover:text-white'
+              }`}
             >
               <User size={20} weight="regular" />
             </button>
@@ -491,20 +499,21 @@ export default function MainApp() {
           <KeepAlive active={page === 'docs'}>
             <DocsPage isAdmin={isAdmin} />
           </KeepAlive>
+          {page === 'profile' && <ProfilePage />}
 
           {/* Megatool mode */}
-          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'fb-campaign-reader'}>
+          <KeepAlive active={megatool && !overlayPage && megatoolPage === 'fb-campaign-reader'}>
             <MegatoolFBCampaignPage onOpenBinomOffer={handleOpenBinomOffer} />
           </KeepAlive>
           {/* Newsbreak Copier — standalone megatool tab, no cross-tab gating. */}
-          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'nb-copier'}>
+          <KeepAlive active={megatool && !overlayPage && megatoolPage === 'nb-copier'}>
             <MegatoolNbCopierPage />
           </KeepAlive>
           {/* Autozaliv Builder — open to everyone; pick articles → pick ads (replaces the Filter sheet). */}
-          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'autozaliv-builder'}>
+          <KeepAlive active={megatool && !overlayPage && megatoolPage === 'autozaliv-builder'}>
             <MegatoolAutozalivBuilderPage />
           </KeepAlive>
-          <KeepAlive active={megatool && page !== 'docs' && megatoolPage === 'parse-adheart'}>
+          <KeepAlive active={megatool && !overlayPage && megatoolPage === 'parse-adheart'}>
             <MegatoolParseAdheartPage />
           </KeepAlive>
           {/* Closing the Binom sub-tab (×) means "discard this offer draft", so it
@@ -512,7 +521,7 @@ export default function MainApp() {
           {binomOfferOpen && (
             <KeepAlive
               active={
-                megatool && page !== 'docs' &&
+                megatool && !overlayPage &&
                 (megatoolPage === 'create-binom-offer' || megatoolPage === 'create-nb-campaign')
               }
             >
