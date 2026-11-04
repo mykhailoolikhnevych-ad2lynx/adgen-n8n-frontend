@@ -3,7 +3,8 @@ import axios from 'axios';
 import { buildCreativeFilename, type CreativeFileMeta } from '@/lib/creativeFilename';
 import { logEvent } from '@/lib/usage';
 import { listPrompts, type SavedPrompt } from '@/lib/prompts';
-import { getAuthEmail, isAdminEmail } from '@/lib/identity';
+import { getAuthEmail } from '@/lib/identity';
+import { getIsAdmin } from '@/lib/roles';
 import { adLanguagesForGeo } from '@/lib/geos';
 import { getTrackerFromTrackingUrl, DEFAULT_BINOM_TRACKER } from '@/lib/binomGroups';
 import { customStartToUnix } from '@/lib/nbStartTime';
@@ -3514,7 +3515,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const ident = await getAuthEmail();
       const { data } = await axios.post(endpoint, {
         email: ident?.email ?? 'unknown@unknown',
-        is_admin: isAdminEmail(ident?.email),
+        is_admin: await getIsAdmin(),
         ...payload,
       });
       const startPayload = Array.isArray(data) ? data[0] : data;
@@ -3701,13 +3702,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       // signed-in operator rather than anything the page made up.
       //
       // `is_admin` rides along rather than being re-derived in n8n: the email is
-      // body-supplied on this call, so a second copy of the admin list server
-      // side would add no security over trusting the flag — only a list to keep
-      // in sync with PUBLIC_ADMIN_EMAILS.
+      // body-supplied on this call, so re-checking the role server side would
+      // add no security over trusting the flag. True for owners and admins.
       const ident = await getAuthEmail();
       const { data } = await axios.post(WEBHOOKS.videoGen, {
         email: ident?.email ?? 'unknown@unknown',
-        is_admin: isAdminEmail(ident?.email),
+        is_admin: await getIsAdmin(),
         frame_id: frameId,
         video_prompt: sentPrompt,
         video_model: spec.value,

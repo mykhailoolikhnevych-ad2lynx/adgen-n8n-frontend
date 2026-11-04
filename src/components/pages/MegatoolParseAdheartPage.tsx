@@ -91,6 +91,19 @@ export function MegatoolParseAdheartPage() {
       setDeleting({ error: `Delete ${name}: ${e.message}` });
     }
   };
+  // Postgres only: an admin-only competitor (and its articles / ads) is hidden from non-admins in the Builder.
+  const [visibilityError, setVisibilityError] = useState<string>();
+  const setAdminOnly = async (name: string, adminOnly: boolean) => {
+    setVisibilityError(undefined);
+    setCompetitors((cs) => cs.map((c) => (c.name === name ? { ...c, adminOnly } : c)));
+    try {
+      const res = await callBuilder({ action: 'set-competitor-admin-only', name, adminOnly });
+      if (!res.rows.some((r) => r[0] === 'updated')) throw new Error(`"${name}" was not found`);
+    } catch (e: any) {
+      setVisibilityError(`Admins only ${name}: ${e.message}`);
+      await loadCompetitors();
+    }
+  };
   const parseAdheart = async () => {
     const o = adheartOpts;
     setAdheartRun({ busy: true });
@@ -141,6 +154,7 @@ export function MegatoolParseAdheartPage() {
                 <th className="px-2 py-1">filters</th>
                 <th className="px-2 py-1">adheart</th>
                 <th className="px-2 py-1">last result</th>
+                {PG_WEBHOOK && <th className="whitespace-nowrap px-2 py-1" title="Only admins see this competitor and its articles in the Autozaliv Builder">admins only</th>}
                 {PG_WEBHOOK && <th className="w-8 px-2 py-1" />}
               </tr>
             </thead>
@@ -188,6 +202,16 @@ export function MegatoolParseAdheartPage() {
                     </td>
                     <td className="px-2 py-1 text-[11px]">{c.adheartParsed || '—'}</td>
                     {PG_WEBHOOK && (
+                      <td className="px-2 py-1 text-center">
+                        <input
+                          type="checkbox"
+                          title={c.adminOnly ? 'Hidden from non-admins' : 'Visible to everyone'}
+                          checked={c.adminOnly}
+                          onChange={(e) => setAdminOnly(c.name, e.target.checked)}
+                        />
+                      </td>
+                    )}
+                    {PG_WEBHOOK && (
                       <td className="px-2 py-1">
                         <button
                           type="button"
@@ -204,7 +228,7 @@ export function MegatoolParseAdheartPage() {
                 );
               })}
               {competitors.length === 0 && (
-                <tr><td colSpan={6} className="px-2 py-2 text-slate-400">No competitors loaded — press ↻ Status.</td></tr>
+                <tr><td colSpan={7} className="px-2 py-2 text-slate-400">No competitors loaded — press ↻ Status.</td></tr>
               )}
             </tbody>
           </table>
@@ -229,6 +253,7 @@ export function MegatoolParseAdheartPage() {
             </Button>
             {newComp.error && <span className="text-red-600">{newComp.error}</span>}
             {deleting.error && <span className="text-red-600">{deleting.error}</span>}
+            {visibilityError && <span className="text-red-600">{visibilityError}</span>}
           </div>
         )}
         <div className="flex flex-wrap items-end gap-3">

@@ -9,6 +9,7 @@ import { START_DATE_OPTIONS, TIMEZONE_OPTIONS } from './MegatoolCreateNbCampaign
 import { DateTimePicker24h } from '@/components/ui/DateTimePicker24h';
 import { logEvent } from '@/lib/usage';
 import { getAuthEmail } from '@/lib/identity';
+import { getIsAdmin } from '@/lib/roles';
 import { customStartError, customStartToUnix, defaultCustomStart, formatInZone, toLocalInputValue } from '@/lib/nbStartTime';
 
 // Autozaliv Builder — web replacement for the "articles (domains)" →
@@ -109,7 +110,8 @@ function pickAds(ads: Row[], s: Settings): Row[] {
 // the import writes the name into the article's "competitor" column. Rows imported before that
 // column existed fall back to matching examp_landing_page against the domains (subdomains too).
 // adheartSearch / adheartParsed feed the Parse Adheart tab (filters to search, last result).
-export type Competitor = { name: string; domains: string[]; adheartSearch: string; adheartParsed: string };
+// adminOnly (Postgres only): hidden from non-admins; non-admins never receive these rows at all.
+export type Competitor = { name: string; domains: string[]; adheartSearch: string; adheartParsed: string; adminOnly: boolean };
 // main_adheart_geo mixes ISO alpha-2 and alpha-3 (US / USA) — the geo filter groups them under alpha-2.
 const GEO_ALPHA3: Record<string, string> = {
   AGO: 'AO', ARE: 'AE', ARM: 'AM', AUS: 'AU', AZE: 'AZ', BEL: 'BE', BGD: 'BD', BRA: 'BR', CAN: 'CA', CHL: 'CL',
@@ -150,10 +152,11 @@ export async function post(url: string | undefined, envName: string, body: objec
     throw Object.assign(new Error(data?.error || e?.message || 'Request failed'), { data });
   }
 }
-// total: Postgres paged 'articles' — how many articles match the filters over all pages
-export const callBuilder = (body: object): Promise<Sheet & { fetchedAt: string; total?: number }> =>
+// total: Postgres paged 'articles' — how many articles match the filters over all pages.
+// is_admin: Postgres hides admin_only competitors (and their articles / ads) from non-admins.
+export const callBuilder = async (body: object): Promise<Sheet & { fetchedAt: string; total?: number }> =>
   PG_WEBHOOK
-    ? post(PG_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_PG_URL', body, 180_000)
+    ? post(PG_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_PG_URL', { ...body, is_admin: await getIsAdmin() }, 180_000)
     : post(WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_BUILDER_URL', body, 180_000);
 export async function fetchCompetitors(): Promise<Competitor[]> {
   const res = await callBuilder({ action: 'competitors' });
@@ -163,6 +166,7 @@ export async function fetchCompetitors(): Promise<Competitor[]> {
     domains: (r[col('domains')] || '').toLowerCase().split(/[\s,;]+/).map((d) => d.replace(/^www\./, '')).filter(Boolean),
     adheartSearch: (r[col('adheart_search')] || '').trim(),
     adheartParsed: (r[col('adheart_parsed')] || '').trim(),
+    adminOnly: r[col('admin_only')] === 'true',
   })).filter((c) => c.name);
 }
 const callContent = (body: object) => post(CONTENT_WEBHOOK, 'PUBLIC_WEBHOOK_AUTOZALIV_CONTENT_URL', body, 300_000);

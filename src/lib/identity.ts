@@ -63,24 +63,19 @@ export const resetAuthIdentityCache = (): void => {
   _cached = undefined;
 };
 
-// Admin Google accounts. Sourced from PUBLIC_ADMIN_EMAILS (comma-separated) —
+// Owner Google accounts. Sourced from PUBLIC_ADMIN_EMAILS (comma-separated) —
 // value lives in local .env for dev and in Vercel's env vars for prod. Never
 // commit real emails to the repo.
 //
-// This is the ONE place the list lives. It gates the admin-only tabs and is also
-// sent to n8n as the `is_admin` flag on quota-checked calls: since the email
-// itself is body-supplied on those calls, a second copy of the list server-side
-// would add no security over trusting the flag — only a list to keep in sync.
-const ADMIN_EMAILS: Set<string> = new Set(
+// Owners are the fixed top of the role hierarchy (see src/lib/roles.ts): always
+// admins, and the only ones who can grant/revoke roles. Everyone else's role
+// lives in n8n. The same list is mirrored in the n8n roles workflow's Code node.
+const OWNER_EMAILS: Set<string> = new Set(
   String(import.meta.env.PUBLIC_ADMIN_EMAILS ?? '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter((s) => s.includes('@')),
 );
 
-export const isAdminEmail = (email: string | null | undefined): boolean =>
-  !!email && ADMIN_EMAILS.has(email.toLowerCase());
-
-/** Resolve the signed-in identity and whether it is an admin, in one call. */
-export const getIsAdmin = async (): Promise<boolean> =>
-  isAdminEmail((await getAuthEmail())?.email);
+export const isOwnerEmail = (email: string | null | undefined): boolean =>
+  !!email && OWNER_EMAILS.has(email.toLowerCase());
