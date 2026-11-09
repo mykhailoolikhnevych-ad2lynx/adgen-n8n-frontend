@@ -26,7 +26,7 @@ function startDateOf(o: Opts): string {
 // The adheart.me ads page for one filter line, with the same params the parser sends to its API
 // (ads_archive/adheart_fetch.py), so the site shows what the parse would get.
 function adheartUrl(term: string, o: Opts): string {
-  const p = new URLSearchParams({ search_version: 'v3', 'link_search.value': term });
+  const p = new URLSearchParams({ search_version: 'v3', ad_status: 'active', 'link_search.value': term });
   const start = startDateOf(o);
   if (start) p.set('placement_date.startDate', start);
   if (Number(o.minReach)) p.set('total_reach.from', o.minReach);
