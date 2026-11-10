@@ -40,7 +40,7 @@ interface UsageRow {
   meta_size: number;
 }
 
-type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph' | 'costs' | 'feedback' | 'autozaliv';
+type SubTab = 'events' | 'topUsers' | 'actions' | 'tabs' | 'graph' | 'costs' | 'feedback' | 'autozaliv' | 'campaignStats';
 
 const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'events',   label: 'Events' },
@@ -51,6 +51,7 @@ const SUB_TABS: { value: SubTab; label: string }[] = [
   { value: 'costs',    label: 'Costs' },
   { value: 'feedback', label: 'Feedback' },
   { value: 'autozaliv', label: 'Autozaliv Campaigns' },
+  { value: 'campaignStats', label: 'Campaign Stats' },
 ];
 
 const LIST_URL  = import.meta.env.PUBLIC_WEBHOOK_LIST_EVENTS_URL as string | undefined;
@@ -1812,6 +1813,551 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
 };
 
 // ---------------------------------------------------------------------------
+// Campaign Stats tab — Binom profit for Autozaliv / MEGACLONE (/ Creatives soon).
+// Rows come pre-aggregated (one per day × campaign) from the campaign_stats
+// datatable, refilled nightly by the MEGATOOL Campaign Stats workflow from the
+// Binom click tables, so this page never waits on Postgres. Only sums are
+// stored; ROI / CR / EPC / CPL… are computed here for whatever is grouped.
+// ---------------------------------------------------------------------------
+
+const CAMPAIGN_STATS_URL = import.meta.env.PUBLIC_WEBHOOK_CAMPAIGN_STATS_URL as string | undefined;
+
+type StatKind = 'autozaliv' | 'megaclone' | 'creatives';
+const KINDS: { value: StatKind; label: string; color: string; soon?: boolean }[] = [
+  { value: 'autozaliv', label: 'Autozaliv', color: '#2a78d6' },
+  { value: 'megaclone', label: 'MEGACLONE', color: '#eb6834' },
+  { value: 'creatives', label: 'Creatives', color: '#1baf7a', soon: true },
+];
+const POS = '#0ca30c';
+const NEG = '#d03b3b';
+
+interface StatRow {
+  day: string; tracker: string; kind: StatKind; binom_campaign_id: string; ts_campaign_id: string;
+  binom_campaign_name: string; ts_campaign_name: string;
+  clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number;
+}
+type Sums = { clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number };
+const zeroSums = (): Sums => ({ clicks: 0, leads: 0, revenue: 0, cost: 0, offer_clicks: 0 });
+const addSums = (a: Sums, r: Sums) => {
+  a.clicks += r.clicks; a.leads += r.leads; a.revenue += r.revenue; a.cost += r.cost; a.offer_clicks += r.offer_clicks;
+};
+// Binom's own formulas (checked against the Binom UI).
+const metrics = (s: Sums) => {
+  const profit = s.revenue - s.cost;
+  const per = (a: number, b: number) => (b ? a / b : null);
+  return {
+    ...s, profit,
+    roi: s.cost ? (profit / s.cost) * 100 : null,
+    cr: s.clicks ? (s.leads / s.clicks) * 100 : null,
+    lpctr: s.clicks ? (s.offer_clicks / s.clicks) * 100 : null,
+    epc: per(s.revenue, s.clicks), cpc: per(s.cost, s.clicks),
+    cpl: per(s.cost, s.leads), rpl: per(s.revenue, s.leads),
+  };
+};
+const fmtN = (v: number | null | undefined, d = 2) => (v == null || !Number.isFinite(v) ? '' : v.toFixed(d));
+const fmtPct = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? '' : `${v.toFixed(2)}%`);
+const signCls = (v: number | null | undefined) => ((v ?? 0) < 0 ? 'text-red-600' : 'text-green-700');
+const localDay = (d: Date) => d.toLocaleDateString('sv'); // YYYY-MM-DD
+const dayRange = (from: string, to: string) => {
+  const out: string[] = [];
+  const d = new Date(`${from}T12:00:00`);
+  const end = new Date(`${to}T12:00:00`);
+  for (let i = 0; d <= end && i < 400; i++) { out.push(localDay(d)); d.setDate(d.getDate() + 1); }
+  return out;
+};
+// Monday of the week, as YYYY-MM-DD.
+const weekOf = (day: string) => {
+  const d = new Date(`${day}T12:00:00`);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return localDay(d);
+};
+// Megatool names carry the launch date as dd.mm.yyyy.
+const launchFromName = (name: string) => {
+  const m = name.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
+};
+
+// ---- tiny SVG charts (hand-rolled like the rest of this page) ----
+const CH_W = 760;
+const CH_H = 220;
+const PAD = { l: 56, r: 16, t: 12, b: 28 };
+const niceTicks = (min: number, max: number) => {
+  if (min === max) { min -= 1; max += 1; }
+  const step0 = (max - min) / 4;
+  const mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 5, 10].map((k) => k * mag).find((s) => s >= step0) || step0;
+  const lo = Math.floor(min / step) * step;
+  const ticks: number[] = [];
+  for (let v = lo; v <= max + step * 0.001; v += step) ticks.push(Math.round(v * 1e6) / 1e6);
+  if (ticks[ticks.length - 1] < max) ticks.push(ticks[ticks.length - 1] + step);
+  return ticks;
+};
+const ChartFrame = ({ title, legend, children }: { title: string; legend?: ReactNode; children: ReactNode }) => (
+  <div className="rounded-lg border bg-white p-3">
+    <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+      <div className="text-xs font-bold uppercase text-slate-600">{title}</div>
+      {legend}
+    </div>
+    {children}
+  </div>
+);
+const LegendItem = ({ color, label, line }: { color: string; label: string; line?: boolean }) => (
+  <span className="inline-flex items-center gap-1 text-[11px] text-slate-600">
+    <span style={{ background: color, width: line ? 14 : 10, height: line ? 2 : 10, borderRadius: line ? 0 : 2 }} />
+    {label}
+  </span>
+);
+// Y axis + gridlines shared by the time charts.
+const YAxis = ({ ticks, y }: { ticks: number[]; y: (v: number) => number }) => (
+  <g>
+    {ticks.map((t) => (
+      <g key={t}>
+        <line x1={PAD.l} x2={CH_W - PAD.r} y1={y(t)} y2={y(t)} stroke={t === 0 ? '#c3c2b7' : '#e1e0d9'} strokeWidth={1} />
+        <text x={PAD.l - 6} y={y(t) + 3} textAnchor="end" fontSize={10} fill="#898781">{t}</text>
+      </g>
+    ))}
+  </g>
+);
+const XLabels = ({ days, x }: { days: string[]; x: (i: number) => number }) => {
+  const every = Math.max(1, Math.ceil(days.length / 10));
+  return (
+    <g>
+      {days.map((d, i) => (i % every === 0 ? (
+        <text key={d} x={x(i)} y={CH_H - 8} textAnchor="middle" fontSize={10} fill="#898781">{d.slice(5)}</text>
+      ) : null))}
+    </g>
+  );
+};
+
+// Daily profit bars (green / red) + running total line, one money axis.
+const DailyProfitChart = ({ days, profit }: { days: string[]; profit: number[] }) => {
+  const [hover, setHover] = useState<number | null>(null);
+  const cum: number[] = [];
+  profit.reduce((a, v, i) => (cum[i] = a + v), 0);
+  const ticks = niceTicks(Math.min(0, ...profit, ...cum), Math.max(0, ...profit, ...cum));
+  const lo = ticks[0], hi = ticks[ticks.length - 1];
+  const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * (CH_H - PAD.t - PAD.b);
+  const slot = (CH_W - PAD.l - PAD.r) / Math.max(1, days.length);
+  const x = (i: number) => PAD.l + slot * (i + 0.5);
+  const bw = Math.max(2, Math.min(18, slot - 2));
+  const linePts = cum.map((v, i) => `${x(i)},${y(v)}`).join(' ');
+  return (
+    <ChartFrame title="Daily profit" legend={<span className="flex gap-3"><LegendItem color={POS} label="profit day" /><LegendItem color={NEG} label="loss day" /><LegendItem color="#334155" label="running total" line /></span>}>
+      <svg viewBox={`0 0 ${CH_W} ${CH_H}`} className="w-full h-auto" onMouseLeave={() => setHover(null)}>
+        <YAxis ticks={ticks} y={y} />
+        {profit.map((v, i) => {
+          const top = Math.min(y(v), y(0));
+          return (
+            <g key={days[i]} onMouseEnter={() => setHover(i)}>
+              <rect x={x(i) - slot / 2} y={PAD.t} width={slot} height={CH_H - PAD.t - PAD.b} fill="transparent" />
+              <rect x={x(i) - bw / 2} y={top} width={bw} height={Math.max(1, Math.abs(y(v) - y(0)))} rx={2}
+                fill={v < 0 ? NEG : POS} opacity={hover === null || hover === i ? 1 : 0.5} />
+            </g>
+          );
+        })}
+        <polyline points={linePts} fill="none" stroke="#334155" strokeWidth={2} pointerEvents="none" />
+        {hover !== null && (
+          <g pointerEvents="none">
+            <line x1={x(hover)} x2={x(hover)} y1={PAD.t} y2={CH_H - PAD.b} stroke="#898781" strokeDasharray="3 3" />
+            <circle cx={x(hover)} cy={y(cum[hover])} r={4} fill="#334155" stroke="#fff" strokeWidth={2} />
+          </g>
+        )}
+        <XLabels days={days} x={x} />
+      </svg>
+      <div className="h-5 text-[11px] text-slate-600 font-mono">
+        {hover !== null && <>{days[hover]} · profit <span className={signCls(profit[hover])}>{profit[hover].toFixed(2)}</span> · running total <span className={signCls(cum[hover])}>{cum[hover].toFixed(2)}</span></>}
+      </div>
+    </ChartFrame>
+  );
+};
+
+// Running profit per group — compares Autozaliv / MEGACLONE / Creatives.
+const KindCompareChart = ({ days, series }: { days: string[]; series: { kind: (typeof KINDS)[number]; cum: number[] }[] }) => {
+  const [hover, setHover] = useState<number | null>(null);
+  const all = series.flatMap((s) => s.cum);
+  const ticks = niceTicks(Math.min(0, ...all), Math.max(0, ...all));
+  const lo = ticks[0], hi = ticks[ticks.length - 1];
+  const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * (CH_H - PAD.t - PAD.b);
+  const step = (CH_W - PAD.l - PAD.r) / Math.max(1, days.length - 1);
+  const x = (i: number) => PAD.l + step * i;
+  return (
+    <ChartFrame title="Running profit by group" legend={<span className="flex gap-3">{series.map((s) => <LegendItem key={s.kind.value} color={s.kind.color} label={s.kind.label} line />)}</span>}>
+      <svg viewBox={`0 0 ${CH_W} ${CH_H}`} className="w-full h-auto"
+        onMouseMove={(e) => {
+          const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+          const px = ((e.clientX - r.left) / r.width) * CH_W;
+          setHover(Math.max(0, Math.min(days.length - 1, Math.round((px - PAD.l) / step))));
+        }}
+        onMouseLeave={() => setHover(null)}>
+        <YAxis ticks={ticks} y={y} />
+        {series.map((s) => (
+          <polyline key={s.kind.value} points={s.cum.map((v, i) => `${x(i)},${y(v)}`).join(' ')} fill="none" stroke={s.kind.color} strokeWidth={2} />
+        ))}
+        {hover !== null && (
+          <g pointerEvents="none">
+            <line x1={x(hover)} x2={x(hover)} y1={PAD.t} y2={CH_H - PAD.b} stroke="#898781" strokeDasharray="3 3" />
+            {series.map((s) => <circle key={s.kind.value} cx={x(hover)} cy={y(s.cum[hover])} r={4} fill={s.kind.color} stroke="#fff" strokeWidth={2} />)}
+          </g>
+        )}
+        <XLabels days={days} x={x} />
+      </svg>
+      <div className="h-5 text-[11px] text-slate-600 font-mono">
+        {hover !== null && <>{days[hover]} · {series.map((s) => <span key={s.kind.value} className="mr-3">{s.kind.label} <span className={signCls(s.cum[hover])}>{s.cum[hover].toFixed(2)}</span></span>)}</>}
+      </div>
+    </ChartFrame>
+  );
+};
+
+// Horizontal bars for a signed value (profit), zero line in the middle.
+const SignedBars = ({ title, items, controls }: { title: string; items: { label: string; value: number; note?: string }[]; controls?: ReactNode }) => {
+  const max = Math.max(1e-9, ...items.map((i) => Math.abs(i.value)));
+  const hasNeg = items.some((i) => i.value < 0);
+  return (
+    <ChartFrame title={title} legend={controls}>
+      {items.length === 0 ? <div className="text-xs text-slate-400 italic py-4">No data</div> : (
+        <div className="space-y-1">
+          {items.map((it) => {
+            const w = (Math.abs(it.value) / max) * (hasNeg ? 50 : 100);
+            return (
+              <div key={it.label} className="flex items-center gap-2 text-[11px] group" title={`${it.label}: ${it.value.toFixed(2)}${it.note ? ` · ${it.note}` : ''}`}>
+                <div className="w-36 shrink-0 truncate text-slate-700">{it.label || <span className="italic text-slate-400">blank</span>}</div>
+                <div className="relative flex-1 h-3">
+                  {hasNeg && <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300" />}
+                  <div className="absolute top-0 h-3 rounded-sm group-hover:opacity-80"
+                    style={{
+                      background: it.value < 0 ? NEG : POS, width: `${w}%`,
+                      left: hasNeg ? (it.value < 0 ? `${50 - w}%` : '50%') : 0,
+                    }} />
+                </div>
+                <div className={`w-20 shrink-0 text-right font-mono ${signCls(it.value)}`}>{it.value.toFixed(2)}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </ChartFrame>
+  );
+};
+
+type CampAgg = ReturnType<typeof metrics> & {
+  key: string; kind: StatKind; tracker: string; binom_campaign_id: string; ts_campaign_id: string;
+  name: string; buyer: string; competitor: string; launched: string; first_day: string;
+};
+
+const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: CampAgg) => ReactNode; cls?: (r: CampAgg) => string }[] = [
+  { key: 'name', label: 'Campaign', cell: (r) => (<>
+    <div className="max-w-[340px] truncate" title={r.name}>{r.name || <span className="italic text-slate-400">no name</span>}</div>
+    <div className="font-mono text-[10px] text-slate-400">{r.binom_campaign_id}{r.ts_campaign_id ? ` · NB ${r.ts_campaign_id}` : ''}</div>
+  </>) },
+  { key: 'kind', label: 'Group', cell: (r) => KINDS.find((k) => k.value === r.kind)?.label || r.kind },
+  { key: 'tracker', label: 'Tracker', cell: (r) => r.tracker },
+  { key: 'buyer', label: 'Buyer', cell: (r) => r.buyer },
+  { key: 'launched', label: 'Launched', cls: () => 'font-mono whitespace-nowrap', cell: (r) => r.launched },
+  { key: 'clicks', label: 'Clicks', right: true, cell: (r) => r.clicks },
+  { key: 'leads', label: 'Leads', right: true, cell: (r) => r.leads },
+  { key: 'epc', label: 'EPC', right: true, cell: (r) => fmtN(r.epc, 4) },
+  { key: 'cpl', label: 'CPL', right: true, cell: (r) => fmtN(r.cpl) },
+  { key: 'rpl', label: 'RPL', right: true, cell: (r) => fmtN(r.rpl) },
+  { key: 'cpc', label: 'CPC', right: true, cell: (r) => fmtN(r.cpc, 4) },
+  { key: 'cr', label: 'CR', right: true, cell: (r) => fmtPct(r.cr) },
+  { key: 'lpctr', label: 'LP CTR', right: true, cell: (r) => fmtPct(r.lpctr) },
+  { key: 'revenue', label: 'Revenue', right: true, cell: (r) => fmtN(r.revenue) },
+  { key: 'cost', label: 'Cost', right: true, cell: (r) => fmtN(r.cost) },
+  { key: 'profit', label: 'Profit', right: true, cls: (r) => `font-bold ${signCls(r.profit)}`, cell: (r) => fmtN(r.profit) },
+  { key: 'roi', label: 'ROI', right: true, cls: (r) => `font-bold ${signCls(r.roi)}`, cell: (r) => fmtPct(r.roi) },
+];
+const STATS_HIDDEN_COLS_KEY = 'dashboard.campaignStats.hiddenCols';
+
+const CampaignStatsView = ({ fromDay, toDay }: { fromDay: string; toDay: string }) => {
+  const [rows, setRows] = useState<StatRow[]>([]);
+  const [updatedAt, setUpdatedAt] = useState('');
+  const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [azInfo, setAzInfo] = useState<Map<string, { buyer: string; competitor: string; created_at: string }>>(new Map());
+  const [kind, setKind] = useState<'all' | StatKind>('all');
+  const [breakdown, setBreakdown] = useState<'buyer' | 'competitor' | 'tracker' | 'launch'>('buyer');
+  const [search, setSearch] = useState('');
+  const [sort, setSort] = useState<{ key: string; dir: 'desc' | 'asc' }>({ key: 'profit', dir: 'desc' });
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(STATS_HIDDEN_COLS_KEY) || '[]'); } catch { return []; }
+  });
+  const toggleCol = (key: string) => setHiddenCols((h) => {
+    const next = h.includes(key) ? h.filter((k) => k !== key) : [...h, key];
+    try { localStorage.setItem(STATS_HIDDEN_COLS_KEY, JSON.stringify(next)); } catch { /* storage blocked */ }
+    return next;
+  });
+
+  const load = useCallback(async () => {
+    if (!CAMPAIGN_STATS_URL) {
+      setStatus('error');
+      setError('PUBLIC_WEBHOOK_CAMPAIGN_STATS_URL is not set');
+      return;
+    }
+    setStatus('loading');
+    try {
+      const statsReq = axios.post(CAMPAIGN_STATS_URL, { action: 'list', since: fromDay }, { timeout: REQUEST_TIMEOUT_MS });
+      // Buyer / competitor / launch time for Autozaliv rows — optional, stats still render without it.
+      const azReq = AUTOZALIV_LAUNCH_URL
+        ? axios.post(AUTOZALIV_LAUNCH_URL, { action: 'campaigns-list' }, { timeout: REQUEST_TIMEOUT_MS }).catch(() => null)
+        : Promise.resolve(null);
+      // Launch log of FB Reader / NB Copier clones — buyer + launch time for MEGACLONE rows.
+      const clonesReq = axios.post(CAMPAIGN_STATS_URL, { action: 'clones' }, { timeout: REQUEST_TIMEOUT_MS }).catch(() => null);
+      const [{ data }, az, clones] = await Promise.all([statsReq, azReq, clonesReq]);
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer?.ok) throw new Error(outer?.error || 'campaign stats failed');
+      const cols: string[] = outer.cols || [];
+      const ix = (c: string) => cols.indexOf(c);
+      const num = (v: any) => Number(v) || 0;
+      const list: StatRow[] = (outer.rows || []).map((a: any[]) => ({
+        day: String(a[ix('day')] || ''), tracker: String(a[ix('tracker')] || ''), kind: a[ix('kind')] as StatKind,
+        binom_campaign_id: String(a[ix('binom_campaign_id')] || ''), ts_campaign_id: String(a[ix('ts_campaign_id')] || ''),
+        binom_campaign_name: String(a[ix('binom_campaign_name')] || ''), ts_campaign_name: String(a[ix('ts_campaign_name')] || ''),
+        clicks: num(a[ix('clicks')]), leads: num(a[ix('leads')]), revenue: num(a[ix('revenue')]),
+        cost: num(a[ix('cost')]), offer_clicks: num(a[ix('offer_clicks')]),
+      }));
+      setRows(list);
+      setUpdatedAt(outer.updated_at || '');
+      const azOuter = az ? (Array.isArray(az.data) ? az.data[0] : az.data) : null;
+      const info = new Map<string, { buyer: string; competitor: string; created_at: string }>();
+      for (const c of (azOuter?.campaigns || []) as AutozalivCampaignRow[]) {
+        if (c.binom_campaign_id) info.set(`${c.tracker || ''}|${c.binom_campaign_id}`, {
+          buyer: c.buyer, competitor: competitorOfBinomName(c.binom_campaign_name), created_at: c.created_at,
+        });
+      }
+      // Clone keys: `tracker|binom id` for a new Binom campaign, `tracker|nb|NB campaign id` for "all same".
+      const cl = clones ? (Array.isArray(clones.data) ? clones.data[0] : clones.data) : null;
+      const ccols: string[] = cl?.cols || [];
+      for (const a of (cl?.action === 'clones' ? cl.rows || [] : []) as any[][]) {
+        const v = (c: string) => String(a[ccols.indexOf(c)] ?? '');
+        const key = v('binom_mode') === 'same' ? `${v('tracker')}|nb|${v('ts_campaign_id')}` : `${v('tracker')}|${v('binom_campaign_id')}`;
+        info.set(key, { buyer: v('created_by').split('@')[0], competitor: '', created_at: v('created_at') });
+      }
+      setAzInfo(info);
+      setStatus('success');
+      setError(null);
+    } catch (e: any) {
+      console.error('[Dashboard] campaign stats fetch error:', e);
+      setStatus('error');
+      setError(e?.response?.data?.error ?? e?.message ?? String(e));
+    }
+  }, [fromDay]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const days = useMemo(() => dayRange(fromDay, toDay), [fromDay, toDay]);
+  const inRange = useMemo(() => rows.filter((r) => r.day >= fromDay && r.day <= toDay), [rows, fromDay, toDay]);
+
+  // One entry per campaign (an "all same" NB clone is its own campaign via ts_campaign_id).
+  const campaigns = useMemo(() => {
+    const map = new Map<string, Sums & { r: StatRow; first: string }>();
+    for (const r of inRange) {
+      const key = `${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`;
+      const g = map.get(key) || { ...zeroSums(), r, first: r.day };
+      addSums(g, r);
+      if (r.day < g.first) g.first = r.day;
+      if (!g.r.ts_campaign_name && r.ts_campaign_name) g.r = r;
+      map.set(key, g);
+    }
+    return [...map.entries()].map(([key, g]): CampAgg => {
+      const info = (g.r.kind === 'megaclone' && g.r.ts_campaign_id ? azInfo.get(`${g.r.tracker}|nb|${g.r.ts_campaign_id}`) : undefined)
+        || azInfo.get(`${g.r.tracker}|${g.r.binom_campaign_id}`);
+      const name = g.r.ts_campaign_name || g.r.binom_campaign_name;
+      const launched = (info?.created_at ? localDay(new Date(info.created_at)) : '') || launchFromName(name) || '';
+      return {
+        ...metrics(g), key, kind: g.r.kind, tracker: g.r.tracker, binom_campaign_id: g.r.binom_campaign_id,
+        ts_campaign_id: g.r.ts_campaign_id, name, buyer: info?.buyer || '', competitor: info?.competitor || '',
+        launched, first_day: g.first,
+      };
+    });
+  }, [inRange, azInfo]);
+
+  const q = search.trim().toLowerCase();
+  const shown = useMemo(
+    () => campaigns.filter((c) => (kind === 'all' || c.kind === kind) && (!q || `${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q))),
+    [campaigns, kind, q],
+  );
+  const shownKeys = useMemo(() => new Set(shown.map((c) => c.key)), [shown]);
+
+  const total = useMemo(() => {
+    const s = zeroSums();
+    shown.forEach((c) => addSums(s, c));
+    return { ...metrics(s), count: shown.length, winners: shown.filter((c) => c.profit > 0).length };
+  }, [shown]);
+
+  const dailyProfit = useMemo(() => {
+    const byDay = new Map<string, number>();
+    for (const r of inRange) {
+      if (!shownKeys.has(`${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`)) continue;
+      byDay.set(r.day, (byDay.get(r.day) || 0) + r.revenue - r.cost);
+    }
+    return days.map((d) => byDay.get(d) || 0);
+  }, [inRange, shownKeys, days]);
+
+  // Group comparison ignores the group pill (it is the comparison) but keeps the search.
+  const kindSeries = useMemo(() => {
+    const keysAll = new Set(campaigns.filter((c) => !q || `${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q)).map((c) => c.key));
+    return KINDS.filter((k) => !k.soon || rows.some((r) => r.kind === k.value)).map((k) => {
+      const byDay = new Map<string, number>();
+      for (const r of inRange) {
+        if (r.kind !== k.value || !keysAll.has(`${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`)) continue;
+        byDay.set(r.day, (byDay.get(r.day) || 0) + r.revenue - r.cost);
+      }
+      let run = 0;
+      return { kind: k, cum: days.map((d) => (run += byDay.get(d) || 0)) };
+    });
+  }, [campaigns, inRange, days, q, rows]);
+
+  const breakdownItems = useMemo(() => {
+    const map = new Map<string, { value: number; n: number }>();
+    for (const c of shown) {
+      const label = breakdown === 'buyer' ? c.buyer || (c.kind === 'autozaliv' ? '' : 'MEGACLONE (no buyer)')
+        : breakdown === 'competitor' ? c.competitor || (c.kind === 'autozaliv' ? '' : 'MEGACLONE')
+        : breakdown === 'tracker' ? c.tracker
+        : `week of ${weekOf(c.launched || c.first_day)}`;
+      const g = map.get(label) || { value: 0, n: 0 };
+      g.value += c.profit; g.n += 1;
+      map.set(label, g);
+    }
+    const items = [...map.entries()].map(([label, g]) => ({ label, value: g.value, note: `${g.n} campaigns` }));
+    return breakdown === 'launch' ? items.sort((a, b) => a.label.localeCompare(b.label)) : items.sort((a, b) => b.value - a.value);
+  }, [shown, breakdown]);
+
+  const sorted = useMemo(() => {
+    const get = (r: CampAgg) => (r as any)[sort.key];
+    const empty = (v: any) => v == null || v === '';
+    return [...shown].sort((a, b) => {
+      const x = get(a), y = get(b);
+      if (empty(x) || empty(y)) return empty(x) ? (empty(y) ? 0 : 1) : -1;
+      const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+      return sort.dir === 'desc' ? -c : c;
+    });
+  }, [shown, sort]);
+  const toggleSort = (key: string) => setSort((s) => (s.key === key ? { key, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' }));
+  const visibleCols = STAT_COLUMNS.filter((c) => !hiddenCols.includes(c.key));
+
+  if (status === 'error') {
+    return <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Failed to load campaign stats'}</div>;
+  }
+  if (status !== 'success' && rows.length === 0) {
+    return <div className="p-6 text-gray-400 italic">Loading campaign stats…</div>;
+  }
+
+  const tiles: { label: string; value: string; cls?: string }[] = [
+    { label: 'Cost', value: fmtN(total.cost) },
+    { label: 'Revenue', value: fmtN(total.revenue) },
+    { label: 'Profit', value: fmtN(total.profit), cls: signCls(total.profit) },
+    { label: 'ROI', value: fmtPct(total.roi) || '—', cls: signCls(total.roi) },
+    { label: 'Clicks', value: String(total.clicks) },
+    { label: 'Leads', value: String(total.leads) },
+    { label: 'CR', value: fmtPct(total.cr) || '—' },
+    { label: 'Campaigns', value: String(total.count) },
+    { label: 'In profit', value: total.count ? `${total.winners} (${Math.round((total.winners / total.count) * 100)}%)` : '—' },
+  ];
+
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {([{ value: 'all', label: 'All', color: '#334155' }, ...KINDS] as { value: 'all' | StatKind; label: string; color: string; soon?: boolean }[]).map((k) => (
+          <button
+            key={k.value}
+            type="button"
+            disabled={k.soon}
+            onClick={() => setKind(k.value)}
+            className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+              kind === k.value ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            {k.value !== 'all' && <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: k.color }} />}
+            {k.label}{k.soon ? ' (soon)' : ''}
+          </button>
+        ))}
+        <div className="flex-1 min-w-[160px] max-w-xs ml-2">
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search campaign / buyer / id…" />
+        </div>
+        <span className="ml-auto text-xs text-slate-400">{updatedAt ? `stats updated ${new Date(updatedAt).toLocaleString()}` : 'not updated yet'}</span>
+        <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
+          {status === 'loading' ? 'Loading…' : 'Refresh'}
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2">
+        {tiles.map((t) => (
+          <div key={t.label} className="rounded-lg border bg-slate-50 px-3 py-2">
+            <div className="text-[10px] font-bold uppercase text-slate-500">{t.label}</div>
+            <div className={`font-mono text-sm font-bold ${t.cls || 'text-slate-900'}`}>{t.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <DailyProfitChart days={days} profit={dailyProfit} />
+        <KindCompareChart days={days} series={kindSeries} />
+      </div>
+
+      <SignedBars
+        title={`Profit by ${breakdown === 'launch' ? 'launch week' : breakdown}`}
+        items={breakdownItems}
+        controls={(
+          <div className="flex gap-1">
+            {(['buyer', 'competitor', 'tracker', 'launch'] as const).map((b) => (
+              <button key={b} type="button" onClick={() => setBreakdown(b)}
+                className={`rounded px-2 py-0.5 text-[11px] ${breakdown === b ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
+                {b === 'launch' ? 'launch week' : b}
+              </button>
+            ))}
+          </div>
+        )}
+      />
+
+      <div className="flex items-center gap-2">
+        <div className="text-xs font-bold uppercase text-slate-600">Campaigns</div>
+        <details className="relative ml-auto">
+          <summary className="cursor-pointer list-none rounded border px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+            Columns{hiddenCols.length ? ` (${hiddenCols.length} hidden)` : ''}
+          </summary>
+          <div className="absolute right-0 z-20 mt-1 w-44 rounded border bg-white p-2 shadow-lg">
+            {STAT_COLUMNS.map((c) => (
+              <label key={c.key} className="flex items-center gap-2 py-0.5 text-xs cursor-pointer">
+                <input type="checkbox" checked={!hiddenCols.includes(c.key)} onChange={() => toggleCol(c.key)} />
+                {c.label}
+              </label>
+            ))}
+          </div>
+        </details>
+      </div>
+      {sorted.length === 0 ? (
+        <div className="p-6 text-gray-400 italic">No campaigns with clicks in the selected range.</div>
+      ) : (
+        <div className="overflow-auto max-h-[75vh] rounded border border-slate-200">
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 bg-slate-100 z-10">
+              <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+                {visibleCols.map((c) => (
+                  <th key={c.key} className={`py-2 px-3 whitespace-nowrap ${c.right ? 'text-right' : ''}`}>
+                    <button type="button" className="uppercase whitespace-nowrap hover:text-slate-900" onClick={() => toggleSort(c.key)}>
+                      {c.label}{sort.key === c.key ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
+                    </button>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r) => (
+                <tr key={r.key} className="border-b border-slate-100 align-top">
+                  {visibleCols.map((c) => (
+                    <td key={c.key} className={`py-1.5 px-3 text-xs ${c.right ? 'text-right font-mono' : ''} ${c.cls?.(r) || ''}`}>{c.cell(r)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Top-level page.
 // ---------------------------------------------------------------------------
 
@@ -2084,6 +2630,8 @@ export const DashboardPage = ({ active = true }: { active?: boolean }) => {
           <FeedbackView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
         ) : activeTab === 'autozaliv' ? (
           <AutozalivCampaignsView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
+        ) : activeTab === 'campaignStats' ? (
+          <CampaignStatsView fromDay={fromDate} toDay={toDate} />
         ) : (
           <>
             {status === 'error' && (
