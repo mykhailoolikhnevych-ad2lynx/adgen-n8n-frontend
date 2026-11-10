@@ -1115,6 +1115,37 @@ const WEBHOOKS = {
   nbCopierCreate: import.meta.env.PUBLIC_WEBHOOK_NB_COPIER_CREATE_URL,
   ttAccountsList: import.meta.env.PUBLIC_WEBHOOK_TT_ACCOUNTS_LIST_URL,
   ttAccountContext: import.meta.env.PUBLIC_WEBHOOK_TT_ACCOUNT_CONTEXT_URL,
+  campaignStats: import.meta.env.PUBLIC_WEBHOOK_CAMPAIGN_STATS_URL,
+};
+
+// One row in the n8n `megaclone_campaigns` datatable per launched clone (FB Reader → NB/TT,
+// Newsbreak Copier), so Campaign Stats finds clones by id instead of by name.
+// Fire-and-forget: a failed log never blocks or fails the launch.
+const logClone = async (row: {
+  tab: 'fb-reader' | 'nb-copier';
+  ts: 'nb' | 'tt';
+  tracker: string;
+  binom_campaign_id: string;
+  binom_campaign_name: string;
+  binom_new: boolean;
+  ts_account_id: string;
+  ts_campaign_id: string;
+  ts_campaign_name: string;
+  source_campaign_id: string;
+  source_campaign_name: string;
+  budget: number;
+  bid_type: string;
+}) => {
+  if (!WEBHOOKS.campaignStats) return;
+  try {
+    const ident = await getAuthEmail();
+    await axios.post(WEBHOOKS.campaignStats, {
+      action: 'log',
+      row: { ...row, tracker: row.tracker.trim().toLowerCase().split('.')[0], created_by: ident?.email ?? '' },
+    }, { timeout: 30_000 });
+  } catch (e) {
+    console.error('[logClone]', e);
+  }
 };
 
 export interface KeywordStudioInput {
@@ -2195,6 +2226,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       set({ nbCampaignStatus: 'success', nbCampaignResult: result, nbCampaignError: null });
       logEvent({ tab: 'megatool-nb', action: 'createNbCampaign', meta: logMeta, metaOut: result });
+      {
+        const binom = get().binomOfferResult;
+        const bf = get().megatoolBinomForm;
+        const src = get().selectedFbAds[0];
+        void logClone({
+          tab: 'fb-reader', ts: 'nb',
+          tracker: binom?.tracker || (bf.newTracker && bf.newTracker !== 'same' ? bf.newTracker : bf.tracker),
+          binom_campaign_id: binom?.binomCampaignId ?? '', binom_campaign_name: binom?.binomCampaignName ?? '', binom_new: true,
+          ts_account_id: input.nbAccountId, ts_campaign_id: result.campaignId, ts_campaign_name: result.campaignName || input.campaignName,
+          source_campaign_id: src?.campaignId ?? '', source_campaign_name: src?.campaignName ?? '',
+          budget: Number(input.budget) || 0, bid_type: input.roas ? 'TARGET_ROAS' : (input.bidType ?? 'MAX_CONVERSION'),
+        });
+      }
     } catch (e) {
       console.error('[createNbCampaign]', e);
       const msg = errorFromResponseBody(e) ?? humanizeError(e);
@@ -2477,6 +2521,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const result: NbCopierCopyResult = outer;
       set({ nbCopierCopy: { status: 'success', result, error: null, step: null } });
+      {
+        // "All same" reuses the source's Binom campaign — the clone is told apart by its NB campaign id.
+        const nb = allSame ? null : get().nbCopierBinom?.result;
+        void logClone({
+          tab: 'nb-copier', ts: 'nb',
+          tracker: nb?.tracker || (allSame ? read.binom?.tracker || form.tracker : (form.newTracker && form.newTracker !== 'same' ? form.newTracker : form.tracker)),
+          binom_campaign_id: String((nb ? nb.binomCampaignId : read.binom?.campaignId) ?? ''),
+          binom_campaign_name: String((nb ? nb.binomCampaignName : read.binom?.campaignName) ?? ''),
+          binom_new: !allSame,
+          ts_account_id: targetAccount.id, ts_campaign_id: String(result.campaignId ?? ''), ts_campaign_name: result.campaignName || form.campaignName,
+          source_campaign_id: read.campaign?.id ?? form.sourceCampaignId.trim(), source_campaign_name: read.campaign?.name ?? '',
+          budget: Number(form.budget) || 0, bid_type: form.bidType,
+        });
+      }
       logEvent({
         tab: 'megatool-nb-copier',
         action: 'copyCampaign',
@@ -2531,6 +2589,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       set({ ttCampaignStatus: 'success', ttCampaignResult: result, ttCampaignError: null });
       logEvent({ tab: 'megatool-tt', action: 'createTtCampaign', meta: logMeta, metaOut: result });
+      {
+        const binom = get().binomOfferResult;
+        const bf = get().megatoolBinomForm;
+        const src = get().selectedFbAds[0];
+        void logClone({
+          tab: 'fb-reader', ts: 'tt',
+          tracker: binom?.tracker || (bf.newTracker && bf.newTracker !== 'same' ? bf.newTracker : bf.tracker),
+          binom_campaign_id: binom?.binomCampaignId ?? '', binom_campaign_name: binom?.binomCampaignName ?? '', binom_new: true,
+          ts_account_id: String(input.advertiserId ?? ''), ts_campaign_id: result.campaign_id, ts_campaign_name: input.campaignName,
+          source_campaign_id: src?.campaignId ?? '', source_campaign_name: src?.campaignName ?? '',
+          budget: Number(input.dailyBudget) || 0, bid_type: String(input.bidStrategy ?? ''),
+        });
+      }
     } catch (e) {
       console.error('[createTtCampaign]', e);
       const msg = errorFromResponseBody(e) ?? humanizeError(e);
