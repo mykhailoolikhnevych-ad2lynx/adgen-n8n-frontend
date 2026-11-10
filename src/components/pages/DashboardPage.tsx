@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -1521,7 +1521,44 @@ interface AutozalivCampaignRow {
   buyer: string;
   account: string;
   article: string;
+  tracker?: string;
+  // filled twice a week by the MEGATOOL Autozaliv Profit workflow; null = not counted yet
+  clicks?: number | null;
+  leads?: number | null;
+  revenue?: number | null;
+  spend?: number | null;
+  profit?: number | null;
+  profit_updated_at?: string;
 }
+
+const fmtMoney = (v: number | null | undefined) => (v == null ? '' : v.toFixed(2));
+
+type AzRow = AutozalivCampaignRow & { competitor: string };
+const profitCls = (v: number | null | undefined) => `font-bold ${(v ?? 0) < 0 ? 'text-red-600' : 'text-green-700'}`;
+// Campaigns table columns: `key` is also the sort field.
+const AZ_COLUMNS: { key: string; label: string; right?: boolean; cls?: (r: AzRow) => string; cell: (r: AzRow) => ReactNode }[] = [
+  { key: 'created_at', label: 'When', cls: () => 'font-mono text-[11px] whitespace-nowrap', cell: (r) => (r.created_at ? new Date(r.created_at).toLocaleString() : '') },
+  { key: 'email', label: 'Email', cell: (r) => r.email },
+  { key: 'source', label: 'Source', cls: () => 'uppercase', cell: (r) => r.source },
+  { key: 'campaign_id', label: 'Campaign ID', cell: (r) => (<>
+    <div className="font-mono">{r.campaign_id}</div>
+    <div className="text-slate-400 max-w-[260px] truncate" title={r.campaign_name}>{r.campaign_name}</div>
+  </>) },
+  { key: 'binom_campaign_id', label: 'Binom campaign', cell: (r) => (<>
+    <div className="font-mono">{r.binom_campaign_id}</div>
+    <div className="text-slate-600 max-w-[360px] truncate" title={r.binom_campaign_name}>{r.binom_campaign_name}</div>
+  </>) },
+  { key: 'competitor', label: 'Competitor', cell: (r) => r.competitor },
+  { key: 'buyer', label: 'Buyer', cell: (r) => r.buyer },
+  { key: 'account', label: 'Account', cell: (r) => r.account },
+  { key: 'tracker', label: 'Tracker', cell: (r) => r.tracker },
+  { key: 'clicks', label: 'Clicks', right: true, cell: (r) => r.clicks ?? '' },
+  { key: 'leads', label: 'Leads', right: true, cell: (r) => r.leads ?? '' },
+  { key: 'revenue', label: 'Revenue', right: true, cell: (r) => fmtMoney(r.revenue) },
+  { key: 'spend', label: 'Spend', right: true, cell: (r) => fmtMoney(r.spend) },
+  { key: 'profit', label: 'Profit', right: true, cls: (r) => profitCls(r.profit), cell: (r) => fmtMoney(r.profit) },
+];
+const AZ_HIDDEN_COLS_KEY = 'dashboard.autozalivCampaigns.hiddenCols';
 
 const AUTOZALIV_LAUNCH_URL = import.meta.env.PUBLIC_WEBHOOK_AUTOZALIV_LAUNCH_URL as string | undefined;
 
@@ -1580,13 +1617,66 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
 
   const users = useMemo(() => new Set(filtered.map((r) => r.email).filter(Boolean)).size, [filtered]);
 
+  const totals = useMemo(() => {
+    const sum = (k: 'revenue' | 'spend' | 'profit') => filtered.reduce((a, r) => a + (r[k] || 0), 0);
+    const updated = filtered.reduce((a, r) => (r.profit_updated_at && r.profit_updated_at > a ? r.profit_updated_at : a), '');
+    return { revenue: sum('revenue'), spend: sum('spend'), profit: sum('profit'), updated };
+  }, [filtered]);
+
+  // Click a header: biggest first, click again: smallest first. Empty values always go last.
+  const [sort, setSort] = useState<{ key: string; dir: 'desc' | 'asc' } | null>(null);
+  const toggleSort = (key: string) =>
+    setSort((s) => (s?.key === key ? { key, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' }));
+  const sortBy = <T,>(list: T[]): T[] => {
+    if (!sort) return list;
+    const get = (r: T) => (r as any)[sort.key];
+    const empty = (v: any) => v == null || v === '';
+    return [...list].sort((a, b) => {
+      const x = get(a), y = get(b);
+      if (empty(x) || empty(y)) return empty(x) ? (empty(y) ? 0 : 1) : -1;
+      const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y), undefined, { numeric: true });
+      return sort.dir === 'desc' ? -c : c;
+    });
+  };
+  const SortTh = ({ k, label, right = true }: { k: string; label: string; right?: boolean }) => (
+    <th className={`py-2 px-3 whitespace-nowrap ${right ? 'text-right' : ''}`}>
+      <button type="button" className="uppercase whitespace-nowrap hover:text-slate-900" onClick={() => toggleSort(k)}>
+        {label}{sort?.key === k ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
+      </button>
+    </th>
+  );
+
+  // Hidden columns of the campaigns table, remembered per browser.
+  const [hiddenCols, setHiddenCols] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(AZ_HIDDEN_COLS_KEY) || '[]'); } catch { return []; }
+  });
+  const toggleCol = (key: string) => setHiddenCols((h) => {
+    const next = h.includes(key) ? h.filter((k) => k !== key) : [...h, key];
+    try { localStorage.setItem(AZ_HIDDEN_COLS_KEY, JSON.stringify(next)); } catch { /* storage blocked */ }
+    return next;
+  });
+  const visibleCols = AZ_COLUMNS.filter((c) => !hiddenCols.includes(c.key));
+  const campaignRows = useMemo(
+    () => filtered.map((r) => ({ ...r, competitor: competitorOfBinomName(r.binom_campaign_name) })),
+    [filtered],
+  );
+
   const byCompetitor = useMemo(() => {
-    const counts = new Map<string, number>();
+    type Agg = { competitor: string; campaigns: number; clicks: number | null; leads: number | null; revenue: number | null; spend: number | null; profit: number | null };
+    const map = new Map<string, Agg>();
+    const add = (a: number | null, v: number | null | undefined) => (v == null ? a : (a || 0) + v);
     for (const r of filtered) {
       const c = competitorOfBinomName(r.binom_campaign_name);
-      counts.set(c, (counts.get(c) || 0) + 1);
+      const g = map.get(c) || { competitor: c, campaigns: 0, clicks: null, leads: null, revenue: null, spend: null, profit: null };
+      g.campaigns += 1;
+      g.clicks = add(g.clicks, r.clicks);
+      g.leads = add(g.leads, r.leads);
+      g.revenue = add(g.revenue, r.revenue);
+      g.spend = add(g.spend, r.spend);
+      g.profit = add(g.profit, r.profit);
+      map.set(c, g);
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return [...map.values()].sort((a, b) => b.campaigns - a.campaigns);
   }, [filtered]);
 
   if (status === 'error') {
@@ -1603,6 +1693,10 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
         <span className="text-slate-600">NB {filtered.filter((r) => r.source === 'nb').length}</span>
         <span className="text-slate-600">FB {filtered.filter((r) => r.source === 'fb').length}</span>
         <span className="text-slate-600"><span className="font-bold">{users}</span> users</span>
+        <span className="text-slate-600">Revenue <span className="font-mono">{totals.revenue.toFixed(2)}</span></span>
+        <span className="text-slate-600">Spend <span className="font-mono">{totals.spend.toFixed(2)}</span></span>
+        <span>Profit <span className={`font-mono font-bold ${totals.profit < 0 ? 'text-red-600' : 'text-green-700'}`}>{totals.profit.toFixed(2)}</span></span>
+        {totals.updated && <span className="text-slate-400 text-xs">profit updated {new Date(totals.updated).toLocaleString()}</span>}
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -1641,66 +1735,77 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
             {v}
           </button>
         ))}
+        {view === 'campaigns' && (
+          <details className="relative ml-auto">
+            <summary className="cursor-pointer list-none rounded border px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
+              Columns{hiddenCols.length ? ` (${hiddenCols.length} hidden)` : ''}
+            </summary>
+            <div className="absolute right-0 z-20 mt-1 w-48 rounded border bg-white p-2 shadow-lg">
+              {AZ_COLUMNS.map((c) => (
+                <label key={c.key} className="flex items-center gap-2 py-0.5 text-xs cursor-pointer">
+                  <input type="checkbox" checked={!hiddenCols.includes(c.key)} onChange={() => toggleCol(c.key)} />
+                  {c.label}
+                </label>
+              ))}
+            </div>
+          </details>
+        )}
       </div>
 
       {filtered.length === 0 ? (
         <div className="p-6 text-gray-400 italic">No Autozaliv campaigns in the selected range.</div>
       ) : view === 'competitors' ? (
-        <table className="w-full max-w-md text-sm border-collapse">
+        <table className="w-full max-w-3xl text-sm border-collapse">
           <thead className="bg-slate-100">
             <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
-              <th className="py-2 px-3">Competitor</th>
-              <th className="py-2 px-3 text-right">Campaigns</th>
+              <SortTh k="competitor" label="Competitor" right={false} />
+              <SortTh k="campaigns" label="Campaigns" />
+              <SortTh k="clicks" label="Clicks" />
+              <SortTh k="leads" label="Leads" />
+              <SortTh k="revenue" label="Revenue" />
+              <SortTh k="spend" label="Spend" />
+              <SortTh k="profit" label="Profit" />
             </tr>
           </thead>
           <tbody>
-            {byCompetitor.map(([c, n]) => (
-              <tr key={c} className="border-b border-slate-100">
+            {sortBy(byCompetitor).map((g) => (
+              <tr key={g.competitor} className="border-b border-slate-100">
                 <td className="py-1.5 px-3 text-xs">
-                  {c ? (
-                    <button type="button" className="hover:underline" onClick={() => { setCompetitorFilter(c); setView('campaigns'); }}>{c}</button>
+                  {g.competitor ? (
+                    <button type="button" className="hover:underline" onClick={() => { setCompetitorFilter(g.competitor); setView('campaigns'); }}>{g.competitor}</button>
                   ) : <span className="text-slate-400 italic">blank</span>}
                 </td>
-                <td className="py-1.5 px-3 text-xs text-right font-mono">{n}</td>
+                <td className="py-1.5 px-3 text-xs text-right font-mono">{g.campaigns}</td>
+                <td className="py-1.5 px-3 text-xs text-right font-mono">{g.clicks ?? ''}</td>
+                <td className="py-1.5 px-3 text-xs text-right font-mono">{g.leads ?? ''}</td>
+                <td className="py-1.5 px-3 text-xs text-right font-mono">{fmtMoney(g.revenue)}</td>
+                <td className="py-1.5 px-3 text-xs text-right font-mono">{fmtMoney(g.spend)}</td>
+                <td className={`py-1.5 px-3 text-xs text-right font-mono font-bold ${(g.profit ?? 0) < 0 ? 'text-red-600' : 'text-green-700'}`}>{fmtMoney(g.profit)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       ) : (
-        <table className="w-full text-sm border-collapse">
-          <thead className="sticky top-0 bg-slate-100 z-10">
-            <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
-              <th className="py-2 px-3">When</th>
-              <th className="py-2 px-3">Email</th>
-              <th className="py-2 px-3">Source</th>
-              <th className="py-2 px-3">Campaign ID</th>
-              <th className="py-2 px-3">Binom campaign</th>
-              <th className="py-2 px-3">Competitor</th>
-              <th className="py-2 px-3">Buyer</th>
-              <th className="py-2 px-3">Account</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((r, i) => (
-              <tr key={`${r.campaign_id}-${i}`} className="border-b border-slate-100 align-top">
-                <td className="py-1.5 px-3 font-mono text-[11px] whitespace-nowrap">{r.created_at ? new Date(r.created_at).toLocaleString() : ''}</td>
-                <td className="py-1.5 px-3 text-xs">{r.email}</td>
-                <td className="py-1.5 px-3 text-xs uppercase">{r.source}</td>
-                <td className="py-1.5 px-3 text-xs">
-                  <div className="font-mono">{r.campaign_id}</div>
-                  <div className="text-slate-400 max-w-[260px] truncate" title={r.campaign_name}>{r.campaign_name}</div>
-                </td>
-                <td className="py-1.5 px-3 text-xs">
-                  <div className="font-mono">{r.binom_campaign_id}</div>
-                  <div className="text-slate-600 max-w-[360px] truncate" title={r.binom_campaign_name}>{r.binom_campaign_name}</div>
-                </td>
-                <td className="py-1.5 px-3 text-xs">{competitorOfBinomName(r.binom_campaign_name)}</td>
-                <td className="py-1.5 px-3 text-xs">{r.buyer}</td>
-                <td className="py-1.5 px-3 text-xs">{r.account}</td>
+        // Own scroll box (both directions) so only the table scrolls sideways — the
+        // summary bar and filters keep the panel's width, and the header stays sticky.
+        <div className="overflow-auto max-h-[75vh] rounded border border-slate-200">
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 bg-slate-100 z-10">
+              <tr className="text-left text-[10px] font-bold uppercase text-gray-500 border-b border-slate-200">
+                {visibleCols.map((c) => <SortTh key={c.key} k={c.key} label={c.label} right={!!c.right} />)}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {sortBy(campaignRows).map((r, i) => (
+                <tr key={`${r.campaign_id}-${i}`} className="border-b border-slate-100 align-top">
+                  {visibleCols.map((c) => (
+                    <td key={c.key} className={`py-1.5 px-3 text-xs ${c.right ? 'text-right font-mono' : ''} ${c.cls?.(r) || ''}`}>{c.cell(r)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
