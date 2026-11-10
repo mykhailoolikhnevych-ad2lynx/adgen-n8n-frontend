@@ -198,7 +198,7 @@ const TRACKER_DOMAIN: Record<string, string> = {
 type BinomSettings = { tracker: string; group: string; geo: string; nbAccount: string; fbAccount: string; bidType: string; event: string; suffix: string };
 type BinomRow = { name?: string; geo?: string; language?: string };
 type BinomOptions = { status: 'loading' | 'ready' | 'error'; groups: string[]; domains: { id: string; host: string }[]; error?: string };
-type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignName?: string; campaignUrl?: string; error?: string };
+type BinomState = { status: 'running' | 'done' | 'error'; offerId?: string; campaignId?: string; campaignName?: string; campaignUrl?: string; tracker?: string; error?: string };
 
 // "sarb-dating-sites-for-widows-dab" -> "Dating Sites For Widows": drop the source prefix and
 // the short tracking codes at the end (vev, dab, p2c…). Only a default — the Name stays editable.
@@ -1027,7 +1027,7 @@ export function MegatoolAutozalivBuilderPage() {
           event: resolveEvent(binomBulk.event, binomBulk.bidType), offerName: b.offerName, offerUrl: b.offerUrl,
           campaignName: b.campaignName, offerId: prev?.offerId,
         });
-        setBinom((s) => ({ ...s, [g.name]: { status: 'done', offerId: res.offerId, campaignId: res.campaignId, campaignName: b.campaignName, campaignUrl: res.campaignUrl } }));
+        setBinom((s) => ({ ...s, [g.name]: { status: 'done', offerId: res.offerId, campaignId: res.campaignId, campaignName: b.campaignName, campaignUrl: res.campaignUrl, tracker: binomBulk.tracker } }));
         logEvent({ tab: 'megatool-autozaliv', action: 'createBinomCampaign', meta: logMeta, metaOut: { offerId: res.offerId, campaignId: res.campaignId } });
       } catch (e: any) {
         // keep an offer id from a half-finished run so Retry doesn't create a second offer
@@ -1197,6 +1197,7 @@ export function MegatoolAutozalivBuilderPage() {
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id,
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
           email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
+          tracker: binom[g.name]?.tracker || '',
         }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setNb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
@@ -1299,6 +1300,7 @@ export function MegatoolAutozalivBuilderPage() {
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id, source: 'fb',
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
           email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
+          tracker: binom[g.name]?.tracker || '',
         }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setFb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
