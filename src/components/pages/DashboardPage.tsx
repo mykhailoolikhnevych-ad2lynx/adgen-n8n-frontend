@@ -1836,6 +1836,8 @@ interface StatRow {
   binom_campaign_name: string; ts_campaign_name: string;
   /** Binom campaign group (cat_group_name) — the buyer. */
   buyer: string;
+  /** Binom cat_country / cat_language / cat_traffic_source of the campaign. */
+  country: string; language: string; traffic_source: string;
   clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number;
 }
 type Sums = { clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number };
@@ -2034,6 +2036,7 @@ const SignedBars = ({ title, items, controls }: { title: string; items: { label:
 type CampAgg = ReturnType<typeof metrics> & {
   key: string; kind: StatKind; tracker: string; binom_campaign_id: string; ts_campaign_id: string;
   name: string; buyer: string; competitor: string; launched: string; first_day: string;
+  country: string; language: string; source: string;
 };
 
 const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: CampAgg) => ReactNode; cls?: (r: CampAgg) => string }[] = [
@@ -2044,6 +2047,9 @@ const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: Cam
   { key: 'kind', label: 'Group', cell: (r) => KINDS.find((k) => k.value === r.kind)?.label || r.kind },
   { key: 'tracker', label: 'Tracker', cell: (r) => r.tracker },
   { key: 'buyer', label: 'Buyer', cell: (r) => r.buyer },
+  { key: 'source', label: 'Source', cell: (r) => r.source },
+  { key: 'country', label: 'Country', cell: (r) => r.country },
+  { key: 'language', label: 'Language', cell: (r) => r.language },
   { key: 'launched', label: 'Launched', cls: () => 'font-mono whitespace-nowrap', cell: (r) => r.launched },
   { key: 'clicks', label: 'Clicks', right: true, cell: (r) => r.clicks },
   { key: 'leads', label: 'Leads', right: true, cell: (r) => r.leads },
@@ -2086,7 +2092,10 @@ const CampaignStatsView = () => {
   const [error, setError] = useState<string | null>(null);
   const [azInfo, setAzInfo] = useState<Map<string, { buyer: string; competitor: string; created_at: string }>>(new Map());
   const [kind, setKind] = useState<'all' | StatKind>('all');
-  const [breakdown, setBreakdown] = useState<'buyer' | 'competitor' | 'tracker' | 'launch'>('buyer');
+  const [breakdown, setBreakdown] = useState<'buyer' | 'competitor' | 'tracker' | 'source' | 'country' | 'language' | 'launch'>('buyer');
+  const [fSource, setFSource] = useState('');
+  const [fCountry, setFCountry] = useState('');
+  const [fLanguage, setFLanguage] = useState('');
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 'desc' | 'asc' }>({ key: 'profit', dir: 'desc' });
   const [hiddenCols, setHiddenCols] = useState<string[]>(() => {
@@ -2124,6 +2133,8 @@ const CampaignStatsView = () => {
         binom_campaign_id: String(a[ix('binom_campaign_id')] || ''), ts_campaign_id: String(a[ix('ts_campaign_id')] || ''),
         binom_campaign_name: String(a[ix('binom_campaign_name')] || ''), ts_campaign_name: String(a[ix('ts_campaign_name')] || ''),
         buyer: String(a[ix('buyer')] || ''),
+        country: String(a[ix('country')] || ''), language: String(a[ix('language')] || ''),
+        traffic_source: String(a[ix('traffic_source')] || ''),
         clicks: num(a[ix('clicks')]), leads: num(a[ix('leads')]), revenue: num(a[ix('revenue')]),
         cost: num(a[ix('cost')]), offer_clicks: num(a[ix('offer_clicks')]),
       }));
@@ -2184,14 +2195,24 @@ const CampaignStatsView = () => {
         ...metrics(g), key, kind: g.r.kind, tracker: g.r.tracker, binom_campaign_id: g.r.binom_campaign_id,
         ts_campaign_id: g.r.ts_campaign_id, name, buyer: g.r.buyer || info?.buyer || '', competitor: info?.competitor || '',
         launched, first_day: g.first,
+        country: g.r.country, language: g.r.language, source: g.r.traffic_source,
       };
     });
   }, [inRange, azInfo]);
 
   const q = search.trim().toLowerCase();
+  // Search + Source / Country / Language filters (the group pill is applied separately).
+  const passes = useCallback((c: CampAgg) =>
+    (!q || `${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q))
+    && (!fSource || c.source === fSource) && (!fCountry || c.country === fCountry) && (!fLanguage || c.language === fLanguage),
+  [q, fSource, fCountry, fLanguage]);
+  const options = useMemo(() => {
+    const uniq = (pick: (c: CampAgg) => string) => [...new Set(campaigns.map(pick).filter(Boolean))].sort();
+    return { source: uniq((c) => c.source), country: uniq((c) => c.country), language: uniq((c) => c.language) };
+  }, [campaigns]);
   const shown = useMemo(
-    () => campaigns.filter((c) => (kind === 'all' || c.kind === kind) && (!q || `${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q))),
-    [campaigns, kind, q],
+    () => campaigns.filter((c) => (kind === 'all' || c.kind === kind) && passes(c)),
+    [campaigns, kind, passes],
   );
   const shownKeys = useMemo(() => new Set(shown.map((c) => c.key)), [shown]);
 
@@ -2212,7 +2233,7 @@ const CampaignStatsView = () => {
 
   // Group comparison ignores the group pill (it is the comparison) but keeps the search.
   const kindSeries = useMemo(() => {
-    const keysAll = new Set(campaigns.filter((c) => !q || `${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q)).map((c) => c.key));
+    const keysAll = new Set(campaigns.filter(passes).map((c) => c.key));
     return KINDS.filter((k) => !k.soon || rows.some((r) => r.kind === k.value)).map((k) => {
       const byDay = new Map<string, number>();
       for (const r of inRange) {
@@ -2222,7 +2243,7 @@ const CampaignStatsView = () => {
       let run = 0;
       return { kind: k, cum: days.map((d) => (run += byDay.get(d) || 0)) };
     });
-  }, [campaigns, inRange, days, q, rows]);
+  }, [campaigns, inRange, days, passes, rows]);
 
   const breakdownItems = useMemo(() => {
     const map = new Map<string, { value: number; n: number }>();
@@ -2230,6 +2251,9 @@ const CampaignStatsView = () => {
       const label = breakdown === 'buyer' ? c.buyer || (c.kind === 'autozaliv' ? '' : 'MEGACLONE (no buyer)')
         : breakdown === 'competitor' ? c.competitor || (c.kind === 'autozaliv' ? '' : 'MEGACLONE')
         : breakdown === 'tracker' ? c.tracker
+        : breakdown === 'source' ? c.source
+        : breakdown === 'country' ? c.country
+        : breakdown === 'language' ? c.language
         : `week of ${weekOf(c.launched || c.first_day)}`;
       const g = map.get(label) || { value: 0, n: 0 };
       g.value += c.profit; g.n += 1;
@@ -2299,7 +2323,10 @@ const CampaignStatsView = () => {
               className="text-sm border rounded-md px-2 py-1 bg-white" />
           </>
         )}
-        <span className="text-xs text-slate-400 font-mono ml-2">{fromDay} → {toDay}</span>
+        {/* EU order: DD-MM-YYYY */}
+        <span className="text-xs text-slate-400 font-mono ml-2">
+          {fromDay.split('-').reverse().join('-')} → {toDay.split('-').reverse().join('-')}
+        </span>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {([{ value: 'all', label: 'All', color: '#334155' }, ...KINDS] as { value: 'all' | StatKind; label: string; color: string; soon?: boolean }[]).map((k) => (
@@ -2319,6 +2346,17 @@ const CampaignStatsView = () => {
         <div className="flex-1 min-w-[160px] max-w-xs ml-2">
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search campaign / buyer / id…" />
         </div>
+        {([
+          ['Source', fSource, setFSource, options.source],
+          ['Country', fCountry, setFCountry, options.country],
+          ['Language', fLanguage, setFLanguage, options.language],
+        ] as const).map(([label, value, set, opts]) => (
+          <select key={label} aria-label={label} value={value} onChange={(e) => set(e.target.value)}
+            className={`text-sm border rounded-md px-2 py-1.5 bg-white max-w-[180px] ${value ? 'border-slate-900' : ''}`}>
+            <option value="">{label}: all</option>
+            {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        ))}
         <span className="ml-auto text-xs text-slate-400">{updatedAt ? `stats updated ${new Date(updatedAt).toLocaleString()}` : 'not updated yet'}</span>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
           {status === 'loading' ? 'Loading…' : 'Refresh'}
@@ -2344,7 +2382,7 @@ const CampaignStatsView = () => {
         items={breakdownItems}
         controls={(
           <div className="flex gap-1">
-            {(['buyer', 'competitor', 'tracker', 'launch'] as const).map((b) => (
+            {(['buyer', 'competitor', 'tracker', 'source', 'country', 'language', 'launch'] as const).map((b) => (
               <button key={b} type="button" onClick={() => setBreakdown(b)}
                 className={`rounded px-2 py-0.5 text-[11px] ${breakdown === b ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
                 {b === 'launch' ? 'launch week' : b}
