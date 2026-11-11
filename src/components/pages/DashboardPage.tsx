@@ -1931,20 +1931,17 @@ const XLabels = ({ days, x }: { days: string[]; x: (i: number) => number }) => {
   );
 };
 
-// Daily profit bars (green / red) + running total line, one money axis.
+// Daily profit bars (green / red), one money axis.
 const DailyProfitChart = ({ days, profit }: { days: string[]; profit: number[] }) => {
   const [hover, setHover] = useState<number | null>(null);
-  const cum: number[] = [];
-  profit.reduce((a, v, i) => (cum[i] = a + v), 0);
-  const ticks = niceTicks(Math.min(0, ...profit, ...cum), Math.max(0, ...profit, ...cum));
+  const ticks = niceTicks(Math.min(0, ...profit), Math.max(0, ...profit));
   const lo = ticks[0], hi = ticks[ticks.length - 1];
   const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * (CH_H - PAD.t - PAD.b);
   const slot = (CH_W - PAD.l - PAD.r) / Math.max(1, days.length);
   const x = (i: number) => PAD.l + slot * (i + 0.5);
   const bw = Math.max(2, Math.min(18, slot - 2));
-  const linePts = cum.map((v, i) => `${x(i)},${y(v)}`).join(' ');
   return (
-    <ChartFrame title="Daily profit" legend={<span className="flex gap-3"><LegendItem color={POS} label="profit day" /><LegendItem color={NEG} label="loss day" /><LegendItem color="#334155" label="running total" line /></span>}>
+    <ChartFrame title="Daily profit" legend={<span className="flex gap-3"><LegendItem color={POS} label="profit day" /><LegendItem color={NEG} label="loss day" /></span>}>
       <svg viewBox={`0 0 ${CH_W} ${CH_H}`} className="w-full h-auto" onMouseLeave={() => setHover(null)}>
         <YAxis ticks={ticks} y={y} />
         {profit.map((v, i) => {
@@ -1957,17 +1954,10 @@ const DailyProfitChart = ({ days, profit }: { days: string[]; profit: number[] }
             </g>
           );
         })}
-        <polyline points={linePts} fill="none" stroke="#334155" strokeWidth={2} pointerEvents="none" />
-        {hover !== null && (
-          <g pointerEvents="none">
-            <line x1={x(hover)} x2={x(hover)} y1={PAD.t} y2={CH_H - PAD.b} stroke="#898781" strokeDasharray="3 3" />
-            <circle cx={x(hover)} cy={y(cum[hover])} r={4} fill="#334155" stroke="#fff" strokeWidth={2} />
-          </g>
-        )}
         <XLabels days={days} x={x} />
       </svg>
       <div className="h-5 text-[11px] text-slate-600 font-mono">
-        {hover !== null && <>{days[hover]} · profit <span className={signCls(profit[hover])}>{profit[hover].toFixed(2)}</span> · running total <span className={signCls(cum[hover])}>{cum[hover].toFixed(2)}</span></>}
+        {hover !== null && <>{days[hover]} · profit <span className={signCls(profit[hover])}>{profit[hover].toFixed(2)}</span></>}
       </div>
     </ChartFrame>
   );
@@ -2070,7 +2060,26 @@ const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: Cam
 ];
 const STATS_HIDDEN_COLS_KEY = 'dashboard.campaignStats.hiddenCols';
 
-const CampaignStatsView = ({ fromDay, toDay }: { fromDay: string; toDay: string }) => {
+const STATS_RANGES = [
+  { value: '7d', label: '7 days', days: 7 },
+  { value: '1m', label: '1 month', days: 30 },
+  { value: '3m', label: '3 months', days: 90 },
+  { value: 'all', label: 'All time', days: 0 },
+  { value: 'custom', label: 'Custom', days: 0 },
+] as const;
+type StatsRange = typeof STATS_RANGES[number]['value'];
+const daysBack = (n: number) => localDay(new Date(Date.now() - (n - 1) * 86400000));
+
+// Own date range (not the Dashboard's): stats only exist from the first Campaign Stats run on.
+const CampaignStatsView = () => {
+  const today = localDay(new Date());
+  const [range, setRange] = useState<StatsRange>('1m');
+  const [customFrom, setCustomFrom] = useState(() => daysBack(30));
+  const [customTo, setCustomTo] = useState(today);
+  const preset = STATS_RANGES.find((r) => r.value === range)!;
+  // What we ask the webhook for; "All time" asks for everything.
+  const fetchFrom = range === 'custom' ? customFrom : range === 'all' ? '2000-01-01' : daysBack(preset.days);
+  const toDay = range === 'custom' ? customTo : today;
   const [rows, setRows] = useState<StatRow[]>([]);
   const [updatedAt, setUpdatedAt] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -2097,7 +2106,7 @@ const CampaignStatsView = ({ fromDay, toDay }: { fromDay: string; toDay: string 
     }
     setStatus('loading');
     try {
-      const statsReq = axios.post(CAMPAIGN_STATS_URL, { action: 'list', since: fromDay }, { timeout: REQUEST_TIMEOUT_MS });
+      const statsReq = axios.post(CAMPAIGN_STATS_URL, { action: 'list', since: fetchFrom }, { timeout: REQUEST_TIMEOUT_MS });
       // Buyer / competitor / launch time for Autozaliv rows — optional, stats still render without it.
       const azReq = AUTOZALIV_LAUNCH_URL
         ? axios.post(AUTOZALIV_LAUNCH_URL, { action: 'campaigns-list' }, { timeout: REQUEST_TIMEOUT_MS }).catch(() => null)
@@ -2143,10 +2152,15 @@ const CampaignStatsView = ({ fromDay, toDay }: { fromDay: string; toDay: string 
       setStatus('error');
       setError(e?.response?.data?.error ?? e?.message ?? String(e));
     }
-  }, [fromDay]);
+  }, [fetchFrom]);
 
   useEffect(() => { void load(); }, [load]);
 
+  // "All time" starts the axis at the first day that has stats.
+  const fromDay = useMemo(
+    () => (range === 'all' ? rows.reduce((m, r) => (r.day && r.day < m ? r.day : m), today) : fetchFrom),
+    [range, rows, today, fetchFrom],
+  );
   const days = useMemo(() => dayRange(fromDay, toDay), [fromDay, toDay]);
   const inRange = useMemo(() => rows.filter((r) => r.day >= fromDay && r.day <= toDay), [rows, fromDay, toDay]);
 
@@ -2259,6 +2273,34 @@ const CampaignStatsView = ({ fromDay, toDay }: { fromDay: string; toDay: string 
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-bold uppercase text-slate-500 mr-1">Period</span>
+        {STATS_RANGES.map((r) => (
+          <button
+            key={r.value}
+            type="button"
+            onClick={() => setRange(r.value)}
+            className={`rounded px-3 py-1.5 text-sm transition-colors ${
+              range === r.value ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            {r.label}
+          </button>
+        ))}
+        {range === 'custom' && (
+          <>
+            <label className="text-[10px] font-bold uppercase text-slate-500 ml-2" htmlFor="stats-from">From</label>
+            <input id="stats-from" type="date" value={customFrom} max={customTo || today}
+              onChange={(e) => setCustomFrom(e.target.value || daysBack(30))}
+              className="text-sm border rounded-md px-2 py-1 bg-white" />
+            <label className="text-[10px] font-bold uppercase text-slate-500 ml-1" htmlFor="stats-to">To</label>
+            <input id="stats-to" type="date" value={customTo} min={customFrom} max={today}
+              onChange={(e) => setCustomTo(e.target.value || today)}
+              className="text-sm border rounded-md px-2 py-1 bg-white" />
+          </>
+        )}
+        <span className="text-xs text-slate-400 font-mono ml-2">{fromDay} → {toDay}</span>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
         {([{ value: 'all', label: 'All', color: '#334155' }, ...KINDS] as { value: 'all' | StatKind; label: string; color: string; soon?: boolean }[]).map((k) => (
           <button
@@ -2539,7 +2581,8 @@ export const DashboardPage = ({ active = true }: { active?: boolean }) => {
 
         {/* Range presets + custom from-date picker. Picking a preset updates the date;
             editing the date manually flips the preset to "Custom" automatically. */}
-        <div className="flex items-center gap-2 ml-2">
+        {/* Campaign Stats has its own period picker. */}
+        <div className={`flex items-center gap-2 ml-2 ${activeTab === 'campaignStats' ? 'hidden' : ''}`}>
           <label className="text-[10px] font-bold uppercase text-slate-500" htmlFor="dash-range">Range</label>
           <select
             id="dash-range"
@@ -2634,7 +2677,7 @@ export const DashboardPage = ({ active = true }: { active?: boolean }) => {
         ) : activeTab === 'autozaliv' ? (
           <AutozalivCampaignsView since={dateInputToIso(fromDate)} until={dateInputToIsoEndOfDay(toDate)} />
         ) : activeTab === 'campaignStats' ? (
-          <CampaignStatsView fromDay={fromDate} toDay={toDate} />
+          <CampaignStatsView />
         ) : (
           <>
             {status === 'error' && (
