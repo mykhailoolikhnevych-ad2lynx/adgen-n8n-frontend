@@ -1862,6 +1862,8 @@ const fmtN = (v: number | null | undefined, d = 2) => (v == null || !Number.isFi
 const fmtPct = (v: number | null | undefined) => (v == null || !Number.isFinite(v) ? '' : `${v.toFixed(2)}%`);
 const signCls = (v: number | null | undefined) => ((v ?? 0) < 0 ? 'text-red-600' : 'text-green-700');
 const localDay = (d: Date) => d.toLocaleDateString('sv'); // YYYY-MM-DD
+/** YYYY-MM-DD → DD-MM-YYYY (EU order) for display; data keeps ISO so it sorts. */
+const euDay = (d: string) => (d ? d.split('-').reverse().join('-') : '');
 const dayRange = (from: string, to: string) => {
   const out: string[] = [];
   const d = new Date(`${from}T12:00:00`);
@@ -1927,7 +1929,7 @@ const XLabels = ({ days, x }: { days: string[]; x: (i: number) => number }) => {
   return (
     <g>
       {days.map((d, i) => (i % every === 0 ? (
-        <text key={d} x={x(i)} y={CH_H - 8} textAnchor="middle" fontSize={10} fill="#898781">{d.slice(5)}</text>
+        <text key={d} x={x(i)} y={CH_H - 8} textAnchor="middle" fontSize={10} fill="#898781">{euDay(d).slice(0, 5)}</text>
       ) : null))}
     </g>
   );
@@ -1959,7 +1961,7 @@ const DailyProfitChart = ({ days, profit }: { days: string[]; profit: number[] }
         <XLabels days={days} x={x} />
       </svg>
       <div className="h-5 text-[11px] text-slate-600 font-mono">
-        {hover !== null && <>{days[hover]} · profit <span className={signCls(profit[hover])}>{profit[hover].toFixed(2)}</span></>}
+        {hover !== null && <>{euDay(days[hover])} · profit <span className={signCls(profit[hover])}>{profit[hover].toFixed(2)}</span></>}
       </div>
     </ChartFrame>
   );
@@ -1996,7 +1998,7 @@ const KindCompareChart = ({ days, series }: { days: string[]; series: { kind: (t
         <XLabels days={days} x={x} />
       </svg>
       <div className="h-5 text-[11px] text-slate-600 font-mono">
-        {hover !== null && <>{days[hover]} · {series.map((s) => <span key={s.kind.value} className="mr-3">{s.kind.label} <span className={signCls(s.cum[hover])}>{s.cum[hover].toFixed(2)}</span></span>)}</>}
+        {hover !== null && <>{euDay(days[hover])} · {series.map((s) => <span key={s.kind.value} className="mr-3">{s.kind.label} <span className={signCls(s.cum[hover])}>{s.cum[hover].toFixed(2)}</span></span>)}</>}
       </div>
     </ChartFrame>
   );
@@ -2050,7 +2052,7 @@ const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: Cam
   { key: 'source', label: 'Source', cell: (r) => r.source },
   { key: 'country', label: 'Country', cell: (r) => r.country },
   { key: 'language', label: 'Language', cell: (r) => r.language },
-  { key: 'launched', label: 'Launched', cls: () => 'font-mono whitespace-nowrap', cell: (r) => r.launched },
+  { key: 'launched', label: 'Launched', cls: () => 'font-mono whitespace-nowrap', cell: (r) => euDay(r.launched) },
   { key: 'clicks', label: 'Clicks', right: true, cell: (r) => r.clicks },
   { key: 'leads', label: 'Leads', right: true, cell: (r) => r.leads },
   { key: 'epc', label: 'EPC', right: true, cell: (r) => fmtN(r.epc, 4) },
@@ -2260,7 +2262,10 @@ const CampaignStatsView = () => {
       map.set(label, g);
     }
     const items = [...map.entries()].map(([label, g]) => ({ label, value: g.value, note: `${g.n} campaigns` }));
-    return breakdown === 'launch' ? items.sort((a, b) => a.label.localeCompare(b.label)) : items.sort((a, b) => b.value - a.value);
+    // Sort launch weeks on the ISO label, then show it as DD-MM-YYYY.
+    return breakdown === 'launch'
+      ? items.sort((a, b) => a.label.localeCompare(b.label)).map((it) => ({ ...it, label: it.label.replace(/\d{4}-\d{2}-\d{2}/, euDay) }))
+      : items.sort((a, b) => b.value - a.value);
   }, [shown, breakdown]);
 
   const sorted = useMemo(() => {
@@ -2325,7 +2330,7 @@ const CampaignStatsView = () => {
         )}
         {/* EU order: DD-MM-YYYY */}
         <span className="text-xs text-slate-400 font-mono ml-2">
-          {fromDay.split('-').reverse().join('-')} → {toDay.split('-').reverse().join('-')}
+          {euDay(fromDay)} → {euDay(toDay)}
         </span>
       </div>
       <div className="flex flex-wrap items-center gap-2">
@@ -2357,7 +2362,7 @@ const CampaignStatsView = () => {
             {opts.map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
         ))}
-        <span className="ml-auto text-xs text-slate-400">{updatedAt ? `stats updated ${new Date(updatedAt).toLocaleString()}` : 'not updated yet'}</span>
+        <span className="ml-auto text-xs text-slate-400">{updatedAt ? `stats updated ${new Date(updatedAt).toLocaleString('en-GB').replace(/\//g, '-')}` : 'not updated yet'}</span>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
           {status === 'loading' ? 'Loading…' : 'Refresh'}
         </Button>
