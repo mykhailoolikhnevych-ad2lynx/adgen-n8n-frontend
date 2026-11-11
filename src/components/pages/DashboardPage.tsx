@@ -1834,6 +1834,8 @@ const NEG = '#d03b3b';
 interface StatRow {
   day: string; tracker: string; kind: StatKind; binom_campaign_id: string; ts_campaign_id: string;
   binom_campaign_name: string; ts_campaign_name: string;
+  /** Binom campaign group (cat_group_name) — the buyer. */
+  buyer: string;
   clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number;
 }
 type Sums = { clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number };
@@ -2112,6 +2114,7 @@ const CampaignStatsView = ({ fromDay, toDay }: { fromDay: string; toDay: string 
         day: String(a[ix('day')] || ''), tracker: String(a[ix('tracker')] || ''), kind: a[ix('kind')] as StatKind,
         binom_campaign_id: String(a[ix('binom_campaign_id')] || ''), ts_campaign_id: String(a[ix('ts_campaign_id')] || ''),
         binom_campaign_name: String(a[ix('binom_campaign_name')] || ''), ts_campaign_name: String(a[ix('ts_campaign_name')] || ''),
+        buyer: String(a[ix('buyer')] || ''),
         clicks: num(a[ix('clicks')]), leads: num(a[ix('leads')]), revenue: num(a[ix('revenue')]),
         cost: num(a[ix('cost')]), offer_clicks: num(a[ix('offer_clicks')]),
       }));
@@ -2165,7 +2168,7 @@ const CampaignStatsView = ({ fromDay, toDay }: { fromDay: string; toDay: string 
       const launched = (info?.created_at ? localDay(new Date(info.created_at)) : '') || launchFromName(name) || '';
       return {
         ...metrics(g), key, kind: g.r.kind, tracker: g.r.tracker, binom_campaign_id: g.r.binom_campaign_id,
-        ts_campaign_id: g.r.ts_campaign_id, name, buyer: info?.buyer || '', competitor: info?.competitor || '',
+        ts_campaign_id: g.r.ts_campaign_id, name, buyer: g.r.buyer || info?.buyer || '', competitor: info?.competitor || '',
         launched, first_day: g.first,
       };
     });
