@@ -2005,7 +2005,12 @@ const KindCompareChart = ({ days, series }: { days: string[]; series: { kind: (t
 };
 
 // Horizontal bars for a signed value (profit), zero line in the middle.
-const SignedBars = ({ title, items, controls }: { title: string; items: { label: string; value: number; note?: string }[]; controls?: ReactNode }) => {
+// With onToggle, rows are clickable: selected rows stay bright, the rest fade.
+const SignedBars = ({ title, items, controls, selected, onToggle }: {
+  title: string; items: { key?: string; label: string; value: number; note?: string }[]; controls?: ReactNode;
+  selected?: Set<string>; onToggle?: (key: string) => void;
+}) => {
+  const anySelected = !!selected && selected.size > 0;
   const max = Math.max(1e-9, ...items.map((i) => Math.abs(i.value)));
   const hasNeg = items.some((i) => i.value < 0);
   return (
@@ -2014,9 +2019,14 @@ const SignedBars = ({ title, items, controls }: { title: string; items: { label:
         <div className="space-y-1">
           {items.map((it) => {
             const w = (Math.abs(it.value) / max) * (hasNeg ? 50 : 100);
+            const key = it.key ?? it.label;
+            const on = anySelected && selected!.has(key);
             return (
-              <div key={it.label} className="flex items-center gap-2 text-[11px] group" title={`${it.label}: ${it.value.toFixed(2)}${it.note ? ` · ${it.note}` : ''}`}>
-                <div className="w-36 shrink-0 truncate text-slate-700">{it.label || <span className="italic text-slate-400">blank</span>}</div>
+              <div key={key}
+                className={`flex items-center gap-2 text-[11px] group rounded px-1 -mx-1 ${onToggle ? 'cursor-pointer hover:bg-slate-50' : ''} ${on ? 'bg-slate-100' : ''} ${anySelected && !on ? 'opacity-35' : ''}`}
+                title={`${it.label}: ${it.value.toFixed(2)}${it.note ? ` · ${it.note}` : ''}${onToggle ? (on ? ' · click to unselect' : ' · click to select') : ''}`}
+                onClick={onToggle ? () => onToggle(key) : undefined}>
+                <div className={`w-36 shrink-0 truncate ${on ? 'font-bold text-slate-900' : 'text-slate-700'}`}>{it.label || <span className="italic text-slate-400">blank</span>}</div>
                 <div className="relative flex-1 h-3">
                   {hasNeg && <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300" />}
                   <div className="absolute top-0 h-3 rounded-sm group-hover:opacity-80"
@@ -2068,6 +2078,28 @@ const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: Cam
 ];
 const STATS_HIDDEN_COLS_KEY = 'dashboard.campaignStats.hiddenCols';
 
+// "Profit by …" dimensions. Selecting rows in that chart filters the rest of the page.
+type StatDim = 'buyer' | 'competitor' | 'tracker' | 'source' | 'country' | 'language' | 'launch';
+const STAT_DIMS: { value: StatDim; label: string; button: string }[] = [
+  { value: 'buyer', label: 'Buyer', button: 'buyer' },
+  { value: 'competitor', label: 'Competitor', button: 'competitor' },
+  { value: 'tracker', label: 'Tracker', button: 'tracker' },
+  { value: 'source', label: 'Source', button: 'source' },
+  { value: 'country', label: 'Country', button: 'country' },
+  { value: 'language', label: 'Language', button: 'language' },
+  { value: 'launch', label: 'Launch week', button: 'launch week' },
+];
+/** Raw value of a campaign on a dimension (launch = ISO Monday, so it sorts). */
+const dimValue = (c: CampAgg, d: StatDim): string =>
+  d === 'buyer' ? c.buyer || (c.kind === 'autozaliv' ? '' : 'MEGACLONE (no buyer)')
+  : d === 'competitor' ? c.competitor || (c.kind === 'autozaliv' ? '' : 'MEGACLONE')
+  : d === 'tracker' ? c.tracker
+  : d === 'source' ? c.source
+  : d === 'country' ? c.country
+  : d === 'language' ? c.language
+  : weekOf(c.launched || c.first_day);
+const dimText = (d: StatDim, v: string) => (d === 'launch' ? `week of ${euDay(v)}` : v || 'blank');
+
 const STATS_RANGES = [
   { value: '7d', label: '7 days', days: 7 },
   { value: '1m', label: '1 month', days: 30 },
@@ -2094,10 +2126,18 @@ const CampaignStatsView = () => {
   const [error, setError] = useState<string | null>(null);
   const [azInfo, setAzInfo] = useState<Map<string, { buyer: string; competitor: string; created_at: string }>>(new Map());
   const [kind, setKind] = useState<'all' | StatKind>('all');
-  const [breakdown, setBreakdown] = useState<'buyer' | 'competitor' | 'tracker' | 'source' | 'country' | 'language' | 'launch'>('buyer');
-  const [fSource, setFSource] = useState('');
-  const [fCountry, setFCountry] = useState('');
-  const [fLanguage, setFLanguage] = useState('');
+  const [breakdown, setBreakdown] = useState<StatDim>('buyer');
+  // Selected values per dimension (empty = no filter). Kept when the period changes.
+  const [picks, setPicks] = useState<Partial<Record<StatDim, string[]>>>({});
+  const setPick = (d: StatDim, values: string[]) => setPicks((p) => {
+    const next = { ...p };
+    if (values.length) next[d] = values; else delete next[d];
+    return next;
+  });
+  const togglePick = (d: StatDim, v: string) => {
+    const cur = picks[d] || [];
+    setPick(d, cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]);
+  };
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<{ key: string; dir: 'desc' | 'asc' }>({ key: 'profit', dir: 'desc' });
   const [hiddenCols, setHiddenCols] = useState<string[]>(() => {
@@ -2203,11 +2243,13 @@ const CampaignStatsView = () => {
   }, [inRange, azInfo]);
 
   const q = search.trim().toLowerCase();
-  // Search + Source / Country / Language filters (the group pill is applied separately).
-  const passes = useCallback((c: CampAgg) =>
+  // Search + selections: OR inside a dimension, AND across dimensions. `skip` leaves one
+  // dimension out, so its own chart still shows every bar to pick from.
+  const passesExcept = useCallback((c: CampAgg, skip?: StatDim) =>
     (!q || `${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q))
-    && (!fSource || c.source === fSource) && (!fCountry || c.country === fCountry) && (!fLanguage || c.language === fLanguage),
-  [q, fSource, fCountry, fLanguage]);
+    && (Object.entries(picks) as [StatDim, string[]][]).every(([d, vs]) => d === skip || !vs.length || vs.includes(dimValue(c, d))),
+  [q, picks]);
+  const passes = useCallback((c: CampAgg) => passesExcept(c), [passesExcept]);
   const options = useMemo(() => {
     const uniq = (pick: (c: CampAgg) => string) => [...new Set(campaigns.map(pick).filter(Boolean))].sort();
     return { source: uniq((c) => c.source), country: uniq((c) => c.country), language: uniq((c) => c.language) };
@@ -2249,24 +2291,21 @@ const CampaignStatsView = () => {
 
   const breakdownItems = useMemo(() => {
     const map = new Map<string, { value: number; n: number }>();
-    for (const c of shown) {
-      const label = breakdown === 'buyer' ? c.buyer || (c.kind === 'autozaliv' ? '' : 'MEGACLONE (no buyer)')
-        : breakdown === 'competitor' ? c.competitor || (c.kind === 'autozaliv' ? '' : 'MEGACLONE')
-        : breakdown === 'tracker' ? c.tracker
-        : breakdown === 'source' ? c.source
-        : breakdown === 'country' ? c.country
-        : breakdown === 'language' ? c.language
-        : `week of ${weekOf(c.launched || c.first_day)}`;
-      const g = map.get(label) || { value: 0, n: 0 };
+    // Every filter except this chart's own selection, so unselected bars stay visible.
+    for (const c of campaigns) {
+      if ((kind !== 'all' && c.kind !== kind) || !passesExcept(c, breakdown)) continue;
+      const key = dimValue(c, breakdown);
+      const g = map.get(key) || { value: 0, n: 0 };
       g.value += c.profit; g.n += 1;
-      map.set(label, g);
+      map.set(key, g);
     }
-    const items = [...map.entries()].map(([label, g]) => ({ label, value: g.value, note: `${g.n} campaigns` }));
-    // Sort launch weeks on the ISO label, then show it as DD-MM-YYYY.
-    return breakdown === 'launch'
-      ? items.sort((a, b) => a.label.localeCompare(b.label)).map((it) => ({ ...it, label: it.label.replace(/\d{4}-\d{2}-\d{2}/, euDay) }))
-      : items.sort((a, b) => b.value - a.value);
-  }, [shown, breakdown]);
+    const items = [...map.entries()].map(([key, g]) => ({
+      key, label: breakdown === 'launch' ? dimText('launch', key) : key, value: g.value, note: `${g.n} campaigns`,
+    }));
+    // Launch weeks in date order (ISO key), everything else by profit.
+    return breakdown === 'launch' ? items.sort((a, b) => a.key.localeCompare(b.key)) : items.sort((a, b) => b.value - a.value);
+  }, [campaigns, kind, passesExcept, breakdown]);
+  const activePicks = (Object.entries(picks) as [StatDim, string[]][]).filter(([, vs]) => vs.length);
 
   const sorted = useMemo(() => {
     const get = (r: CampAgg) => (r as any)[sort.key];
@@ -2351,22 +2390,44 @@ const CampaignStatsView = () => {
         <div className="flex-1 min-w-[160px] max-w-xs ml-2">
           <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search campaign / buyer / id…" />
         </div>
-        {([
-          ['Source', fSource, setFSource, options.source],
-          ['Country', fCountry, setFCountry, options.country],
-          ['Language', fLanguage, setFLanguage, options.language],
-        ] as const).map(([label, value, set, opts]) => (
-          <select key={label} aria-label={label} value={value} onChange={(e) => set(e.target.value)}
-            className={`text-sm border rounded-md px-2 py-1.5 bg-white max-w-[180px] ${value ? 'border-slate-900' : ''}`}>
-            <option value="">{label}: all</option>
-            {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-          </select>
-        ))}
+        {/* Shortcuts for the same selections the "Profit by" chart makes. */}
+        {(['source', 'country', 'language'] as const).map((d) => {
+          const label = STAT_DIMS.find((x) => x.value === d)!.label;
+          const cur = picks[d] || [];
+          return (
+            <select key={d} aria-label={label} value={cur.length === 1 ? cur[0] : cur.length ? '__multi' : ''}
+              onChange={(e) => { if (e.target.value !== '__multi') setPick(d, e.target.value ? [e.target.value] : []); }}
+              className={`text-sm border rounded-md px-2 py-1.5 bg-white max-w-[180px] ${cur.length ? 'border-slate-900' : ''}`}>
+              <option value="">{label}: all</option>
+              {cur.length > 1 && <option value="__multi">{label}: {cur.length} selected</option>}
+              {options[d].map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          );
+        })}
         <span className="ml-auto text-xs text-slate-400">{updatedAt ? `stats updated ${new Date(updatedAt).toLocaleString('en-GB').replace(/\//g, '-')}` : 'not updated yet'}</span>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
           {status === 'loading' ? 'Loading…' : 'Refresh'}
         </Button>
       </div>
+
+      {activePicks.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[10px] font-bold uppercase text-slate-500">Selected</span>
+          {activePicks.map(([d, vs]) => {
+            const text = vs.map((v) => (d === 'launch' ? euDay(v) : v || 'blank'));
+            return (
+              <span key={d} className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-50 pl-2.5 pr-1 py-0.5 text-xs"
+                title={text.join(', ')}>
+                <span className="font-bold">{STAT_DIMS.find((x) => x.value === d)!.label}:</span>
+                <span className="max-w-[320px] truncate">{text.length > 3 ? `${text.slice(0, 3).join(', ')} +${text.length - 3}` : text.join(', ')}</span>
+                <button type="button" aria-label={`Clear ${d}`} onClick={() => setPick(d, [])}
+                  className="rounded-full w-5 h-5 leading-none text-slate-500 hover:bg-slate-200">×</button>
+              </span>
+            );
+          })}
+          <button type="button" onClick={() => setPicks({})} className="text-xs text-slate-500 underline hover:text-slate-900">clear all</button>
+        </div>
+      )}
 
       <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2">
         {tiles.map((t) => (
@@ -2383,16 +2444,23 @@ const CampaignStatsView = () => {
       </div>
 
       <SignedBars
-        title={`Profit by ${breakdown === 'launch' ? 'launch week' : breakdown}`}
+        title={`Profit by ${STAT_DIMS.find((d) => d.value === breakdown)!.button}`}
         items={breakdownItems}
+        selected={new Set(picks[breakdown] || [])}
+        onToggle={(key) => togglePick(breakdown, key)}
         controls={(
-          <div className="flex gap-1">
-            {(['buyer', 'competitor', 'tracker', 'source', 'country', 'language', 'launch'] as const).map((b) => (
-              <button key={b} type="button" onClick={() => setBreakdown(b)}
-                className={`rounded px-2 py-0.5 text-[11px] ${breakdown === b ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
-                {b === 'launch' ? 'launch week' : b}
+          <div className="flex flex-wrap items-center gap-1">
+            {STAT_DIMS.map((d) => (
+              <button key={d.value} type="button" onClick={() => setBreakdown(d.value)}
+                className={`rounded px-2 py-0.5 text-[11px] ${breakdown === d.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
+                {d.button}{picks[d.value]?.length ? ` (${picks[d.value]!.length})` : ''}
               </button>
             ))}
+            <span className="mx-1 h-4 w-px bg-slate-200" />
+            <button type="button" onClick={() => setPick(breakdown, breakdownItems.map((i) => i.key))}
+              className="rounded px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">All</button>
+            <button type="button" onClick={() => setPick(breakdown, [])}
+              className="rounded px-2 py-0.5 text-[11px] text-slate-600 hover:bg-slate-100">None</button>
           </div>
         )}
       />
