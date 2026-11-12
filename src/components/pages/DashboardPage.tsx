@@ -2341,6 +2341,8 @@ const CampaignStatsView = () => {
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      {/* Period, filters, selections and KPI tiles stay pinned while the page scrolls. */}
+      <div className="sticky top-0 z-20 -mx-4 -mt-4 px-4 pt-4 pb-3 bg-white border-b border-slate-200 shadow-sm flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[10px] font-bold uppercase text-slate-500 mr-1">Period</span>
         {STATS_RANGES.map((r) => (
@@ -2436,6 +2438,7 @@ const CampaignStatsView = () => {
             <div className={`font-mono text-sm font-bold ${t.cls || 'text-slate-900'}`}>{t.value}</div>
           </div>
         ))}
+      </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -2686,7 +2689,8 @@ export const DashboardPage = ({ active = true }: { active?: boolean }) => {
   return (
     <div className="flex h-full w-full flex-col gap-4 p-4 bg-slate-100 overflow-hidden">
       {/* Header */}
-      <div className="bg-white rounded-xl border p-4 shadow-sm flex items-center gap-3 shrink-0 flex-wrap">
+      {/* Campaign Stats has its own header controls — hide the usage header and filters there. */}
+      <div className={`bg-white rounded-xl border p-4 shadow-sm flex items-center gap-3 shrink-0 flex-wrap ${activeTab === 'campaignStats' ? 'hidden' : ''}`}>
         <h2 className="font-bold text-xl">Usage Dashboard</h2>
         <span className="text-xs text-slate-500">{filtered.length} of {rows.length} events</span>
 
@@ -2764,7 +2768,7 @@ export const DashboardPage = ({ active = true }: { active?: boolean }) => {
       </div>
 
       {/* Filters (narrow all views) */}
-      <div className="bg-white rounded-xl border p-4 shadow-sm flex items-end gap-3 shrink-0">
+      <div className={`bg-white rounded-xl border p-4 shadow-sm flex items-end gap-3 shrink-0 ${activeTab === 'campaignStats' ? 'hidden' : ''}`}>
         <div className="flex-1">
           <label className="text-xs font-medium uppercase text-slate-500">Filter by email</label>
           <Input value={emailFilter} onChange={(e) => setEmailFilter(e.target.value)} placeholder="contains…" />
