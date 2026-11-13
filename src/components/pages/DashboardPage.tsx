@@ -1967,38 +1967,59 @@ const DailyProfitChart = ({ days, profit }: { days: string[]; profit: number[] }
   );
 };
 
-// Running profit per group — compares Autozaliv / MEGACLONE / Creatives.
-const KindCompareChart = ({ days, series }: { days: string[]; series: { kind: (typeof KINDS)[number]; cum: number[] }[] }) => {
+const monthLabel = (ym: string) =>
+  new Date(`${ym}-01T00:00:00`).toLocaleString('en-US', { month: 'short', year: 'numeric' }); // "Sep 2026"
+
+const LINE_BLUE = '#2a78d6';
+const fmtShort = (v: number) => Math.round(v).toLocaleString('en-US').replace(/,/g, ' ');
+
+// Profit per month or per week as one line with dots. Few points: every value is written;
+// many points: only the peaks and dips (plus first / last), so labels don't pile up.
+const ProfitLineChart = ({ title, points, controls }: {
+  title: string; points: { key: string; label: string; tick: string; value: number }[]; controls?: ReactNode;
+}) => {
   const [hover, setHover] = useState<number | null>(null);
-  const all = series.flatMap((s) => s.cum);
-  const ticks = niceTicks(Math.min(0, ...all), Math.max(0, ...all));
+  const vals = points.map((p) => p.value);
+  const ticks = niceTicks(Math.min(0, ...vals), Math.max(0, ...vals));
   const lo = ticks[0], hi = ticks[ticks.length - 1];
-  const y = (v: number) => PAD.t + ((hi - v) / (hi - lo)) * (CH_H - PAD.t - PAD.b);
-  const step = (CH_W - PAD.l - PAD.r) / Math.max(1, days.length - 1);
-  const x = (i: number) => PAD.l + step * i;
+  const y = (v: number) => PAD.t + 14 + ((hi - v) / (hi - lo)) * (CH_H - PAD.t - 14 - PAD.b);
+  const n = points.length;
+  const pad = n > 1 ? 18 : (CH_W - PAD.l - PAD.r) / 2;
+  const step = n > 1 ? (CH_W - PAD.l - PAD.r - pad * 2) / (n - 1) : 0;
+  const x = (i: number) => PAD.l + pad + step * i;
+  const labelAll = n <= 12;
+  const isExtreme = (i: number) => i === 0 || i === n - 1
+    || (vals[i] > vals[i - 1] && vals[i] >= vals[i + 1]) || (vals[i] < vals[i - 1] && vals[i] <= vals[i + 1]);
+  const tickEvery = Math.max(1, Math.ceil(n / 8));
   return (
-    <ChartFrame title="Running profit by group" legend={<span className="flex gap-3">{series.map((s) => <LegendItem key={s.kind.value} color={s.kind.color} label={s.kind.label} line />)}</span>}>
+    <ChartFrame title={title} legend={controls}>
       <svg viewBox={`0 0 ${CH_W} ${CH_H}`} className="w-full h-auto"
         onMouseMove={(e) => {
+          if (!n) return;
           const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
           const px = ((e.clientX - r.left) / r.width) * CH_W;
-          setHover(Math.max(0, Math.min(days.length - 1, Math.round((px - PAD.l) / step))));
+          setHover(step ? Math.max(0, Math.min(n - 1, Math.round((px - PAD.l - pad) / step))) : 0);
         }}
         onMouseLeave={() => setHover(null)}>
         <YAxis ticks={ticks} y={y} />
-        {series.map((s) => (
-          <polyline key={s.kind.value} points={s.cum.map((v, i) => `${x(i)},${y(v)}`).join(' ')} fill="none" stroke={s.kind.color} strokeWidth={2} />
-        ))}
-        {hover !== null && (
-          <g pointerEvents="none">
-            <line x1={x(hover)} x2={x(hover)} y1={PAD.t} y2={CH_H - PAD.b} stroke="#898781" strokeDasharray="3 3" />
-            {series.map((s) => <circle key={s.kind.value} cx={x(hover)} cy={y(s.cum[hover])} r={4} fill={s.kind.color} stroke="#fff" strokeWidth={2} />)}
+        {lo < 0 && <line x1={PAD.l} x2={CH_W - PAD.r} y1={y(0)} y2={y(0)} stroke="#c3c2b9" />}
+        {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={PAD.t} y2={CH_H - PAD.b} stroke="#898781" strokeDasharray="3 3" />}
+        <polyline points={points.map((p, i) => `${x(i)},${y(p.value)}`).join(' ')} fill="none" stroke={LINE_BLUE} strokeWidth={2.5} strokeLinejoin="round" />
+        {points.map((p, i) => (
+          <g key={p.key} pointerEvents="none">
+            <circle cx={x(i)} cy={y(p.value)} r={hover === i ? 5.5 : 4} fill={LINE_BLUE} stroke="#fff" strokeWidth={1.5} />
+            {(labelAll || isExtreme(i) || hover === i) && (
+              <text x={x(i)} y={p.value >= 0 || i === hover ? y(p.value) - 9 : y(p.value) + 16} textAnchor="middle" fontSize={10}
+                fontWeight={hover === i ? 700 : 500} fill={p.value < 0 ? NEG : '#334155'}>{fmtShort(p.value)}</text>
+            )}
+            {(i % tickEvery === 0 || i === n - 1) && (
+              <text x={x(i)} y={CH_H - 8} textAnchor="middle" fontSize={10} fill="#898781">{p.tick}</text>
+            )}
           </g>
-        )}
-        <XLabels days={days} x={x} />
+        ))}
       </svg>
       <div className="h-5 text-[11px] text-slate-600 font-mono">
-        {hover !== null && <>{euDay(days[hover])} · {series.map((s) => <span key={s.kind.value} className="mr-3">{s.kind.label} <span className={signCls(s.cum[hover])}>{s.cum[hover].toFixed(2)}</span></span>)}</>}
+        {hover !== null && points[hover] && <>{points[hover].label} · profit <span className={signCls(points[hover].value)}>{points[hover].value.toFixed(2)}</span></>}
       </div>
     </ChartFrame>
   );
@@ -2275,19 +2296,24 @@ const CampaignStatsView = () => {
     return days.map((d) => byDay.get(d) || 0);
   }, [inRange, shownKeys, days]);
 
-  // Group comparison ignores the group pill (it is the comparison) but keeps the search.
-  const kindSeries = useMemo(() => {
-    const keysAll = new Set(campaigns.filter(passes).map((c) => c.key));
-    return KINDS.filter((k) => !k.soon || rows.some((r) => r.kind === k.value)).map((k) => {
-      const byDay = new Map<string, number>();
-      for (const r of inRange) {
-        if (r.kind !== k.value || !keysAll.has(`${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`)) continue;
-        byDay.set(r.day, (byDay.get(r.day) || 0) + r.revenue - r.cost);
-      }
-      let run = 0;
-      return { kind: k, cum: days.map((d) => (run += byDay.get(d) || 0)) };
-    });
-  }, [campaigns, inRange, days, passes, rows]);
+  // Profit per month / week — follows every filter (the group pill included).
+  const [grain, setGrain] = useState<'month' | 'week'>('month');
+  const profitPoints = useMemo(() => {
+    const bucket = (d: string) => (grain === 'month' ? d.slice(0, 7) : weekOf(d));
+    const keys = [...new Set(days.map(bucket))];
+    const sum = new Map<string, number>();
+    for (const r of inRange) {
+      if (!shownKeys.has(`${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`)) continue;
+      const k = bucket(r.day);
+      sum.set(k, (sum.get(k) || 0) + r.revenue - r.cost);
+    }
+    return keys.map((k) => ({
+      key: k,
+      value: sum.get(k) || 0,
+      label: grain === 'month' ? monthLabel(k) : `week of ${euDay(k)}`,
+      tick: grain === 'month' ? monthLabel(k) : euDay(k).slice(0, 5),
+    }));
+  }, [grain, days, inRange, shownKeys]);
 
   const breakdownItems = useMemo(() => {
     const map = new Map<string, { value: number; n: number }>();
@@ -2443,7 +2469,20 @@ const CampaignStatsView = () => {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <DailyProfitChart days={days} profit={dailyProfit} />
-        <KindCompareChart days={days} series={kindSeries} />
+        <ProfitLineChart
+          title={`Profit by ${grain}`}
+          points={profitPoints}
+          controls={(
+            <div className="flex gap-1">
+              {(['month', 'week'] as const).map((g) => (
+                <button key={g} type="button" onClick={() => setGrain(g)}
+                  className={`rounded px-2 py-0.5 text-[11px] ${grain === g ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
+                  {g}
+                </button>
+              ))}
+            </div>
+          )}
+        />
       </div>
 
       <SignedBars
