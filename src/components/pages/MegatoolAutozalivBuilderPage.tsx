@@ -437,8 +437,8 @@ export function MegatoolAutozalivBuilderPage() {
   const [competitor, setCompetitor] = useState('');
   const [source, setSource] = useState('');
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
-  const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'cnt_ads_7d', dir: 'desc' });
-  const [mode, setModeRaw] = useState<ListMode>('volume');
+  const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'score', dir: 'desc' });
+  const [mode, setModeRaw] = useState<ListMode>('signals');
   const [statuses, setStatuses] = useState<string[]>(['rising', 'proven']);
   const [maxParseAge, setMaxParseAge] = useState<number>(14);
   const [selected, setSelected] = useState<Set<string>>(new Set());
