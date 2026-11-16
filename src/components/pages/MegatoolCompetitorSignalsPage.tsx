@@ -10,16 +10,17 @@ const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_COMPETITOR_SIGNALS_URL as string 
 
 const STATUSES = ['rising', 'proven', 'burst', 'dying', 'dead', 'other'] as const;
 const STATUS_INFO: Record<string, { hint: string; color: string }> = {
-  rising: { hint: '5+ ads in the last 7 days, at least double the 7 days before, on 2+ different days, article 21 days old or less', color: 'bg-emerald-100 text-emerald-800' },
+  rising: { hint: '5+ ads in the last 7 days, at least double the 7 days before, on 2+ different days, article 21 days old or less, no missed parses', color: 'bg-emerald-100 text-emerald-800' },
   proven: { hint: 'Article 14+ days old and 3+ new ads in the last 7 days', color: 'bg-blue-100 text-blue-800' },
   burst: { hint: '5+ ads in the last 7 days, all on one day: a mass launch, not yet proof of anything', color: 'bg-amber-100 text-amber-800' },
   dying: { hint: '5+ ads, none new in the last 7 days', color: 'bg-orange-100 text-orange-800' },
   dead: { hint: 'No new ads for more than 14 days before the last parse', color: 'bg-slate-200 text-slate-600' },
-  other: { hint: 'None of the above', color: 'bg-slate-100 text-slate-500' },
+  other: { hint: 'None of the above (or "rising" with a missed parse, which can fake growth)', color: 'bg-slate-100 text-slate-500' },
 };
 
 const COLUMNS: { key: string; label: string; hint?: string; sortable?: boolean }[] = [
   { key: 'status', label: 'status' },
+  { key: 'score', label: 'score', hint: '3×launch days + 2×wk -1 + growth vs wk -2 + geos (max 5); proven +5, burst −5', sortable: true },
   { key: 'competitor', label: 'competitor' },
   { key: 'article', label: 'article' },
   { key: 'ads', label: 'ads', sortable: true },
@@ -37,14 +38,16 @@ const COLUMNS: { key: string; label: string; hint?: string; sortable?: boolean }
 ];
 
 type Sort = { key: string; dir: 'asc' | 'desc' };
-type Result = { headers: string[]; rows: string[][]; total: number; summary: [string, string, number, string, number][] };
+// summary: competitor, last parse, ads in it, status, articles, days since the parse, parse coverage ok
+type Result = { headers: string[]; rows: string[][]; total: number; summary: [string, string, number, string, number, number, boolean][] };
 
 export function MegatoolCompetitorSignalsPage() {
   const [competitor, setCompetitor] = useState('');
   const [status, setStatus] = useState('');
   const [search, setSearch] = useState('');
   const [minAds, setMinAds] = useState('3');
-  const [sort, setSort] = useState<Sort>({ key: 'w1', dir: 'desc' });
+  const [sort, setSort] = useState<Sort>({ key: 'score', dir: 'desc' });
+  const [maxParseAge, setMaxParseAge] = useState(0); // 0 = any
   const [data, setData] = useState<Result>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -57,7 +60,7 @@ export function MegatoolCompetitorSignalsPage() {
     setError(undefined);
     try {
       const res = await post(WEBHOOK, 'PUBLIC_WEBHOOK_COMPETITOR_SIGNALS_URL', {
-        action: 'signals', competitor, status, search, sort, minAds: Number(minAds) || 3, is_admin: await getIsAdmin(),
+        action: 'signals', competitor, status, search, sort, minAds: Number(minAds) || 3, maxParseAge, is_admin: await getIsAdmin(),
       }, 60_000);
       if (no === requestNo.current) setData(res);
     } catch (e: any) {
@@ -69,13 +72,13 @@ export function MegatoolCompetitorSignalsPage() {
   useEffect(() => {
     const t = setTimeout(load, 300);
     return () => clearTimeout(t);
-  }, [competitor, status, search, minAds, sort]);
+  }, [competitor, status, search, minAds, sort, maxParseAge]);
 
   // competitor -> last parse, ads in that parse, articles per status
   const byCompetitor = useMemo(() => {
-    const out: Record<string, { lastParse: string; parseAds: number; counts: Record<string, number> }> = {};
-    for (const [name, lastParse, parseAds, st, n] of data?.summary || []) {
-      out[name] ??= { lastParse, parseAds, counts: {} };
+    const out: Record<string, { lastParse: string; parseAds: number; parseAge: number; coverageOk: boolean; counts: Record<string, number> }> = {};
+    for (const [name, lastParse, parseAds, st, n, parseAge, coverageOk] of data?.summary || []) {
+      out[name] ??= { lastParse, parseAds, parseAge, coverageOk, counts: {} };
       out[name].counts[st] = n;
     }
     return out;
@@ -90,7 +93,7 @@ export function MegatoolCompetitorSignalsPage() {
       <div className="m-4 mb-2 flex min-h-0 flex-1 flex-col gap-3 rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
         <div className="flex items-center gap-2">
           <span className="whitespace-nowrap font-semibold text-slate-800">Competitor Signals</span>
-          <span>— Adheart ads grouped by article. Weeks count back from each competitor's last parse. Test data: rules may change.</span>
+          <span>— Adheart ads of the last 28 days, grouped by article. Weeks count back from each competitor's last parse. Same data as the Builder's "By signals" mode.</span>
           <Button size="sm" variant="outline" className="ml-auto h-7" onClick={load} disabled={busy}>{busy ? 'Loading…' : '↻ Refresh'}</Button>
         </div>
 
@@ -110,7 +113,11 @@ export function MegatoolCompetitorSignalsPage() {
                   <td className="px-2 py-1">
                     <button type="button" className="font-medium text-slate-800 hover:underline" onClick={() => setCompetitor(competitor === name ? '' : name)}>{name}</button>
                   </td>
-                  <td className="whitespace-nowrap px-2 py-1">{c.lastParse}</td>
+                  <td className="whitespace-nowrap px-2 py-1">
+                    {c.lastParse}
+                    <span className={`ml-1 ${c.parseAge > 10 ? 'font-medium text-red-600' : 'text-slate-400'}`} title="Days since this parse">({c.parseAge}d)</span>
+                    {!c.coverageOk && <span className="ml-1 text-amber-600" title="Some days of week -2 were never parsed: growth can't be confirmed, so no 'rising' for this competitor">⚠ gaps</span>}
+                  </td>
                   <td className="px-2 py-1">{c.parseAds}</td>
                   {STATUSES.map((s) => (
                     <td key={s} className="px-2 py-1 text-right">
@@ -154,6 +161,12 @@ export function MegatoolCompetitorSignalsPage() {
           <label className="flex items-center gap-1" title="Hide articles with fewer ads">
             Min ads
             <Input type="number" min={1} value={minAds} onChange={(e) => setMinAds(e.target.value)} className="h-8 w-20 bg-white" />
+          </label>
+          <label className="flex items-center gap-1" title="Hide competitors whose last parse is older than this">
+            Parsed within
+            <select value={maxParseAge} onChange={(e) => setMaxParseAge(Number(e.target.value))} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
+              {[0, 7, 10, 14, 21].map((d) => <option key={d} value={d}>{d ? `${d} days` : 'any time'}</option>)}
+            </select>
           </label>
           {data && <span className="ml-auto text-slate-500">Showing {data.rows.length} of {data.total} articles</span>}
         </div>

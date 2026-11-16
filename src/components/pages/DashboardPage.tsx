@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import axios from 'axios';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -1523,6 +1523,11 @@ interface AutozalivCampaignRow {
   account: string;
   article: string;
   tracker?: string;
+  // how the article was picked in Builder step 1, frozen at launch; empty on campaigns launched before 2026-11-16
+  pick_mode?: string;   // volume | signals
+  pick_status?: string; // signals status: rising / proven / burst / dying / dead / other
+  pick_score?: string;
+  pick_info?: string;   // the numbers behind the status, e.g. "w1=40 w2=312 …"
   // filled twice a week by the MEGATOOL Autozaliv Profit workflow; null = not counted yet
   clicks?: number | null;
   leads?: number | null;
@@ -1534,7 +1539,21 @@ interface AutozalivCampaignRow {
 
 const fmtMoney = (v: number | null | undefined) => (v == null ? '' : v.toFixed(2));
 
-type AzRow = AutozalivCampaignRow & { competitor: string };
+type AzRow = AutozalivCampaignRow & { competitor: string; pick: string };
+// One label per pick: 'volume', a signals status ('proven'…), or '' = unknown (launched before tracking)
+const pickOf = (r: AutozalivCampaignRow) =>
+  r.pick_mode === 'signals' ? r.pick_status || 'signals' : r.pick_mode === 'volume' ? 'volume' : '';
+const PICK_COLORS: Record<string, string> = {
+  rising: 'bg-emerald-100 text-emerald-800', proven: 'bg-blue-100 text-blue-800', burst: 'bg-amber-100 text-amber-800',
+  dying: 'bg-orange-100 text-orange-800', dead: 'bg-slate-200 text-slate-600', volume: 'bg-violet-100 text-violet-800',
+};
+const PICK_FILTERS = ['all', 'volume', 'rising', 'proven', 'burst', 'dying', 'dead', 'other', 'unknown'];
+const PickBadge = ({ r }: { r: AzRow }) =>
+  r.pick ? (
+    <span title={r.pick_info} className={`rounded px-1.5 py-0.5 text-[11px] font-medium whitespace-nowrap ${PICK_COLORS[r.pick] || 'bg-slate-100 text-slate-600'}`}>
+      {r.pick}{r.pick_score ? ` · ${r.pick_score}` : ''}
+    </span>
+  ) : <span className="text-slate-400">—</span>;
 const profitCls = (v: number | null | undefined) => `font-bold ${(v ?? 0) < 0 ? 'text-red-600' : 'text-green-700'}`;
 // Campaigns table columns: `key` is also the sort field.
 const AZ_COLUMNS: { key: string; label: string; right?: boolean; cls?: (r: AzRow) => string; cell: (r: AzRow) => ReactNode }[] = [
@@ -1550,6 +1569,7 @@ const AZ_COLUMNS: { key: string; label: string; right?: boolean; cls?: (r: AzRow
     <div className="text-slate-600 max-w-[360px] truncate" title={r.binom_campaign_name}>{r.binom_campaign_name}</div>
   </>) },
   { key: 'competitor', label: 'Competitor', cell: (r) => r.competitor },
+  { key: 'pick', label: 'Picked by', cell: (r) => <PickBadge r={r} /> },
   { key: 'buyer', label: 'Buyer', cell: (r) => r.buyer },
   { key: 'account', label: 'Account', cell: (r) => r.account },
   { key: 'tracker', label: 'Tracker', cell: (r) => r.tracker },
@@ -1577,6 +1597,7 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
   const [sourceFilter, setSourceFilter] = useState<'all' | 'nb' | 'fb'>('all');
   const [emailFilter, setEmailFilter] = useState('');
   const [competitorFilter, setCompetitorFilter] = useState('');
+  const [pickFilter, setPickFilter] = useState('all');
   const [view, setView] = useState<'campaigns' | 'competitors'>('campaigns');
 
   const load = useCallback(async () => {
@@ -1612,9 +1633,10 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
       (!until || r.created_at <= until) &&
       (sourceFilter === 'all' || r.source === sourceFilter) &&
       (!emailQ || r.email.toLowerCase().includes(emailQ)) &&
-      (!competitorQ || competitorOfBinomName(r.binom_campaign_name).toLowerCase().includes(competitorQ)),
+      (!competitorQ || competitorOfBinomName(r.binom_campaign_name).toLowerCase().includes(competitorQ)) &&
+      (pickFilter === 'all' || (pickOf(r) || 'unknown') === pickFilter),
     );
-  }, [rows, since, until, sourceFilter, emailFilter, competitorFilter]);
+  }, [rows, since, until, sourceFilter, emailFilter, competitorFilter, pickFilter]);
 
   const users = useMemo(() => new Set(filtered.map((r) => r.email).filter(Boolean)).size, [filtered]);
 
@@ -1658,26 +1680,37 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
   });
   const visibleCols = AZ_COLUMNS.filter((c) => !hiddenCols.includes(c.key));
   const campaignRows = useMemo(
-    () => filtered.map((r) => ({ ...r, competitor: competitorOfBinomName(r.binom_campaign_name) })),
+    () => filtered.map((r) => ({ ...r, competitor: competitorOfBinomName(r.binom_campaign_name), pick: pickOf(r) })),
     [filtered],
   );
 
+  // Per competitor, plus one sub-row per pick (volume / rising / proven … / unknown) to compare how each pick paid off.
   const byCompetitor = useMemo(() => {
     type Agg = { competitor: string; campaigns: number; clicks: number | null; leads: number | null; revenue: number | null; spend: number | null; profit: number | null };
-    const map = new Map<string, Agg>();
+    const empty = (competitor: string): Agg => ({ competitor, campaigns: 0, clicks: null, leads: null, revenue: null, spend: null, profit: null });
+    const map = new Map<string, Agg & { picks: Map<string, Agg> }>();
     const add = (a: number | null, v: number | null | undefined) => (v == null ? a : (a || 0) + v);
-    for (const r of filtered) {
-      const c = competitorOfBinomName(r.binom_campaign_name);
-      const g = map.get(c) || { competitor: c, campaigns: 0, clicks: null, leads: null, revenue: null, spend: null, profit: null };
+    const addRow = (g: Agg, r: AutozalivCampaignRow) => {
       g.campaigns += 1;
       g.clicks = add(g.clicks, r.clicks);
       g.leads = add(g.leads, r.leads);
       g.revenue = add(g.revenue, r.revenue);
       g.spend = add(g.spend, r.spend);
       g.profit = add(g.profit, r.profit);
+    };
+    for (const r of filtered) {
+      const c = competitorOfBinomName(r.binom_campaign_name);
+      const g = map.get(c) || { ...empty(c), picks: new Map<string, Agg>() };
+      addRow(g, r);
+      const p = pickOf(r) || 'unknown';
+      const sub = g.picks.get(p) || empty(p);
+      addRow(sub, r);
+      g.picks.set(p, sub);
       map.set(c, g);
     }
-    return [...map.values()].sort((a, b) => b.campaigns - a.campaigns);
+    return [...map.values()]
+      .map((g) => ({ ...g, pickRows: [...g.picks.values()].sort((a, b) => b.campaigns - a.campaigns) }))
+      .sort((a, b) => b.campaigns - a.campaigns);
   }, [filtered]);
 
   if (status === 'error') {
@@ -1717,7 +1750,13 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
           <label className="text-[10px] font-bold uppercase text-slate-500 block">Competitor</label>
           <Input value={competitorFilter} onChange={(e) => setCompetitorFilter(e.target.value)} placeholder="contains…" />
         </div>
-        <Button variant="ghost" size="sm" onClick={() => { setSourceFilter('all'); setEmailFilter(''); setCompetitorFilter(''); }}>Clear</Button>
+        <div>
+          <label className="text-[10px] font-bold uppercase text-slate-500 block" title="How the article was picked in the Builder (By volume, or By signals with its status). Unknown = launched before tracking started.">Picked by</label>
+          <select value={pickFilter} onChange={(e) => setPickFilter(e.target.value)} className="text-sm border rounded-md px-2 py-1 bg-white capitalize">
+            {PICK_FILTERS.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => { setSourceFilter('all'); setEmailFilter(''); setCompetitorFilter(''); setPickFilter('all'); }}>Clear</Button>
         <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
           {status === 'loading' ? 'Loading…' : 'Refresh'}
         </Button>
@@ -1770,19 +1809,41 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
           </thead>
           <tbody>
             {sortBy(byCompetitor).map((g) => (
-              <tr key={g.competitor} className="border-b border-slate-100">
-                <td className="py-1.5 px-3 text-xs">
-                  {g.competitor ? (
-                    <button type="button" className="hover:underline" onClick={() => { setCompetitorFilter(g.competitor); setView('campaigns'); }}>{g.competitor}</button>
-                  ) : <span className="text-slate-400 italic">blank</span>}
-                </td>
-                <td className="py-1.5 px-3 text-xs text-right font-mono">{g.campaigns}</td>
-                <td className="py-1.5 px-3 text-xs text-right font-mono">{g.clicks ?? ''}</td>
-                <td className="py-1.5 px-3 text-xs text-right font-mono">{g.leads ?? ''}</td>
-                <td className="py-1.5 px-3 text-xs text-right font-mono">{fmtMoney(g.revenue)}</td>
-                <td className="py-1.5 px-3 text-xs text-right font-mono">{fmtMoney(g.spend)}</td>
-                <td className={`py-1.5 px-3 text-xs text-right font-mono font-bold ${(g.profit ?? 0) < 0 ? 'text-red-600' : 'text-green-700'}`}>{fmtMoney(g.profit)}</td>
-              </tr>
+              <Fragment key={g.competitor}>
+                <tr className="border-b border-slate-100">
+                  <td className="py-1.5 px-3 text-xs">
+                    {g.competitor ? (
+                      <button type="button" className="hover:underline" onClick={() => { setCompetitorFilter(g.competitor); setView('campaigns'); }}>{g.competitor}</button>
+                    ) : <span className="text-slate-400 italic">blank</span>}
+                  </td>
+                  <td className="py-1.5 px-3 text-xs text-right font-mono">{g.campaigns}</td>
+                  <td className="py-1.5 px-3 text-xs text-right font-mono">{g.clicks ?? ''}</td>
+                  <td className="py-1.5 px-3 text-xs text-right font-mono">{g.leads ?? ''}</td>
+                  <td className="py-1.5 px-3 text-xs text-right font-mono">{fmtMoney(g.revenue)}</td>
+                  <td className="py-1.5 px-3 text-xs text-right font-mono">{fmtMoney(g.spend)}</td>
+                  <td className={`py-1.5 px-3 text-xs text-right font-mono font-bold ${(g.profit ?? 0) < 0 ? 'text-red-600' : 'text-green-700'}`}>{fmtMoney(g.profit)}</td>
+                </tr>
+                {g.pickRows.map((p) => (
+                  <tr key={`${g.competitor}|${p.competitor}`} className="border-b border-slate-50 text-slate-500">
+                    <td className="py-1 pl-8 pr-3 text-[11px]">
+                      <button
+                        type="button"
+                        title="Show these campaigns"
+                        className={`rounded px-1.5 py-0.5 font-medium ${PICK_COLORS[p.competitor] || 'bg-slate-100 text-slate-500'}`}
+                        onClick={() => { setCompetitorFilter(g.competitor); setPickFilter(p.competitor); setView('campaigns'); }}
+                      >
+                        {p.competitor}
+                      </button>
+                    </td>
+                    <td className="py-1 px-3 text-[11px] text-right font-mono">{p.campaigns}</td>
+                    <td className="py-1 px-3 text-[11px] text-right font-mono">{p.clicks ?? ''}</td>
+                    <td className="py-1 px-3 text-[11px] text-right font-mono">{p.leads ?? ''}</td>
+                    <td className="py-1 px-3 text-[11px] text-right font-mono">{fmtMoney(p.revenue)}</td>
+                    <td className="py-1 px-3 text-[11px] text-right font-mono">{fmtMoney(p.spend)}</td>
+                    <td className={`py-1 px-3 text-[11px] text-right font-mono ${(p.profit ?? 0) < 0 ? 'text-red-600' : 'text-green-700'}`}>{fmtMoney(p.profit)}</td>
+                  </tr>
+                ))}
+              </Fragment>
             ))}
           </tbody>
         </table>
