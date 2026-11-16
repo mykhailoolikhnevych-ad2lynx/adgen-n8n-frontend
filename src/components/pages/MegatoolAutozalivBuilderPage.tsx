@@ -65,6 +65,32 @@ const ARTICLE_COLS = [
   'top_language_for_article', 'main_adheart_geo', 'avg_duration', 'max_launch_date',
 ];
 const EXAMPLE_COLS = ['examp_creative_title', 'examp_creative_subtext'];
+
+// Step 1 "Signals" mode (Postgres only): articles from rsoc.autozaliv_article_signals — Adheart ads of the last 28 days
+// before each competitor's last parse, ranked by status + score instead of ad count. Rules: compute_signals() in schema.sql.
+type ListMode = 'volume' | 'signals';
+const SIGNAL_COLS = ['status', 'score', 'cnt_ads', 'live', 'week -3', 'week -2', 'week -1', 'launch_days', 'age_days',
+  'parse_age', 'top_language_for_article', 'main_adheart_geo', 'max_launch_date'];
+const SIGNAL_STATUSES = ['rising', 'proven', 'burst', 'dying', 'dead', 'other'] as const;
+const SIGNAL_INFO: Record<string, { hint: string; color: string }> = {
+  rising: { hint: '5+ ads in the last 7 days, at least double the 7 days before, on 2+ days, article ≤ 21 days old, no missed parses', color: 'bg-emerald-100 text-emerald-800' },
+  proven: { hint: 'Article 14+ days old and still 3+ new ads in the last 7 days', color: 'bg-blue-100 text-blue-800' },
+  burst: { hint: '5+ ads in the last 7 days, all on one day: a mass launch, not yet proof', color: 'bg-amber-100 text-amber-800' },
+  dying: { hint: '5+ ads, none new in the last 7 days', color: 'bg-orange-100 text-orange-800' },
+  dead: { hint: 'No new ads for more than 14 days before the last parse', color: 'bg-slate-200 text-slate-600' },
+  other: { hint: 'None of the above (or "rising" with a missed parse, which can fake growth)', color: 'bg-slate-100 text-slate-500' },
+};
+const SIGNAL_HINTS: Record<string, string> = {
+  score: '3×launch days + 2×wk -1 + growth vs wk -2 + geos (max 5); proven +5, burst −5',
+  live: 'Ads active in the latest parse',
+  'week -1': 'Ads placed in the 7 days before the last parse',
+  'week -2': 'Ads placed 7–13 days before the last parse',
+  'week -3': 'Ads placed 14–20 days before the last parse',
+  launch_days: 'Different days with new ads in the last 7 days',
+  age_days: 'Days from the first ad (28-day window) to the last parse',
+  parse_age: "Days since the competitor's last parse — older data is a stale picture",
+};
+const PARSE_AGES = [7, 10, 14, 21, 0] as const; // 0 = any
 const NOT_USED = 'Don`t use yet';
 
 // Same as trimArticleName() in the Apps Script.
@@ -412,6 +438,9 @@ export function MegatoolAutozalivBuilderPage() {
   const [source, setSource] = useState('');
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [sort, setSort] = useState<{ key: string; dir: 'asc' | 'desc' }>({ key: 'cnt_ads_7d', dir: 'desc' });
+  const [mode, setModeRaw] = useState<ListMode>('volume');
+  const [statuses, setStatuses] = useState<string[]>(['rising', 'proven']);
+  const [maxParseAge, setMaxParseAge] = useState<number>(14);
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Step 2 — ads
@@ -544,7 +573,10 @@ export function MegatoolAutozalivBuilderPage() {
       cells: Object.fromEntries(articles.headers.map((h, i) => [h, r[i] ?? ''])) as Row,
     })).map((a) => ({ ...a, competitor: competitorOf(competitors, a.cells) }));
   }, [articles, usedMap, competitors]);
-  const cols = useMemo(() => ARTICLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
+  const cols = useMemo(
+    () => (articles?.headers.includes('score') ? SIGNAL_COLS : ARTICLE_COLS).filter((c) => articles?.headers.includes(c)),
+    [articles],
+  );
   const exampleCols = useMemo(() => EXAMPLE_COLS.filter((c) => articles?.headers.includes(c)), [articles]);
   // On Postgres only a page of articles is loaded: every row seen stays here, so selected articles keep their
   // data (geo, language, landing…) for steps 2–6 after a filter change reloads the list.
@@ -603,10 +635,19 @@ export function MegatoolAutozalivBuilderPage() {
   const [total, setTotal] = useState<number | null>(null);
   const pageReq = useRef(0); // only the newest request may update the list
   const listRef = useRef<HTMLDivElement>(null);
+  const signals = mode === 'signals';
+  // the two lists hold different rows: switching clears the selection, and sort falls back to each mode's default
+  const setMode = (m: ListMode) => {
+    if (m === mode) return;
+    setModeRaw(m);
+    setSelected(new Set());
+    setSort(m === 'signals' ? { key: 'score', dir: 'desc' } : { key: 'cnt_ads_7d', dir: 'desc' });
+  };
   const pgFilters = {
+    ...(signals ? { mode, statuses, maxParseAge } : {}),
     search: search.trim(),
     competitor,
-    source,
+    source: signals ? '' : source,
     lang: lang.trim(),
     // geo is typed as alpha-2 ("US"); the data mixes US / USA, so send every raw value that maps to it
     geos: geo.trim() ? rawGeos.filter((g) => geoOf(g).startsWith(geo.trim().toUpperCase())) : undefined,
@@ -685,14 +726,28 @@ export function MegatoolAutozalivBuilderPage() {
 
   const selectedList = useMemo(() => [...selected].sort(), [selected]);
 
+  // Why the article was picked, frozen at launch (statuses change every parse) → autozaliv_campaigns pick_* columns.
+  // Signals rows carry 'score'; switching the list mode clears the selection, so the row's own shape tells the mode.
+  const pickOf = (name: string) => {
+    const c: Row = cellsSeen[name] || articleByTrimmed[trimArticle(name)] || {};
+    if (c.score === undefined) {
+      return { pickMode: 'volume', pickStatus: '', pickScore: '', pickInfo: `ads=${c.cnt_ads || ''} 7d=${c.cnt_ads_7d || ''} 14d=${c.cnt_ads_14d || ''}` };
+    }
+    return {
+      pickMode: 'signals', pickStatus: c.status || '', pickScore: c.score || '',
+      pickInfo: `w1=${c['week -1']} w2=${c['week -2']} w3=${c['week -3']} days=${c.launch_days} ads=${c.cnt_ads} live=${c.live} age=${c.age_days} parse_age=${c.parse_age}`,
+    };
+  };
+
   const goToAds = async () => {
     setStep(2);
-    const key = selectedList.join('\n');
+    const key = mode + '\n' + selectedList.join('\n');
     if (key === adsFor && ads) return;
     setAdsLoading(true);
     setAdsError(null);
     try {
-      setAds(await callBuilder({ action: 'ads', articles: selectedList }));
+      // signals: Adheart ads of the 28-day window, not only the latest parse
+      setAds(await callBuilder({ action: 'ads', articles: selectedList, ...(signals ? { mode } : {}) }));
       setAdsFor(key);
     } catch (e: any) {
       setAdsError(e.message);
@@ -1198,7 +1253,7 @@ export function MegatoolAutozalivBuilderPage() {
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id,
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
           email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
-          tracker: binom[g.name]?.tracker || '',
+          tracker: binom[g.name]?.tracker || '', ...pickOf(g.name),
         }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setNb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
@@ -1303,7 +1358,7 @@ export function MegatoolAutozalivBuilderPage() {
           action: 'mark-used', article: g.name, nbCampaignId: used.nb_campaign_id, source: 'fb',
           binomCampaignId: binom[g.name]?.campaignId, buyer: used.buyer, nbAccount: used.nb_account,
           email: ident?.email || '', campaignName: logMeta.campaignName, binomCampaignName: binom[g.name]?.campaignName || '',
-          tracker: binom[g.name]?.tracker || '',
+          tracker: binom[g.name]?.tracker || '', ...pickOf(g.name),
         }))
           .then(() => setUsedMap((m) => ({ ...m, [trimArticle(g.name)]: used })))
           .catch((err: any) => setFb((s) => ({ ...s, [g.name]: { ...s[g.name], error: `Created, but not marked as used: ${err.message}` } })));
@@ -1377,6 +1432,48 @@ export function MegatoolAutozalivBuilderPage() {
 
       {step === 1 && (
         <>
+          {PG_WEBHOOK && (
+            <div className="flex flex-wrap items-center gap-2 px-4 pb-2 text-sm">
+              <div className="flex overflow-hidden rounded border border-slate-200" title="Volume: latest parse, ranked by ad count. Signals: Adheart ads of the last 28 days, ranked by how the article grows.">
+                {(['volume', 'signals'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMode(m)}
+                    className={`px-3 py-1 text-xs font-semibold capitalize ${mode === m ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                  >
+                    {m === 'volume' ? 'By volume' : 'By signals'}
+                  </button>
+                ))}
+              </div>
+              {signals && (
+                <>
+                  <div className="flex gap-1">
+                    {SIGNAL_STATUSES.map((s) => {
+                      const on = statuses.includes(s);
+                      return (
+                        <button
+                          key={s}
+                          type="button"
+                          title={SIGNAL_INFO[s].hint}
+                          onClick={() => setStatuses((l) => (on ? l.filter((x) => x !== s) : [...l, s]))}
+                          className={`h-7 rounded border px-2 text-xs capitalize ${on ? `border-transparent ${SIGNAL_INFO[s].color} font-semibold` : 'border-slate-200 bg-white text-slate-400'}`}
+                        >
+                          {s}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <label className="flex items-center gap-1.5 text-xs text-slate-600" title="Hide competitors whose last parse is older than this: their statuses describe the past">
+                    Parsed within
+                    <select value={maxParseAge} onChange={(e) => setMaxParseAge(Number(e.target.value))} className="h-7 rounded border border-slate-200 bg-white px-1 text-xs">
+                      {PARSE_AGES.map((d) => <option key={d} value={d}>{d ? `${d} days` : 'any time'}</option>)}
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 px-4 pb-2">
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search article…" className="h-8 w-64 bg-white" />
             <label className="flex items-center gap-1.5 text-sm text-slate-700">
@@ -1406,7 +1503,7 @@ export function MegatoolAutozalivBuilderPage() {
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
-            {sources.length > 0 && (
+            {sources.length > 0 && !signals && (
               <select value={source} onChange={(e) => setSource(e.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm">
                 <option value="">All sources</option>
                 {sources.map((s) => (
@@ -1453,7 +1550,7 @@ export function MegatoolAutozalivBuilderPage() {
                     ))}
                     <th className="px-2 py-2 whitespace-nowrap">landing</th>
                     {cols.map((c) => (
-                      <SortTh key={c} label={c.replace(/_/g, ' ')} k={c} sort={sort} onSort={sortBy} />
+                      <SortTh key={c} label={c.replace(/_/g, ' ')} k={c} sort={sort} onSort={sortBy} hint={SIGNAL_HINTS[c]} />
                     ))}
                   </tr>
                 </thead>
@@ -1515,9 +1612,28 @@ export function MegatoolAutozalivBuilderPage() {
                       <td className="px-2 py-1 max-w-[200px] truncate text-xs">
                         <LandingLink url={a.cells.examp_landing_page} />
                       </td>
-                      {cols.map((c) => (
-                        <td key={c} className="px-2 py-1 whitespace-nowrap text-slate-700">{a.cells[c]}</td>
-                      ))}
+                      {cols.map((c) => {
+                        if (c === 'status') {
+                          const info = SIGNAL_INFO[a.cells.status] || SIGNAL_INFO.other;
+                          // only where it changed the status: growth looks like 'rising', but some days of week -2 were never parsed
+                          const blocked = a.cells.rising_blocked === 'true';
+                          return (
+                            <td key={c} className="px-2 py-1 whitespace-nowrap">
+                              <span title={info.hint} className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${info.color}`}>{a.cells.status}</span>
+                              {blocked && <span title="Looks like 'rising', but some days of week -2 were never parsed, so the growth can't be confirmed" className="ml-1 text-amber-600">⚠ rising?</span>}
+                            </td>
+                          );
+                        }
+                        if (c === 'parse_age') {
+                          const d = Number(a.cells.parse_age);
+                          return (
+                            <td key={c} title={`Last parse ${a.cells.last_parse}`} className={`px-2 py-1 whitespace-nowrap ${d > 10 ? 'text-red-600 font-medium' : 'text-slate-700'}`}>
+                              {a.cells.parse_age}d
+                            </td>
+                          );
+                        }
+                        return <td key={c} className="px-2 py-1 whitespace-nowrap text-slate-700">{a.cells[c]}</td>;
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -2439,9 +2555,9 @@ function StepPill({ n, label, active, disabled, onClick }: { n: number; label: s
   );
 }
 
-function SortTh({ label, k, sort, onSort }: { label: string; k: string; sort: { key: string; dir: string }; onSort: (k: string) => void }) {
+function SortTh({ label, k, sort, onSort, hint }: { label: string; k: string; sort: { key: string; dir: string }; onSort: (k: string) => void; hint?: string }) {
   return (
-    <th className="px-2 py-2 whitespace-nowrap cursor-pointer select-none hover:text-gray-800" onClick={() => onSort(k)}>
+    <th title={hint} className="px-2 py-2 whitespace-nowrap cursor-pointer select-none hover:text-gray-800" onClick={() => onSort(k)}>
       {label}
       {sort.key === k ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : ''}
     </th>
