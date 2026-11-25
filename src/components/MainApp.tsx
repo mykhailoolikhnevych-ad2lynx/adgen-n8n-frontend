@@ -22,6 +22,7 @@ import { MegatoolNbCopierPage } from './pages/MegatoolNbCopierPage';
 import { MegatoolAutozalivBuilderPage } from './pages/MegatoolAutozalivBuilderPage';
 import { MegatoolParseAdheartPage } from './pages/MegatoolParseAdheartPage';
 import { MegatoolCompetitorSignalsPage } from './pages/MegatoolCompetitorSignalsPage';
+import { MegatoolFbRejectsPage } from './pages/MegatoolFbRejectsPage';
 import { TooltipProvider } from './ui/tooltip';
 import { getRole, hasRole, type Role } from '@/lib/roles';
 
@@ -30,11 +31,13 @@ type Page = 'creative-gen' | 'creative-edit' | 'keywords' | 'angles' | 'article'
 // MEGATOOL — single-tool mode. Each entry is a self-contained "megatool" page;
 // when megatool mode is ON we hide the regular pipeline nav and render the
 // active megatool here. Adding a second tool = append to this list.
-type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier' | 'autozaliv-builder' | 'parse-adheart' | 'competitor-signals';
+type MegatoolPage = 'fb-campaign-reader' | 'create-binom-offer' | 'create-nb-campaign' | 'nb-copier' | 'autozaliv-builder' | 'parse-adheart' | 'competitor-signals' | 'fb-rejects';
 const MEGATOOL_NAV: { value: MegatoolPage; label: string; adminOnly?: boolean }[] = [
   { value: 'fb-campaign-reader', label: 'FB Campaign Reader' },
   { value: 'nb-copier', label: 'Newsbreak Copier' },
   { value: 'autozaliv-builder', label: 'Autozaliv Builder' },
+  // each user watches their own FB ad accounts: rejected ads -> 🌸 neutral flowers -> deleted once approved
+  { value: 'fb-rejects', label: 'FB Rejects', adminOnly: true },
   // admin-only: writes competitors and the parsed ads (Postgres / source spreadsheet)
   { value: 'parse-adheart', label: 'Parse Adheart', adminOnly: true },
   // admin-only test tab: article progression from the Adheart ads (read-only)
@@ -516,6 +519,11 @@ export default function MainApp() {
           <KeepAlive active={megatool && !overlayPage && megatoolPage === 'autozaliv-builder'}>
             <MegatoolAutozalivBuilderPage />
           </KeepAlive>
+          {isAdmin && (
+            <KeepAlive active={megatool && !overlayPage && megatoolPage === 'fb-rejects'}>
+              <MegatoolFbRejectsPage />
+            </KeepAlive>
+          )}
           <KeepAlive active={megatool && !overlayPage && megatoolPage === 'parse-adheart'}>
             <MegatoolParseAdheartPage />
           </KeepAlive>
