@@ -114,6 +114,13 @@ const TRANSLATE_WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_TRANSLATE_URL as string
 
 type Mode = 'image' | 'approach' | 'unique';
 
+// Change Image takes up to MAX_IMAGES banners; each one is a separate call to
+// the same single-image webhook. The other modes only ever use the first image.
+const MAX_IMAGES = 3;
+type TextField = 'hook' | 'accent' | 'cta';
+type Texts = Record<TextField, string>;
+const EMPTY_TEXTS: Texts = { hook: '', accent: '', cta: '' };
+
 const fileToDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -129,6 +136,8 @@ const fileToDataUrl = (file: File): Promise<string> =>
 interface ResultItem {
   url: string;
   fileName?: string;
+  /** 1-based source image number, set only for multi-image runs. */
+  source?: number;
   /** Feedback context snapshot — undefined only for legacy code paths that
    *  can't build it (there are none currently; kept optional for safety). */
   feedback?: FeedbackContext;
@@ -160,8 +169,14 @@ interface ApproachResult {
 export const CreativeEditPage = () => {
   const [mode, setMode] = useState<Mode>('image');
 
-  const [file, setFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
+  const file = files[0] ?? null;
+  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
+  // Per-image Hook/Accent/CTA (aligned with `files`), used for a field whose
+  // "Same for all" box is unticked. Ticked fields use hook/accent/cta below.
+  const [perImage, setPerImage] = useState<Texts[]>([]);
+  const [same, setSame] = useState<Record<TextField, boolean>>({ hook: true, accent: true, cta: true });
+  const [pendingCount, setPendingCount] = useState(0);
   const [hook, setHook] = useState('');
   const [accent, setAccent] = useState('');
   const [cta, setCta] = useState('');
@@ -200,114 +215,142 @@ export const CreativeEditPage = () => {
   const [uniqueError, setUniqueError] = useState<string | null>(null);
   const [uniqueResults, setUniqueResults] = useState<UniqueCopy[]>([]);
 
-  const prevPreviewUrl = useRef<string | null>(null);
   const dragCounter = useRef(0);
 
   useEffect(() => {
-    if (prevPreviewUrl.current) {
-      URL.revokeObjectURL(prevPreviewUrl.current);
-    }
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setPreviewUrl(url);
-      prevPreviewUrl.current = url;
-    } else {
-      setPreviewUrl(null);
-      prevPreviewUrl.current = null;
-    }
+    const urls = files.map((f) => URL.createObjectURL(f));
+    setPreviewUrls(urls);
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [files]);
 
-    return () => {
-      if (prevPreviewUrl.current) {
-        URL.revokeObjectURL(prevPreviewUrl.current);
-        prevPreviewUrl.current = null;
-      }
-    };
-  }, [file]);
+  // Change Image with 2+ images: Hook/Accent/CTA can differ per image.
+  const multi = mode === 'image' && files.length > 1;
+  const shared: Texts = { hook, accent, cta };
+  const setShared: Record<TextField, (v: string) => void> = { hook: setHook, accent: setAccent, cta: setCta };
+  const textFor = (i: number, f: TextField): string =>
+    !multi || same[f] ? shared[f] : (perImage[i]?.[f] ?? '');
 
   // Swapping the source image never touches what was already generated —
   // results only go away when the operator presses "Clear results". Generations
   // append, so a batch built from several source images stays side by side.
-  const acceptFile = (picked: File | null) => {
-    if (!picked) {
-      setFile(null);
-      setErrorMessage(null);
-      setAnalyzeError(null);
-      return;
-    }
-    if (!ACCEPTED_TYPES.includes(picked.type)) {
+  // Change Image adds images (up to MAX_IMAGES); the other modes replace the one image.
+  const acceptFiles = (picked: File[]) => {
+    if (!picked.length) return;
+    if (picked.some((p) => !ACCEPTED_TYPES.includes(p.type))) {
       setErrorMessage('Unsupported file type. Use PNG, JPG, or WebP.');
       return;
     }
-    setFile(picked);
+    setErrorMessage(null);
+    setAnalyzeError(null);
+    if (mode !== 'image') {
+      setFiles([picked[0]]);
+      setPerImage([{ ...EMPTY_TEXTS }]);
+      return;
+    }
+    const room = MAX_IMAGES - files.length;
+    const added = picked.slice(0, Math.max(room, 0));
+    if (added.length < picked.length) setErrorMessage(`Up to ${MAX_IMAGES} images — the extra ones were not added.`);
+    setFiles([...files, ...added]);
+    setPerImage([...perImage.slice(0, files.length), ...added.map(() => ({ ...EMPTY_TEXTS }))]);
+  };
+
+  const removeFile = (i: number) => {
+    setFiles(files.filter((_, k) => k !== i));
+    setPerImage(perImage.filter((_, k) => k !== i));
     setErrorMessage(null);
     setAnalyzeError(null);
   };
 
-  const handleAnalyze = async () => {
-    if (!file) return;
+  // Ticking uses one text for every image (seeded from image #1 if empty).
+  // Unticking shows each image's own text (from Analyze); only when no image has
+  // one yet are the boxes seeded with the shared text — an empty box after
+  // Analyze means "not on this image" and must stay empty.
+  const toggleSame = (f: TextField, on: boolean) => {
+    if (on) {
+      if (!shared[f].trim()) setShared[f](perImage[0]?.[f] ?? '');
+    } else if (files.every((_, i) => !(perImage[i]?.[f] ?? '').trim())) {
+      setPerImage(files.map((_, i) => ({ ...(perImage[i] ?? EMPTY_TEXTS), [f]: shared[f] })));
+    }
+    setSame((s) => ({ ...s, [f]: on }));
+  };
 
+  const setPerImageText = (i: number, f: TextField, v: string) =>
+    setPerImage((prev) => files.map((_, k) => (k === i ? { ...(prev[k] ?? EMPTY_TEXTS), [f]: v } : (prev[k] ?? EMPTY_TEXTS))));
+
+  // Reads Hook/Accent/CTA off one banner. Throws with a user-facing message.
+  const analyzeOne = async (target: File): Promise<Texts> => {
     // meta describes the *input* — never the image bytes (the file can be MBs;
     // meta is capped at 2 KB). The image itself is omitted by design.
-    const meta = { fileName: file.name, fileType: file.type, fileSizeKB: Math.round(file.size / 1024) };
-
-    if (!ANALYZE_WEBHOOK) {
-      const msg = 'PUBLIC_WEBHOOK_CREATIVE_EDIT_ANALYZE_URL is not configured. Set it in .env.';
-      setAnalyzeError(msg);
-      logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, errorMessage: msg });
-      return;
-    }
-
-    setIsAnalyzing(true);
-    setAnalyzeError(null);
-
+    const meta = { fileName: target.name, fileType: target.type, fileSizeKB: Math.round(target.size / 1024) };
     try {
-      const imageDataUrl = await fileToDataUrl(file);
-
-      const response = await axios.post<unknown>(ANALYZE_WEBHOOK, {
-        image: imageDataUrl,
-      });
+      const imageDataUrl = await fileToDataUrl(target);
+      const response = await axios.post<unknown>(ANALYZE_WEBHOOK as string, { image: imageDataUrl });
       const data = response.data;
 
       if (data === null || typeof data !== 'object') {
         console.error('[CreativeEdit] analyze: unexpected response', data);
-        setAnalyzeError('Unexpected analyze response shape');
         logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: data, errorMessage: 'Unexpected analyze response shape' });
-        return;
+        throw new Error('Unexpected analyze response shape');
       }
 
       const obj = data as Record<string, unknown>;
       const pick = (k: string): string => (typeof obj[k] === 'string' ? (obj[k] as string) : '');
+      const texts: Texts = { hook: pick('hook'), accent: pick('accent'), cta: pick('cta') };
 
-      const nextHook = pick('hook');
-      const nextAccent = pick('accent');
-      const nextCta = pick('cta');
-
-      if (!nextHook && !nextAccent && !nextCta) {
+      if (!texts.hook && !texts.accent && !texts.cta) {
         console.error('[CreativeEdit] analyze: no hook/accent/cta in response', data);
-        setAnalyzeError('Analyze returned no Hook / Accent / CTA');
         logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: data, errorMessage: 'Analyze returned no Hook / Accent / CTA' });
-        return;
+        throw new Error('Analyze returned no Hook / Accent / CTA');
       }
-
-      setHook(nextHook);
-      setAccent(nextAccent);
-      setCta(nextCta);
       logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: data });
+      return texts;
     } catch (err: unknown) {
       const axiosErr = err as {
         response?: { data?: { message?: string } };
         message?: string;
       };
+      if (!axios.isAxiosError(err)) throw err; // shape errors are logged above
       const msg = axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Analyze failed';
-      setAnalyzeError(msg);
       logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta, metaOut: axiosErr?.response?.data, errorMessage: msg });
+      throw new Error(msg);
+    }
+  };
+
+  const handleAnalyze = async () => {
+    if (!file) return;
+    const targets = mode === 'image' ? files : [file];
+
+    if (!ANALYZE_WEBHOOK) {
+      const msg = 'PUBLIC_WEBHOOK_CREATIVE_EDIT_ANALYZE_URL is not configured. Set it in .env.';
+      setAnalyzeError(msg);
+      logEvent({ tab: 'creative-edit', action: 'analyzeCreative', meta: { fileName: file.name }, errorMessage: msg });
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      const settled = await Promise.allSettled(targets.map((t) => analyzeOne(t)));
+      const got = settled.map((s) => (s.status === 'fulfilled' ? s.value : null));
+      setPerImage(targets.map((_, i) => got[i] ?? perImage[i] ?? { ...EMPTY_TEXTS }));
+      // The shared (ticked) fields take image #1's text, as with a single image.
+      const firstOk = got.find((g): g is Texts => !!g);
+      if (firstOk) {
+        setHook(firstOk.hook);
+        setAccent(firstOk.accent);
+        setCta(firstOk.cta);
+      }
+      const errors = settled
+        .map((s, i) => (s.status === 'rejected' ? `${targets.length > 1 ? `#${i + 1}: ` : ''}${(s.reason as Error)?.message ?? 'Analyze failed'}` : ''))
+        .filter(Boolean);
+      if (errors.length) setAnalyzeError(errors.join(' · '));
     } finally {
       setIsAnalyzing(false);
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    acceptFile(e.target.files?.[0] ?? null);
+    acceptFiles(Array.from(e.target.files ?? []));
     e.target.value = '';
   };
 
@@ -339,22 +382,99 @@ export const CreativeEditPage = () => {
     e.stopPropagation();
     dragCounter.current = 0;
     setIsDragging(false);
-    acceptFile(e.dataTransfer.files?.[0] ?? null);
+    acceptFiles(Array.from(e.dataTransfer.files ?? []));
+  };
+
+  // Webhook response -> result list; null when the shape is unknown.
+  const parseEditResponse = (data: unknown): { url: string; fileName?: string }[] | null => {
+    if (typeof data === 'string') return [{ url: data }];
+    if (data !== null && typeof data === 'object' && 'images' in data && Array.isArray((data as { images: unknown }).images)) {
+      return (data as { images: unknown[] }).images.filter(
+        (item): item is { url: string; fileName?: string } =>
+          item !== null && typeof item === 'object' && 'url' in item && typeof (item as { url: unknown }).url === 'string',
+      );
+    }
+    if (data !== null && typeof data === 'object' && 'url' in data && typeof (data as { url: unknown }).url === 'string') {
+      const d = data as { url: string; fileName?: string };
+      return [{ url: d.url, fileName: d.fileName }];
+    }
+    return null;
+  };
+
+  // One image -> one webhook call. Results are appended as soon as they arrive.
+  // Logging is left to handleGenerate so a multi-image run is ONE usage event
+  // (the Dashboard then shows "See N images" on a single row).
+  // Throws an Error with a user-facing message and the raw response as `data`.
+  const generateOne = async (target: File, texts: Texts, source?: number) => {
+    const lang = language === 'Keep original language' ? '' : language;
+    const t = { hook: texts.hook.trim(), accent: texts.accent.trim(), cta: texts.cta.trim() };
+    const imageDataUrl = await fileToDataUrl(target);
+
+    // Snapshot for the feedback buttons — captured now so a later form edit
+    // never changes what a vote is attributed to.
+    const promptSource = imagePrompt.trim() ? 'custom' : 'none';
+    const buildFeedbackCtx = (outputUrl: string): FeedbackContext => ({
+      feedbackId: crypto.randomUUID(),
+      tab: 'creative_edit',
+      operation: 'editCreative',
+      model: imageModel,
+      promptSource,
+      promptText: imagePrompt.trim(),
+      input: { ...t, language: lang, aspectRatio },
+      inputImage: imageDataUrl,
+      outputImage: outputUrl,
+    });
+
+    let data: unknown;
+    try {
+      const response = await axios.post<unknown>(WEBHOOK as string, {
+        image: imageDataUrl,
+        ...t,
+        imagePrompt: imagePrompt.trim(),
+        language: lang,
+        aspectRatio,
+        imageModel,
+      });
+      data = response.data;
+    } catch (err: unknown) {
+      const axiosErr = err as {
+        response?: { data?: { message?: string } };
+        message?: string;
+      };
+      const e = new Error(axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Generation failed');
+      (e as Error & { data?: unknown }).data = axiosErr?.response?.data;
+      throw e;
+    }
+    const items = parseEditResponse(data);
+    if (!items) {
+      console.error('[CreativeEdit] unexpected response', data);
+      const e = new Error('Unexpected response shape');
+      (e as Error & { data?: unknown }).data = data;
+      throw e;
+    }
+    setResults((prev) => [...prev, ...items.map((it) => ({ ...it, source, feedback: buildFeedbackCtx(it.url) }))]);
+    return { items, data };
   };
 
   const handleGenerate = async () => {
-    if (!file || !hook.trim()) return;
+    if (!files.length || hookMissing) return;
 
-    const meta = {
-      fileName: file.name,
-      hook: hook.trim(),
-      accent: accent.trim(),
-      cta: cta.trim(),
+    const jobs = files.map((f, i) => ({
+      f,
+      texts: { hook: textFor(i, 'hook'), accent: textFor(i, 'accent'), cta: textFor(i, 'cta') },
+      source: files.length > 1 ? i + 1 : undefined,
+    }));
+    const common = {
       imagePrompt: imagePrompt.trim(),
       language: language === 'Keep original language' ? '' : language,
       aspectRatio,
       imageModel,
     };
+    const trimmed = (t: Texts) => ({ hook: t.hook.trim(), accent: t.accent.trim(), cta: t.cta.trim() });
+    // Single image keeps the old meta shape; a batch lists each image's texts.
+    const meta = jobs.length === 1
+      ? { fileName: jobs[0].f.name, ...trimmed(jobs[0].texts), ...common }
+      : { images: jobs.length, items: jobs.map((j) => ({ fileName: j.f.name, ...trimmed(j.texts) })), ...common };
 
     if (!WEBHOOK) {
       const msg = 'PUBLIC_WEBHOOK_CREATIVE_EDIT_URL is not configured. Set it in .env.';
@@ -364,85 +484,37 @@ export const CreativeEditPage = () => {
     }
 
     setIsLoading(true);
+    setPendingCount(jobs.length);
     setErrorMessage(null);
-
     try {
-      const imageDataUrl = await fileToDataUrl(file);
+      const settled = await Promise.allSettled(
+        jobs.map((j) => generateOne(j.f, j.texts, j.source).finally(() => setPendingCount((n) => n - 1))),
+      );
+      const errors = settled
+        .map((s, i) => (s.status === 'rejected' ? `${jobs[i].source ? `Image #${jobs[i].source}: ` : ''}${(s.reason as Error)?.message ?? 'Generation failed'}` : ''))
+        .filter(Boolean);
+      if (errors.length) setErrorMessage(errors.join(' · '));
 
-      // Snapshot for the feedback buttons — captured now so a later form edit
-      // never changes what a vote is attributed to.
-      const promptSource = imagePrompt.trim() ? 'custom' : 'none';
-      const buildFeedbackCtx = (outputUrl: string): FeedbackContext => ({
-        feedbackId: crypto.randomUUID(),
-        tab: 'creative_edit',
-        operation: 'editCreative',
-        model: imageModel,
-        promptSource,
-        promptText: imagePrompt.trim(),
-        input: {
-          hook: hook.trim(),
-          accent: accent.trim(),
-          cta: cta.trim(),
-          language: language === 'Keep original language' ? '' : language,
-          aspectRatio,
-        },
-        inputImage: imageDataUrl,
-        outputImage: outputUrl,
-      });
-
-      const response = await axios.post<unknown>(WEBHOOK, {
-        image: imageDataUrl,
-        hook: hook.trim(),
-        accent: accent.trim(),
-        cta: cta.trim(),
-        imagePrompt: imagePrompt.trim(),
-        language: language === 'Keep original language' ? '' : language,
-        aspectRatio,
-        imageModel,
-      });
-      const data = response.data;
-
-      if (typeof data === 'string') {
-        setResults((prev) => [...prev, { url: data, feedback: buildFeedbackCtx(data) }]);
-        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
-      } else if (
-        data !== null &&
-        typeof data === 'object' &&
-        'images' in data &&
-        Array.isArray((data as { images: unknown }).images)
-      ) {
-        const raw = (data as { images: unknown[] }).images;
-        const items: ResultItem[] = raw
-          .filter((item): item is { url: string; fileName?: string } =>
-            item !== null && typeof item === 'object' && 'url' in item && typeof (item as { url: unknown }).url === 'string',
-          )
-          .map((item) => ({ url: item.url, fileName: item.fileName, feedback: buildFeedbackCtx(item.url) }));
-        setResults((prev) => [...prev, ...items]);
-        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
-      } else if (
-        data !== null &&
-        typeof data === 'object' &&
-        'url' in data &&
-        typeof (data as { url: unknown }).url === 'string'
-      ) {
-        const d = data as { url: string; fileName?: string };
-        setResults((prev) => [...prev, { url: d.url, fileName: d.fileName, feedback: buildFeedbackCtx(d.url) }]);
-        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data });
+      if (jobs.length === 1) {
+        const s = settled[0];
+        if (s.status === 'fulfilled') logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: s.value.data });
+        else logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: (s.reason as { data?: unknown })?.data, errorMessage: errors[0] });
       } else {
-        console.error('[CreativeEdit] unexpected response', data);
-        setErrorMessage('Unexpected response shape');
-        logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: data, errorMessage: 'Unexpected response shape' });
+        // One event for the whole batch: every output image in one `images` list.
+        const images = settled.flatMap((s, i) =>
+          s.status === 'fulfilled' ? s.value.items.map((it) => ({ source: i + 1, url: it.url, fileName: it.fileName })) : [],
+        );
+        logEvent({
+          tab: 'creative-edit',
+          action: 'editCreative',
+          meta,
+          metaOut: { images },
+          errorMessage: errors.length ? errors.join(' · ') : undefined,
+        });
       }
-    } catch (err: unknown) {
-      const axiosErr = err as {
-        response?: { data?: { message?: string } };
-        message?: string;
-      };
-      const msg = axiosErr?.response?.data?.message ?? axiosErr?.message ?? 'Generation failed';
-      setErrorMessage(msg);
-      logEvent({ tab: 'creative-edit', action: 'editCreative', meta, metaOut: axiosErr?.response?.data, errorMessage: msg });
     } finally {
       setIsLoading(false);
+      setPendingCount(0);
     }
   };
 
@@ -773,9 +845,9 @@ export const CreativeEditPage = () => {
   );
 
   const noFile = !file;
-  const hookMissing = !hook.trim();
+  const hookMissing = multi ? files.some((_, i) => !textFor(i, 'hook').trim()) : !hook.trim();
 
-  let buttonLabel = 'Generate Edited Creative';
+  let buttonLabel = multi ? `Generate ${files.length} creatives` : 'Generate Edited Creative';
   if (isLoading) buttonLabel = 'Generating...';
   else if (noFile) buttonLabel = 'Upload a creative first';
   else if (hookMissing) buttonLabel = 'Enter a Hook first';
@@ -811,42 +883,87 @@ export const CreativeEditPage = () => {
     </div>
   );
 
+  const imageMode = mode === 'image';
+  const uploadFull = imageMode && files.length >= MAX_IMAGES;
+  let uploadLabel = file ? 'Replace creative' : 'Upload creative';
+  if (imageMode) uploadLabel = uploadFull ? `${MAX_IMAGES} images max — remove one to add` : file ? 'Add creative' : 'Upload creatives';
+
   const uploadBlock = (
     <div>
       <label className="text-[10px] font-bold uppercase text-gray-400 block mb-1">
-        Creative image
+        {imageMode ? `Creative images (${files.length} / ${MAX_IMAGES})` : 'Creative image'}
       </label>
       <label
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
-        className={`cursor-pointer flex flex-col items-center justify-center rounded-md border-2 border-dashed px-3 py-4 text-sm font-medium transition-colors w-full text-center ${
-          isDragging
-            ? 'border-blue-500 bg-blue-50 text-blue-700'
-            : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
+        className={`flex flex-col items-center justify-center rounded-md border-2 border-dashed px-3 py-4 text-sm font-medium transition-colors w-full text-center ${
+          uploadFull
+            ? 'cursor-not-allowed border-slate-200 bg-slate-50 text-slate-400'
+            : isDragging
+              ? 'cursor-pointer border-blue-500 bg-blue-50 text-blue-700'
+              : 'cursor-pointer border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
         }`}
       >
-        <span>{file ? 'Replace creative' : 'Upload creative'}</span>
-        <span className="mt-0.5 text-[11px] font-normal text-slate-500">
-          or drag & drop here
-        </span>
+        <span>{uploadLabel}</span>
+        {!uploadFull && (
+          <span className="mt-0.5 text-[11px] font-normal text-slate-500">
+            or drag & drop here{imageMode ? ` — up to ${MAX_IMAGES}` : ''}
+          </span>
+        )}
         <input
           type="file"
           accept="image/png,image/jpeg,image/webp"
+          multiple={imageMode}
+          disabled={uploadFull}
           className="hidden"
           onChange={handleFileChange}
         />
       </label>
-      {file && (
-        <p className="mt-1 text-xs text-slate-500 truncate">{file.name}</p>
-      )}
-      {previewUrl && (
-        <img
-          src={previewUrl}
-          alt="Preview"
-          className="mt-2 max-h-40 w-full object-contain rounded border"
-        />
+      {imageMode && files.length > 1 ? (
+        <div className="mt-2 grid grid-cols-3 gap-2">
+          {files.map((f, i) => (
+            <div key={`${f.name}-${i}`} className="relative">
+              <img
+                src={previewUrls[i]}
+                alt={`Creative #${i + 1}`}
+                title={f.name}
+                className="h-24 w-full object-contain rounded border bg-slate-50"
+              />
+              <span className="absolute left-1 top-1 rounded bg-slate-900/70 px-1 text-[10px] font-bold text-white">#{i + 1}</span>
+              <button
+                type="button"
+                onClick={() => removeFile(i)}
+                disabled={isLoading || isAnalyzing}
+                className="absolute right-1 top-1 rounded bg-white/90 px-1 text-xs leading-4 text-slate-700 shadow hover:bg-red-50 hover:text-red-700"
+                title="Remove this image"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        file && (
+          <>
+            <div className="mt-1 flex items-center gap-2">
+              <p className="flex-1 text-xs text-slate-500 truncate">{file.name}</p>
+              {imageMode && (
+                <button type="button" onClick={() => removeFile(0)} disabled={isLoading || isAnalyzing} className="text-xs text-slate-400 hover:text-red-600">
+                  Remove
+                </button>
+              )}
+            </div>
+            {previewUrls[0] && (
+              <img
+                src={previewUrls[0]}
+                alt="Preview"
+                className="mt-2 max-h-40 w-full object-contain rounded border"
+              />
+            )}
+          </>
+        )
       )}
     </div>
   );
@@ -916,45 +1033,57 @@ export const CreativeEditPage = () => {
             />
           </div>
         )}
-        <div>
-          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-            Hook
-            <InfoTooltip text={HOOK_HELP} iconSize={11} />
-            {mode === 'image' && hookMissing && (
-              <span className="ml-1 normal-case font-normal text-red-500">— required</span>
-            )}
-          </label>
-          <Textarea
-            value={hook}
-            onChange={(e) => setHook(e.target.value)}
-            placeholder="Main banner line, 40–55 chars…"
-            className="bg-white text-sm resize-none"
-          />
-        </div>
-        <div>
-          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-            Accent
-            <InfoTooltip text={ACCENT_HELP} iconSize={11} />
-          </label>
-          <Textarea
-            value={accent}
-            onChange={(e) => setAccent(e.target.value)}
-            placeholder="Second, smaller line under the hook…"
-            className="bg-white text-sm resize-none"
-          />
-        </div>
-        <div>
-          <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-            CTA
-            <InfoTooltip text={CTA_HELP} iconSize={11} />
-          </label>
-          <Textarea
-            value={cta}
-            onChange={(e) => setCta(e.target.value)}
-            placeholder="Learn More, Read More, Discover More…"
-            className="bg-white text-sm resize-none"
-          />
-        </div>
+        {([
+          ['hook', 'Hook', HOOK_HELP, 'Main banner line, 40–55 chars…'],
+          ['accent', 'Accent', ACCENT_HELP, 'Second, smaller line under the hook…'],
+          ['cta', 'CTA', CTA_HELP, 'Learn More, Read More, Discover More…'],
+        ] as [TextField, string, string, string][]).map(([f, label, help, placeholder]) => {
+          const perImageMode = multi && !same[f];
+          return (
+            <div key={f}>
+              <div className="flex items-center justify-between gap-2">
+                <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                  {label}
+                  <InfoTooltip text={help} iconSize={11} />
+                  {f === 'hook' && mode === 'image' && hookMissing && (
+                    <span className="ml-1 normal-case font-normal text-red-500">— required</span>
+                  )}
+                </label>
+                {multi && (
+                  <label className="flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer select-none">
+                    <input type="checkbox" checked={same[f]} onChange={(e) => toggleSame(f, e.target.checked)} />
+                    Same for all
+                  </label>
+                )}
+              </div>
+              {perImageMode ? (
+                <div className="space-y-1.5">
+                  {files.map((_, i) => (
+                    <div key={i} className="flex items-start gap-1.5">
+                      <img src={previewUrls[i]} alt={`#${i + 1}`} className="mt-1 h-8 w-8 shrink-0 rounded border object-cover" />
+                      <div className="flex-1">
+                        <div className="text-[10px] font-bold text-slate-400">#{i + 1}</div>
+                        <Textarea
+                          value={perImage[i]?.[f] ?? ''}
+                          onChange={(e) => setPerImageText(i, f, e.target.value)}
+                          placeholder={f === 'hook' ? placeholder : 'Empty = not on this image'}
+                          className="bg-white text-sm resize-none min-h-[44px]"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <Textarea
+                  value={shared[f]}
+                  onChange={(e) => setShared[f](e.target.value)}
+                  placeholder={placeholder}
+                  className="bg-white text-sm resize-none"
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {includeImagePrompt && (
@@ -983,7 +1112,9 @@ export const CreativeEditPage = () => {
         className="w-full bg-blue-600 hover:bg-blue-700 text-white"
         disabled={noFile || isAnalyzing}
       >
-        {isAnalyzing ? 'Analyzing image...' : 'Analyze image'}
+        {isAnalyzing
+          ? `Analyzing ${multi ? `${files.length} images` : 'image'}...`
+          : multi ? `Analyze ${files.length} images` : 'Analyze image'}
       </Button>
       {analyzeError && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -1205,7 +1336,7 @@ export const CreativeEditPage = () => {
                 return (
                   <div key={i} className="flex flex-col gap-2">
                     <div className="text-[10px] font-bold uppercase text-gray-400">
-                      Generation #{i + 1}
+                      Generation #{i + 1}{item.source ? ` · from image #${item.source}` : ''}
                     </div>
                     <div className="w-full flex items-center justify-center bg-slate-50 rounded border">
                       <img
@@ -1231,12 +1362,13 @@ export const CreativeEditPage = () => {
             </div>
           )}
 
-          {isLoading && (
-            <div className={`flex flex-col gap-3 ${results.length > 0 ? 'mt-6' : ''}`}>
-              <Skeleton className="h-6 w-48 rounded" />
-              <Skeleton className="h-64 w-full rounded" />
-            </div>
-          )}
+          {isLoading &&
+            Array.from({ length: Math.max(pendingCount, 1) }, (_, k) => (
+              <div key={k} className={`flex flex-col gap-3 ${results.length > 0 || k > 0 ? 'mt-6' : ''}`}>
+                <Skeleton className="h-6 w-48 rounded" />
+                <Skeleton className="h-64 w-full rounded" />
+              </div>
+            ))}
         </div>
       </div>
     );
