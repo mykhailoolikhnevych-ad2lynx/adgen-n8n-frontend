@@ -5,7 +5,8 @@ import { getAuthEmail } from '@/lib/identity';
 import { post, ErrorBox } from './MegatoolAutozalivBuilderPage';
 
 // FB Rejects (megatool-fb-rejects, admins only): each user adds the FB ad accounts they want to watch. n8n scans them every hour
-// for DISAPPROVED ads; 🌸 swaps a rejected ad to neutral flowers (ad PAUSED); every 2 h n8n checks the swapped ads:
+// for DISAPPROVED ads; 🌸 swaps a rejected ad to neutral flowers (ad PAUSED), and ⚖ appealed ads still rejected 4 h after the
+// appeal are swapped automatically by the hourly scan; every 2 h n8n checks the swapped ads:
 // approved -> the ad is deleted and the reject is gone from the account, rejected again / 48 h in review -> failed.
 const WEBHOOK = import.meta.env.PUBLIC_WEBHOOK_FB_REJECTS_URL as string | undefined;
 const ENV = 'PUBLIC_WEBHOOK_FB_REJECTS_URL';
@@ -24,7 +25,7 @@ type Reject = {
 const STATE: Record<string, { label: string; color: string; hint: string }> = {
   new: { label: 'rejected', color: 'bg-red-100 text-red-800', hint: 'Rejected by FB, nothing done yet' },
   failed: { label: 'failed', color: 'bg-amber-100 text-amber-800', hint: 'The swap or the review failed - see the note. 🌸 tries again' },
-  appealed: { label: '⚖ appealed', color: 'bg-violet-100 text-violet-800', hint: 'Review requested in Ads Manager with the original creative. Approved -> resolved; still rejected -> 🌸 or Skip' },
+  appealed: { label: '⚖ appealed', color: 'bg-violet-100 text-violet-800', hint: 'Review requested in Ads Manager with the original creative. Checked every hour: approved -> resolved; still rejected 4 h after the appeal -> 🌸 swapped automatically' },
   swapped: { label: '🌸 in review', color: 'bg-blue-100 text-blue-800', hint: 'Flowers in, ad paused. Checked every 2 h: approved -> the ad is deleted' },
   deleted: { label: '✅ removed', color: 'bg-emerald-100 text-emerald-800', hint: 'Approved with flowers, ad deleted: the reject is gone from the account' },
   resolved: { label: 'resolved by FB', color: 'bg-slate-100 text-slate-500', hint: 'No longer rejected (appeal, edit or deleted in Ads Manager)' },
@@ -144,7 +145,7 @@ export function MegatoolFbRejectsPage() {
     window.open(adsManager(r), '_blank', 'noopener');
     run('Marking as appealed…', async () => {
       await call({ action: 'appeal', ad_ids: [r.ad_id] });
-      return `Ads Manager opened for ${r.ad_name || r.ad_id}: click "Request review" there. Approved -> it moves to Done.`;
+      return `Ads Manager opened for ${r.ad_name || r.ad_id}: click "Request review" there. Approved -> it moves to Done; still rejected after 4 h -> 🌸 flowers automatically.`;
     });
   };
 
