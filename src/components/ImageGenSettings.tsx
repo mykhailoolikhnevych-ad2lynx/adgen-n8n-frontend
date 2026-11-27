@@ -21,7 +21,7 @@ export const CTA_HELP =
 
 // Image presets shipped by the n8n graph. IDs match the preset_id each preset
 // node emits — never reorder/rename without updating the workflow's filter.
-const IMAGE_PRESETS: { id: string; label: string; hint: string }[] = [
+export const IMAGE_PRESETS: { id: string; label: string; hint: string }[] = [
   { id: 'A',      label: 'YT Thumbnail',    hint: 'YouTube-thumbnail для віральної реклами — висока насиченість, сильний контраст, жирний хук + кнопка CTA. Кінематографічна подача.' },
   { id: 'B',      label: 'Organic Social',  hint: 'Виглядає як UGC-пост у стрічці. Великий хук із товстою обводкою поверх затемненого фото, декоративні пастельні стікери, курсивний CTA без кнопки.' },
   { id: 'C',      label: 'Highlight Block', hint: 'Повнокадрове фото + ОДИН однотонний блок зверху з хуком. Без акценту, без CTA. Найпростіший варіант.' },

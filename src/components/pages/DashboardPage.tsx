@@ -4,6 +4,8 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { fetchEvent } from '@/lib/events';
 import { listFeedback, getFeedback, type FeedbackListRow, type FeedbackRow as FeedbackFullRow } from '@/lib/feedback';
+import { useAppStore } from '@/store/useAppStore';
+import { IMAGE_PRESETS } from '@/components/ImageGenSettings';
 
 // Admin-only usage analytics. Fetches PUBLIC_WEBHOOK_LIST_EVENTS_URL on mount
 // for the last 30 days of usage events and renders them as sub-tabs:
@@ -1882,12 +1884,14 @@ const AutozalivCampaignsView = ({ since, until }: { since: string; until: string
 // ---------------------------------------------------------------------------
 
 const CAMPAIGN_STATS_URL = import.meta.env.PUBLIC_WEBHOOK_CAMPAIGN_STATS_URL as string | undefined;
+// Creatives pill: rsoc.autozaliv_creative_stats (nightly from BigQuery) — one row per day × aiimg image × Binom campaign.
+const CREATIVE_STATS_URL = import.meta.env.PUBLIC_WEBHOOK_CREATIVE_STATS_URL as string | undefined;
 
 type StatKind = 'autozaliv' | 'megaclone' | 'creatives';
 const KINDS: { value: StatKind; label: string; color: string; soon?: boolean }[] = [
   { value: 'autozaliv', label: 'Autozaliv', color: '#2a78d6' },
   { value: 'megaclone', label: 'MEGACLONE', color: '#eb6834' },
-  { value: 'creatives', label: 'Creatives', color: '#1baf7a', soon: true },
+  { value: 'creatives', label: 'Creatives', color: '#1baf7a' },
 ];
 const POS = '#0ca30c';
 const NEG = '#d03b3b';
@@ -1900,7 +1904,36 @@ interface StatRow {
   /** Binom cat_country / cat_language / cat_traffic_source of the campaign. */
   country: string; language: string; traffic_source: string;
   clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number;
+  /** aiimg image name — only on Creatives rows. */
+  creative: string;
 }
+const rowKey = (r: StatRow) => `${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}|${r.creative}`;
+
+// Which generator preset made an aiimg image, read from its file name (see lib/creativeFilename):
+// the last segment of the aiimg_… token is the preset slot — 1..4 = A..D, 5a..5d = Creative (×4),
+// custom, or saved<id> (a Saved image prompt). Creative Edit names are aiimg_creative_edit_<n>.
+// Ad names wrap the file name, e.g. "US_sale8_aiimg_…_saved37 | AG-261105-03 | FL-… #1".
+const presetSlotOf = (creative: string): string => {
+  const token = (creative.toLowerCase().match(/aiimg_[a-z0-9_]+/) || [''])[0];
+  if (!token) return '';
+  if (token.startsWith('aiimg_creative_edit')) return 'edit';
+  const last = token.split('_').pop() || '';
+  return /^(saved\d+|custom|[1-4]|5[a-d])$/.test(last) ? last : '';
+};
+const SLOT_PRESET: Record<string, string> = { 1: 'A', 2: 'B', 3: 'C', 4: 'D', '5a': 'E', '5b': 'E', '5c': 'E', '5d': 'E', custom: 'Custom' };
+/** Display name + thumbnail for a preset slot; saved prompts are looked up by id. */
+const presetInfo = (slot: string, saved: Map<string, { name: string; image?: string }>) => {
+  if (!slot) return { label: 'unknown', image: '' };
+  if (slot === 'edit') return { label: 'Creative Edit', image: '' };
+  const savedId = slot.match(/^saved(\d+)$/)?.[1];
+  if (savedId) {
+    const p = saved.get(savedId);
+    return { label: p ? p.name : `saved #${savedId} (deleted)`, image: p?.image || '' };
+  }
+  const id = SLOT_PRESET[slot];
+  const p = IMAGE_PRESETS.find((x) => x.id === id);
+  return { label: p ? `${id} · ${p.label}` : slot, image: '' };
+};
 type Sums = { clicks: number; leads: number; revenue: number; cost: number; offer_clicks: number };
 const zeroSums = (): Sums => ({ clicks: 0, leads: 0, revenue: 0, cost: 0, offer_clicks: 0 });
 const addSums = (a: Sums, r: Sums) => {
@@ -2089,7 +2122,7 @@ const ProfitLineChart = ({ title, points, controls }: {
 // Horizontal bars for a signed value (profit), zero line in the middle.
 // With onToggle, rows are clickable: selected rows stay bright, the rest fade.
 const SignedBars = ({ title, items, controls, selected, onToggle }: {
-  title: string; items: { key?: string; label: string; value: number; note?: string }[]; controls?: ReactNode;
+  title: string; items: { key?: string; label: string; value: number; note?: string; image?: string }[]; controls?: ReactNode;
   selected?: Set<string>; onToggle?: (key: string) => void;
 }) => {
   const anySelected = !!selected && selected.size > 0;
@@ -2108,7 +2141,12 @@ const SignedBars = ({ title, items, controls, selected, onToggle }: {
                 className={`flex items-center gap-2 text-[11px] group rounded px-1 -mx-1 ${onToggle ? 'cursor-pointer hover:bg-slate-50' : ''} ${on ? 'bg-slate-100' : ''} ${anySelected && !on ? 'opacity-35' : ''}`}
                 title={`${it.label}: ${it.value.toFixed(2)}${it.note ? ` · ${it.note}` : ''}${onToggle ? (on ? ' · click to unselect' : ' · click to select') : ''}`}
                 onClick={onToggle ? () => onToggle(key) : undefined}>
-                <div className={`w-36 shrink-0 truncate ${on ? 'font-bold text-slate-900' : 'text-slate-700'}`}>{it.label || <span className="italic text-slate-400">blank</span>}</div>
+                {it.image !== undefined && (
+                  it.image
+                    ? <img src={it.image} alt="" className="h-5 w-5 shrink-0 rounded object-cover border" />
+                    : <span className="h-5 w-5 shrink-0" />
+                )}
+                <div className={`${it.image !== undefined ? 'w-64' : 'w-36'} shrink-0 truncate ${on ? 'font-bold text-slate-900' : 'text-slate-700'}`}>{it.label || <span className="italic text-slate-400">blank</span>}</div>
                 <div className="relative flex-1 h-3">
                   {hasNeg && <div className="absolute left-1/2 top-0 bottom-0 w-px bg-slate-300" />}
                   <div className="absolute top-0 h-3 rounded-sm group-hover:opacity-80"
@@ -2131,13 +2169,26 @@ type CampAgg = ReturnType<typeof metrics> & {
   key: string; kind: StatKind; tracker: string; binom_campaign_id: string; ts_campaign_id: string;
   name: string; buyer: string; competitor: string; launched: string; first_day: string;
   country: string; language: string; source: string;
+  /** aiimg image name (Creatives rows); `name` stays the campaign name. */
+  creative: string;
+  /** Generator preset of the image (Creatives rows) + its saved-prompt thumbnail. */
+  preset: string; presetImage: string;
 };
+
+const PresetCell = ({ label, image }: { label: string; image: string }) => (
+  <span className="inline-flex items-center gap-1.5 max-w-[220px]" title={label}>
+    {image && <img src={image} alt="" className="h-6 w-6 shrink-0 rounded object-cover border" />}
+    <span className="truncate">{label}</span>
+  </span>
+);
 
 const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: CampAgg) => ReactNode; cls?: (r: CampAgg) => string }[] = [
   { key: 'name', label: 'Campaign', cell: (r) => (<>
-    <div className="max-w-[340px] truncate" title={r.name}>{r.name || <span className="italic text-slate-400">no name</span>}</div>
+    {r.creative && <div className="max-w-[340px] truncate font-bold" title={r.creative}>{r.creative}</div>}
+    <div className={`max-w-[340px] truncate ${r.creative ? 'text-[11px] text-slate-500' : ''}`} title={r.name}>{r.name || <span className="italic text-slate-400">no name</span>}</div>
     <div className="font-mono text-[10px] text-slate-400">{r.binom_campaign_id}{r.ts_campaign_id ? ` · NB ${r.ts_campaign_id}` : ''}</div>
   </>) },
+  { key: 'preset', label: 'Preset', cell: (r) => (r.preset ? <PresetCell label={r.preset} image={r.presetImage} /> : '') },
   { key: 'kind', label: 'Group', cell: (r) => KINDS.find((k) => k.value === r.kind)?.label || r.kind },
   { key: 'tracker', label: 'Tracker', cell: (r) => r.tracker },
   { key: 'buyer', label: 'Buyer', cell: (r) => r.buyer },
@@ -2159,10 +2210,15 @@ const STAT_COLUMNS: { key: string; label: string; right?: boolean; cell: (r: Cam
   { key: 'roi', label: 'ROI', right: true, cls: (r) => `font-bold ${signCls(r.roi)}`, cell: (r) => fmtPct(r.roi) },
 ];
 const STATS_HIDDEN_COLS_KEY = 'dashboard.campaignStats.hiddenCols';
+const TABLE_PAGE = 500;
 
 // "Profit by …" dimensions. Selecting rows in that chart filters the rest of the page.
-type StatDim = 'buyer' | 'competitor' | 'tracker' | 'source' | 'country' | 'language' | 'launch';
+type StatDim = 'creative' | 'preset' | 'buyer' | 'competitor' | 'tracker' | 'source' | 'country' | 'language' | 'launch';
+/** Dimensions that only exist on Creatives rows. */
+const CREATIVE_DIMS: StatDim[] = ['creative', 'preset'];
 const STAT_DIMS: { value: StatDim; label: string; button: string }[] = [
+  { value: 'creative', label: 'Image', button: 'image' },
+  { value: 'preset', label: 'Preset', button: 'preset' },
   { value: 'buyer', label: 'Buyer', button: 'buyer' },
   { value: 'competitor', label: 'Competitor', button: 'competitor' },
   { value: 'tracker', label: 'Tracker', button: 'tracker' },
@@ -2173,8 +2229,10 @@ const STAT_DIMS: { value: StatDim; label: string; button: string }[] = [
 ];
 /** Raw value of a campaign on a dimension (launch = ISO Monday, so it sorts). */
 const dimValue = (c: CampAgg, d: StatDim): string =>
-  d === 'buyer' ? c.buyer || (c.kind === 'autozaliv' ? '' : 'MEGACLONE (no buyer)')
-  : d === 'competitor' ? c.competitor || (c.kind === 'autozaliv' ? '' : 'MEGACLONE')
+  d === 'creative' ? c.creative
+  : d === 'preset' ? c.preset
+  : d === 'buyer' ? c.buyer || (c.kind === 'megaclone' ? 'MEGACLONE (no buyer)' : '')
+  : d === 'competitor' ? c.competitor || (c.kind === 'megaclone' ? 'MEGACLONE' : '')
   : d === 'tracker' ? c.tracker
   : d === 'source' ? c.source
   : d === 'country' ? c.country
@@ -2208,6 +2266,24 @@ const CampaignStatsView = () => {
   const [error, setError] = useState<string | null>(null);
   const [azInfo, setAzInfo] = useState<Map<string, { buyer: string; competitor: string; created_at: string }>>(new Map());
   const [kind, setKind] = useState<'all' | StatKind>('all');
+  // Creatives come from a separate live BigQuery webhook, fetched only while that pill is on.
+  const [creativeRows, setCreativeRows] = useState<StatRow[]>([]);
+  const [crFrom, setCrFrom] = useState(''); // `fetchFrom` the creative rows belong to
+  const [crStatus, setCrStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [crError, setCrError] = useState<string | null>(null);
+  const [crUpdatedAt, setCrUpdatedAt] = useState('');
+  const isCreatives = kind === 'creatives';
+  // Saved image prompts (same shared library as Creative Gen) → preset names + thumbnails.
+  const savedPrompts = useAppStore((s) => s.savedPrompts);
+  const savedPromptsStatus = useAppStore((s) => s.savedPromptsStatus);
+  const loadSavedPrompts = useAppStore((s) => s.loadSavedPrompts);
+  useEffect(() => {
+    if (isCreatives && savedPromptsStatus === 'idle') void loadSavedPrompts();
+  }, [isCreatives, savedPromptsStatus, loadSavedPrompts]);
+  const savedById = useMemo(
+    () => new Map(savedPrompts.map((p) => [String(p.id), { name: p.name, image: p.image }])),
+    [savedPrompts],
+  );
   const [breakdown, setBreakdown] = useState<StatDim>('buyer');
   // Selected values per dimension (empty = no filter). Kept when the period changes.
   const [picks, setPicks] = useState<Partial<Record<StatDim, string[]>>>({});
@@ -2260,7 +2336,7 @@ const CampaignStatsView = () => {
         country: String(a[ix('country')] || ''), language: String(a[ix('language')] || ''),
         traffic_source: String(a[ix('traffic_source')] || ''),
         clicks: num(a[ix('clicks')]), leads: num(a[ix('leads')]), revenue: num(a[ix('revenue')]),
-        cost: num(a[ix('cost')]), offer_clicks: num(a[ix('offer_clicks')]),
+        cost: num(a[ix('cost')]), offer_clicks: num(a[ix('offer_clicks')]), creative: '',
       }));
       setRows(list);
       setUpdatedAt(outer.updated_at || '');
@@ -2291,19 +2367,70 @@ const CampaignStatsView = () => {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Reads rsoc.autozaliv_creative_stats (filled nightly from BigQuery). Compact answer: images and
+  // campaigns come once; each row is [day, image index, campaign index, clicks, leads, revenue, cost].
+  const loadCreatives = useCallback(async () => {
+    if (!CREATIVE_STATS_URL) {
+      setCrStatus('error');
+      setCrError('PUBLIC_WEBHOOK_CREATIVE_STATS_URL is not set');
+      return;
+    }
+    setCrStatus('loading');
+    setCrFrom(fetchFrom); // marks this period as tried, so a failure doesn't retry in a loop
+    try {
+      const { data } = await axios.post(CREATIVE_STATS_URL, { since: fetchFrom }, { timeout: REQUEST_TIMEOUT_MS });
+      const outer = Array.isArray(data) ? data[0] : data;
+      if (!outer?.ok) throw new Error(outer?.error || 'creative stats failed');
+      const cols: string[] = outer.cols || [];
+      const ix = (c: string) => cols.indexOf(c);
+      const ccols: string[] = outer.camp_cols || [];
+      const cx = (c: string) => ccols.indexOf(c);
+      const creatives: string[] = outer.creatives || [];
+      const camps: any[][] = outer.camps || [];
+      const num = (v: any) => Number(v) || 0;
+      setCreativeRows((outer.rows || []).map((a: any[]): StatRow => {
+        const k = camps[a[ix('camp')]] || [];
+        const cs = (c: string) => String(k[cx(c)] ?? '');
+        return {
+          day: String(a[ix('day')] || ''), tracker: cs('tracker'), kind: 'creatives',
+          binom_campaign_id: cs('binom_campaign_id'), ts_campaign_id: '',
+          binom_campaign_name: cs('binom_campaign_name'), ts_campaign_name: '',
+          buyer: cs('buyer'), country: '', language: '', traffic_source: cs('traffic_source'),
+          clicks: num(a[ix('clicks')]), leads: num(a[ix('leads')]), revenue: num(a[ix('revenue')]),
+          cost: num(a[ix('cost')]), offer_clicks: 0, creative: creatives[a[ix('creative')]] ?? '',
+        };
+      }));
+      setCrUpdatedAt(outer.updated_at || '');
+      setCrStatus('success');
+      setCrError(null);
+    } catch (e: any) {
+      console.error('[Dashboard] creative stats fetch error:', e);
+      setCrStatus('error');
+      setCrError(e?.response?.data?.error ?? e?.message ?? String(e));
+    }
+  }, [fetchFrom]);
+
+  // Query only when the Creatives pill is on and the period has changed since the last answer.
+  useEffect(() => {
+    if (isCreatives && crFrom !== fetchFrom) void loadCreatives();
+  }, [isCreatives, crFrom, fetchFrom, loadCreatives]);
+
+  const srcRows = isCreatives ? creativeRows : rows;
+
   // "All time" starts the axis at the first day that has stats.
   const fromDay = useMemo(
-    () => (range === 'all' ? rows.reduce((m, r) => (r.day && r.day < m ? r.day : m), today) : fetchFrom),
-    [range, rows, today, fetchFrom],
+    () => (range === 'all' ? srcRows.reduce((m, r) => (r.day && r.day < m ? r.day : m), today) : fetchFrom),
+    [range, srcRows, today, fetchFrom],
   );
   const days = useMemo(() => dayRange(fromDay, toDay), [fromDay, toDay]);
-  const inRange = useMemo(() => rows.filter((r) => r.day >= fromDay && r.day <= toDay), [rows, fromDay, toDay]);
+  const inRange = useMemo(() => srcRows.filter((r) => r.day >= fromDay && r.day <= toDay), [srcRows, fromDay, toDay]);
 
-  // One entry per campaign (an "all same" NB clone is its own campaign via ts_campaign_id).
+  // One entry per campaign (an "all same" NB clone is its own campaign via ts_campaign_id);
+  // on Creatives, one per image × campaign.
   const campaigns = useMemo(() => {
     const map = new Map<string, Sums & { r: StatRow; first: string }>();
     for (const r of inRange) {
-      const key = `${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`;
+      const key = rowKey(r);
       const g = map.get(key) || { ...zeroSums(), r, first: r.day };
       addSums(g, r);
       if (r.day < g.first) g.first = r.day;
@@ -2320,17 +2447,27 @@ const CampaignStatsView = () => {
         ts_campaign_id: g.r.ts_campaign_id, name, buyer: g.r.buyer || info?.buyer || '', competitor: info?.competitor || '',
         launched, first_day: g.first,
         country: g.r.country, language: g.r.language, source: g.r.traffic_source,
+        creative: g.r.creative,
+        ...(() => {
+          if (!g.r.creative) return { preset: '', presetImage: '' };
+          const p = presetInfo(presetSlotOf(g.r.creative), savedById);
+          return { preset: p.label, presetImage: p.image };
+        })(),
       };
     });
-  }, [inRange, azInfo]);
+  }, [inRange, azInfo, savedById]);
+  // Thumbnail per preset label, for the "Profit by preset" bars.
+  const presetImages = useMemo(() => new Map(campaigns.map((c) => [c.preset, c.presetImage])), [campaigns]);
 
   const q = search.trim().toLowerCase();
   // Search + selections: OR inside a dimension, AND across dimensions. `skip` leaves one
-  // dimension out, so its own chart still shows every bar to pick from.
+  // dimension out, so its own chart still shows every bar to pick from. Image picks only
+  // apply on the Creatives pill (other rows have no image).
   const passesExcept = useCallback((c: CampAgg, skip?: StatDim) =>
-    (!q || `${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q))
-    && (Object.entries(picks) as [StatDim, string[]][]).every(([d, vs]) => d === skip || !vs.length || vs.includes(dimValue(c, d))),
-  [q, picks]);
+    (!q || `${c.creative} ${c.name} ${c.buyer} ${c.binom_campaign_id} ${c.ts_campaign_id}`.toLowerCase().includes(q))
+    && (Object.entries(picks) as [StatDim, string[]][]).every(([d, vs]) =>
+      d === skip || (CREATIVE_DIMS.includes(d) && !isCreatives) || !vs.length || vs.includes(dimValue(c, d))),
+  [q, picks, isCreatives]);
   const passes = useCallback((c: CampAgg) => passesExcept(c), [passesExcept]);
   const options = useMemo(() => {
     const uniq = (pick: (c: CampAgg) => string) => [...new Set(campaigns.map(pick).filter(Boolean))].sort();
@@ -2351,7 +2488,7 @@ const CampaignStatsView = () => {
   const dailyProfit = useMemo(() => {
     const byDay = new Map<string, number>();
     for (const r of inRange) {
-      if (!shownKeys.has(`${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`)) continue;
+      if (!shownKeys.has(rowKey(r))) continue;
       byDay.set(r.day, (byDay.get(r.day) || 0) + r.revenue - r.cost);
     }
     return days.map((d) => byDay.get(d) || 0);
@@ -2364,7 +2501,7 @@ const CampaignStatsView = () => {
     const keys = [...new Set(days.map(bucket))];
     const sum = new Map<string, number>();
     for (const r of inRange) {
-      if (!shownKeys.has(`${r.tracker}|${r.binom_campaign_id}|${r.ts_campaign_id}`)) continue;
+      if (!shownKeys.has(rowKey(r))) continue;
       const k = bucket(r.day);
       sum.set(k, (sum.get(k) || 0) + r.revenue - r.cost);
     }
@@ -2387,12 +2524,15 @@ const CampaignStatsView = () => {
       map.set(key, g);
     }
     const items = [...map.entries()].map(([key, g]) => ({
-      key, label: breakdown === 'launch' ? dimText('launch', key) : key, value: g.value, note: `${g.n} campaigns`,
+      key, label: breakdown === 'launch' ? dimText('launch', key) : key, value: g.value,
+      note: `${g.n} ${isCreatives ? 'image × campaign rows' : 'campaigns'}`,
+      ...(breakdown === 'preset' ? { image: presetImages.get(key) || '' } : {}),
     }));
     // Launch weeks in date order (ISO key), everything else by profit.
     return breakdown === 'launch' ? items.sort((a, b) => a.key.localeCompare(b.key)) : items.sort((a, b) => b.value - a.value);
-  }, [campaigns, kind, passesExcept, breakdown]);
-  const activePicks = (Object.entries(picks) as [StatDim, string[]][]).filter(([, vs]) => vs.length);
+  }, [campaigns, kind, passesExcept, breakdown, isCreatives, presetImages]);
+  const activePicks = (Object.entries(picks) as [StatDim, string[]][])
+    .filter(([d, vs]) => vs.length && (!CREATIVE_DIMS.includes(d) || isCreatives));
 
   const sorted = useMemo(() => {
     const get = (r: CampAgg) => (r as any)[sort.key];
@@ -2405,7 +2545,10 @@ const CampaignStatsView = () => {
     });
   }, [shown, sort]);
   const toggleSort = (key: string) => setSort((s) => (s.key === key ? { key, dir: s.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: 'desc' }));
-  const visibleCols = STAT_COLUMNS.filter((c) => !hiddenCols.includes(c.key));
+  // Creatives can be ~100k image × campaign rows: draw the table a page at a time.
+  const [tableLimit, setTableLimit] = useState(TABLE_PAGE);
+  useEffect(() => setTableLimit(TABLE_PAGE), [shown, sort]);
+  const visibleCols = STAT_COLUMNS.filter((c) => !hiddenCols.includes(c.key) && (c.key !== 'preset' || isCreatives));
 
   if (status === 'error') {
     return <div className="p-6 text-red-600 text-sm whitespace-pre-wrap">{error ?? 'Failed to load campaign stats'}</div>;
@@ -2422,7 +2565,9 @@ const CampaignStatsView = () => {
     { label: 'Clicks', value: String(total.clicks) },
     { label: 'Leads', value: String(total.leads) },
     { label: 'CR', value: fmtPct(total.cr) || '—' },
-    { label: 'Campaigns', value: String(total.count) },
+    isCreatives
+      ? { label: 'Images', value: String(new Set(shown.map((c) => c.creative)).size) }
+      : { label: 'Campaigns', value: String(total.count) },
     { label: 'In profit', value: total.count ? `${total.winners} (${Math.round((total.winners / total.count) * 100)}%)` : '—' },
   ];
 
@@ -2467,7 +2612,10 @@ const CampaignStatsView = () => {
             key={k.value}
             type="button"
             disabled={k.soon}
-            onClick={() => setKind(k.value)}
+            onClick={() => {
+              setKind(k.value);
+              if (k.value !== 'creatives' && CREATIVE_DIMS.includes(breakdown)) setBreakdown('buyer');
+            }}
             className={`inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               kind === k.value ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'
             }`}
@@ -2477,7 +2625,8 @@ const CampaignStatsView = () => {
           </button>
         ))}
         <div className="flex-1 min-w-[160px] max-w-xs ml-2">
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search campaign / buyer / id…" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder={isCreatives ? 'Search image / campaign / buyer / id…' : 'Search campaign / buyer / id…'} />
         </div>
         {/* Shortcuts for the same selections the "Profit by" chart makes. */}
         {(['source', 'country', 'language'] as const).map((d) => {
@@ -2493,11 +2642,30 @@ const CampaignStatsView = () => {
             </select>
           );
         })}
-        <span className="ml-auto text-xs text-slate-400">{updatedAt ? `stats updated ${new Date(updatedAt).toLocaleString('en-GB').replace(/\//g, '-')}` : 'not updated yet'}</span>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
-          {status === 'loading' ? 'Loading…' : 'Refresh'}
-        </Button>
+        {isCreatives ? (
+          <>
+            <span className="ml-auto text-xs text-slate-400">
+              {crUpdatedAt ? `stats updated ${new Date(crUpdatedAt).toLocaleString('en-GB').replace(/\//g, '-')}` : 'not updated yet'}
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void loadCreatives()} disabled={crStatus === 'loading'}>
+              {crStatus === 'loading' ? 'Loading…' : 'Refresh'}
+            </Button>
+          </>
+        ) : (
+          <>
+            <span className="ml-auto text-xs text-slate-400">{updatedAt ? `stats updated ${new Date(updatedAt).toLocaleString('en-GB').replace(/\//g, '-')}` : 'not updated yet'}</span>
+            <Button variant="outline" size="sm" onClick={() => void load()} disabled={status === 'loading'}>
+              {status === 'loading' ? 'Loading…' : 'Refresh'}
+            </Button>
+          </>
+        )}
       </div>
+      {isCreatives && crStatus === 'loading' && (
+        <div className="text-xs text-slate-500 italic">Loading aiimg creative stats…</div>
+      )}
+      {isCreatives && crStatus === 'error' && (
+        <div className="text-xs text-red-600 whitespace-pre-wrap">Creative stats failed: {crError}</div>
+      )}
 
       {activePicks.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
@@ -2553,7 +2721,7 @@ const CampaignStatsView = () => {
         onToggle={(key) => togglePick(breakdown, key)}
         controls={(
           <div className="flex flex-wrap items-center gap-1">
-            {STAT_DIMS.map((d) => (
+            {STAT_DIMS.filter((d) => !CREATIVE_DIMS.includes(d.value) || isCreatives).map((d) => (
               <button key={d.value} type="button" onClick={() => setBreakdown(d.value)}
                 className={`rounded px-2 py-0.5 text-[11px] ${breakdown === d.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
                 {d.button}{picks[d.value]?.length ? ` (${picks[d.value]!.length})` : ''}
@@ -2569,7 +2737,7 @@ const CampaignStatsView = () => {
       />
 
       <div className="flex items-center gap-2">
-        <div className="text-xs font-bold uppercase text-slate-600">Campaigns</div>
+        <div className="text-xs font-bold uppercase text-slate-600">{isCreatives ? 'Images × campaigns' : 'Campaigns'}</div>
         <details className="relative ml-auto">
           <summary className="cursor-pointer list-none rounded border px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
             Columns{hiddenCols.length ? ` (${hiddenCols.length} hidden)` : ''}
@@ -2585,7 +2753,9 @@ const CampaignStatsView = () => {
         </details>
       </div>
       {sorted.length === 0 ? (
-        <div className="p-6 text-gray-400 italic">No campaigns with clicks in the selected range.</div>
+        <div className="p-6 text-gray-400 italic">
+          {isCreatives ? (crStatus === 'loading' ? 'Loading…' : 'No aiimg creatives with clicks in the selected range.') : 'No campaigns with clicks in the selected range.'}
+        </div>
       ) : (
         <div className="overflow-auto max-h-[75vh] rounded border border-slate-200">
           <table className="w-full text-sm border-collapse">
@@ -2601,7 +2771,7 @@ const CampaignStatsView = () => {
               </tr>
             </thead>
             <tbody>
-              {sorted.map((r) => (
+              {sorted.slice(0, tableLimit).map((r) => (
                 <tr key={r.key} className="border-b border-slate-100 align-top">
                   {visibleCols.map((c) => (
                     <td key={c.key} className={`py-1.5 px-3 text-xs ${c.right ? 'text-right font-mono' : ''} ${c.cls?.(r) || ''}`}>{c.cell(r)}</td>
@@ -2610,6 +2780,13 @@ const CampaignStatsView = () => {
               ))}
             </tbody>
           </table>
+          {sorted.length > tableLimit && (
+            <div className="flex items-center gap-3 p-2 text-xs text-slate-500">
+              Showing {tableLimit} of {sorted.length} rows (totals and charts use all of them)
+              <button type="button" onClick={() => setTableLimit((n) => n + TABLE_PAGE)}
+                className="rounded border px-2 py-0.5 text-slate-700 hover:bg-slate-100">Show {TABLE_PAGE} more</button>
+            </div>
+          )}
         </div>
       )}
     </div>
